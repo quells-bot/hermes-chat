@@ -15,6 +15,9 @@ var (
 	ErrNotFound   = errors.New("not found")
 	ErrConflict   = errors.New("conflict")
 	ErrValidation = errors.New("validation failed")
+
+	ErrUnauthenticated = errors.New("unauthenticated")
+	ErrForbidden       = errors.New("forbidden")
 )
 
 // ValidationError reports invalid input. Its text is the message alone;
@@ -37,6 +40,13 @@ type Service interface {
 	RemoveHuman(ctx context.Context, username string) error                    // ErrNotFound
 	GetHuman(ctx context.Context, id ulid.ULID) (Human, error)                 // ErrNotFound
 	ListHumans(ctx context.Context) ([]Human, error)
+
+	CreateAgent(ctx context.Context, handle, displayName string) (Agent, string, error) // the token, returned this once; ErrValidation, ErrConflict
+	RotateAgentToken(ctx context.Context, handle string) (string, error)                // ErrNotFound; the old token stops working; a revoked agent is live again
+	RevokeAgent(ctx context.Context, handle string) error                               // ErrNotFound; already revoked is a no-op that keeps the first time
+	ListAgents(ctx context.Context) ([]Agent, error)                                    // ordered by handle
+	GetAgent(ctx context.Context, id ulid.ULID) (Agent, error)                          // ErrNotFound
+	ResolveAgentToken(ctx context.Context, token string) (Actor, error)                 // ErrUnauthenticated: empty, unknown, or revoked
 }
 
 var _ Service = (*service)(nil)

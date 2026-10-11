@@ -45,6 +45,7 @@ func commandList() []subcommand {
 			return report(stderr, migrate(ctx, cfg, stdout))
 		}},
 		{"user", "manage users (add, passwd, remove, list)", user},
+		{"agent", "manage agents (add, revoke, rotate, list)", agent},
 	}
 }
 
