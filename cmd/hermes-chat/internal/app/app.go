@@ -16,6 +16,8 @@ const RequestIDHeader = "X-Request-ID"
 // Controller is the set of HTTP handlers.
 type Controller interface {
 	Healthz(c *gin.Context)
+	HumanAuth(c *gin.Context)
+	AgentAuth(c *gin.Context)
 }
 
 type controller struct {
