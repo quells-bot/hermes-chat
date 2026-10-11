@@ -17,6 +17,7 @@ const usage = `usage: hermes-chat <command>
 commands:
   serve     run the HTTP server
   migrate   apply database migrations
+  user      manage users (add, list)
 `
 
 // command runs with a loaded config and returns the process exit code. A
@@ -31,6 +32,7 @@ var commands = map[string]command{
 	"migrate": func(ctx context.Context, cfg Config, _ []string, stdout, stderr io.Writer) int {
 		return report(stderr, migrate(ctx, cfg, stdout))
 	},
+	"user": user,
 }
 
 func report(stderr io.Writer, err error) int {
