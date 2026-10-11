@@ -61,3 +61,18 @@ func TestNewLogger_JSONWithRequestID(t *testing.T) {
 	newLogger(&buf, slog.LevelWarn).Info("quiet")
 	assert.Empty(t, buf.String())
 }
+
+func TestLoadConfig_DebugAddrLoopbackOnly(t *testing.T) {
+	t.Setenv("HERMES_CHAT_DB_PATH", "/tmp/x.db")
+	for _, addr := range []string{":6060", "0.0.0.0:6060", "192.168.1.5:6060", "example.com:6060", "nonsense"} {
+		t.Setenv("HERMES_CHAT_DEBUG_ADDR", addr)
+		_, err := loadConfig()
+		require.Error(t, err, addr)
+		assert.Contains(t, err.Error(), "HERMES_CHAT_DEBUG_ADDR", addr)
+	}
+	for _, addr := range []string{"127.0.0.1:6060", "127.0.0.1:0", "[::1]:6060", "localhost:6060"} {
+		t.Setenv("HERMES_CHAT_DEBUG_ADDR", addr)
+		_, err := loadConfig()
+		assert.NoError(t, err, addr)
+	}
+}

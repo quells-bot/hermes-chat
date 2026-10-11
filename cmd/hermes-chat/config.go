@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 
 	"github.com/kelseyhightower/envconfig"
@@ -29,6 +30,9 @@ func loadConfig() (Config, error) {
 	if _, ok := parseLevel(c.LogLevel); !ok {
 		return Config{}, fmt.Errorf("HERMES_CHAT_LOG_LEVEL %q must be one of debug, info, warn, error", c.LogLevel)
 	}
+	if err := checkLoopback(c.DebugAddr); err != nil {
+		return Config{}, fmt.Errorf("HERMES_CHAT_DEBUG_ADDR %q: %w", c.DebugAddr, err)
+	}
 	switch c.GinMode {
 	case "debug", "release", "test":
 	default:
@@ -54,4 +58,19 @@ func parseLevel(s string) (slog.Level, bool) {
 func (c Config) slogLevel() slog.Level {
 	l, _ := parseLevel(c.LogLevel)
 	return l
+}
+
+// checkLoopback requires addr to name a loopback host, so pprof is never public.
+func checkLoopback(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return err
+	}
+	if host == "localhost" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("host must be a loopback address or localhost")
 }

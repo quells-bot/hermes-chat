@@ -37,6 +37,18 @@ func TestRun_Usage(t *testing.T) {
 	assert.Equal(t, 2, code)
 }
 
+func TestRun_UsageErrorsComeBeforeConfig(t *testing.T) {
+	t.Setenv("HERMES_CHAT_DB_PATH", "") // registers restore of the original value
+	os.Unsetenv("HERMES_CHAT_DB_PATH")
+	code, _, errOut := runCmd(t)
+	assert.Equal(t, 2, code)
+	assert.Contains(t, errOut, "serve")
+	assert.NotContains(t, errOut, "HERMES_CHAT_DB_PATH")
+	code, _, errOut = runCmd(t, "frobnicate")
+	assert.Equal(t, 2, code)
+	assert.NotContains(t, errOut, "HERMES_CHAT_DB_PATH")
+}
+
 func TestRun_ConfigErrorExitsOne(t *testing.T) {
 	t.Setenv("HERMES_CHAT_DB_PATH", "") // registers restore of the original value
 	os.Unsetenv("HERMES_CHAT_DB_PATH")
