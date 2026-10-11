@@ -25,6 +25,9 @@ func serve(ctx context.Context, cfg Config, log *slog.Logger, ln listeners) erro
 
 	gin.SetMode(cfg.GinMode)
 	e := gin.New()
+	if err := e.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+		return err
+	}
 	routes(e, w.App, log)
 
 	apiOpts := []httpserver.Option{httpserver.WithLogger(log), httpserver.WithLoggerLabel("api")}

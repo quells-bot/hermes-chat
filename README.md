@@ -40,21 +40,59 @@ Set through environment variables. Only variables with the `HERMES_CHAT_` prefix
 | `HERMES_CHAT_DB_PATH` | none | Path to the SQLite file, relative (resolved against the working directory) or absolute. Required. |
 | `HERMES_CHAT_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error`. |
 | `HERMES_CHAT_GIN_MODE` | `release` | `debug`, `release`, or `test`; checked when `serve` starts. |
+| `HERMES_CHAT_COOKIE_SECURE` | `true` | The `Secure` attribute on the session cookie. Set `false` only for plain HTTP on a development machine. |
+| `HERMES_CHAT_TRUSTED_PROXIES` | empty | Comma-separated IPs or CIDRs whose `X-Forwarded-For` is believed. Needed only behind a reverse proxy; empty trusts none, so the client IP is the TCP peer. Checked when `serve` starts. |
 
 ## Commands
 
-    hermes-chat serve            run the HTTP server
-    hermes-chat migrate          apply database migrations
-    hermes-chat user add NAME    create a user
-    hermes-chat user list        list users
+    hermes-chat serve                         run the HTTP server
+    hermes-chat migrate                       apply database migrations
+    hermes-chat user add NAME                 create a human
+    hermes-chat user list                     list humans
+    hermes-chat user passwd NAME              change a human's password
+    hermes-chat user remove NAME              remove a human
+    hermes-chat agent add HANDLE NAME         create an agent
+    hermes-chat agent list                    list agents
+    hermes-chat agent rotate HANDLE           issue an agent a new token
+    hermes-chat agent revoke HANDLE           revoke an agent's token
 
 With no command or an unknown one, `hermes-chat` prints usage and exits 2
 without needing any configuration. `serve` and `migrate` apply migrations;
-`user add` and `user list` require the schema to be current, so run `migrate`
+every other command requires the schema to be current, so run `migrate`
 first.
 
-`user add` creates a human without a password. Passwords arrive in a later
-stage, so login does not work yet.
+`user add` and `user passwd` prompt for the password on a terminal and
+otherwise read one line from standard input. `agent add` and `agent rotate`
+print the token once; it cannot be shown again.
+
+A human created before passwords existed needs `user passwd` before logging in.
+
+## HTTP API
+
+| Route | Auth | Purpose |
+|---|---|---|
+| `GET /healthz` | none | Reports whether storage is reachable. |
+| `POST /api/login` | none, same-origin | Body `{"username":"…","password":"…"}`. Replies `{"id":"…","username":"…"}` and sets the `hermes_session` cookie (90 days, `HttpOnly`, `SameSite=Lax`, `Secure` unless configured off). |
+| `POST /api/logout` | session cookie, same-origin | Ends the session and clears the cookie. Replies 204. |
+| `GET /api/me` | session cookie | Replies `{"id":"…","username":"…"}`. |
+| `GET /agent/me` | `Authorization: Bearer <token>` | Replies `{"id":"…","handle":"…","display_name":"…"}`. |
+
+Same-origin means the `Origin` header must name this server. Errors have one
+shape:
+
+    {"error":{"code":"invalid_credentials","message":"wrong username or password"}}
+
+| Status | `code` | Meaning |
+|---|---|---|
+| 400 | `bad_request` | A login body that is not a JSON object with username and password. |
+| 400 | `validation` | The request was understood but a value is not acceptable; `message` says which. |
+| 401 | `invalid_credentials` | Wrong username or password. |
+| 401 | `unauthenticated` | No valid session or token. |
+| 403 | `forbidden` | Not allowed, including a cross-origin state-changing request. |
+| 404 | `not_found` | No such thing. |
+| 409 | `conflict` | It already exists. |
+| 429 | `throttled` | Too many attempts; `Retry-After` gives the seconds to wait. |
+| 500 | `internal` | Something failed on the server; details are only in the log. |
 
 ## Adding a migration
 

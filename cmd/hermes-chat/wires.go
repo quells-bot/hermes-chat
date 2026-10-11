@@ -48,7 +48,7 @@ func wireUp(ctx context.Context, cfg Config, mode wireMode) (wires, error) {
 	}
 
 	w.Svc = bus.NewService(storage.NewRepo(db), time.Now)
-	w.App = app.NewController(w.Svc)
+	w.App = app.NewController(w.Svc, app.Options{CookieSecure: cfg.CookieSecure})
 	return w, nil
 }
 

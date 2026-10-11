@@ -33,7 +33,7 @@ func newEngine(t *testing.T, svc bus.Service) (*gin.Engine, *bytes.Buffer) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	e := gin.New()
 	e.Use(app.RequestID(), app.RequestLogger(log), gin.Recovery())
-	e.GET("/healthz", app.NewController(svc).Healthz)
+	e.GET("/healthz", app.NewController(svc, app.Options{}).Healthz)
 	return e, buf
 }
 

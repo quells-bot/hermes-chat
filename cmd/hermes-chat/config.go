@@ -16,6 +16,9 @@ type Config struct {
 	DBPath    string `split_words:"true"`
 	LogLevel  string `split_words:"true" default:"info"` // debug | info | warn | error
 	GinMode   string `split_words:"true" default:"release"`
+
+	CookieSecure   bool     `split_words:"true" default:"true"` // HERMES_CHAT_COOKIE_SECURE
+	TrustedProxies []string `split_words:"true"`                // HERMES_CHAT_TRUSTED_PROXIES, comma-separated IPs or CIDRs; empty trusts none
 }
 
 func loadConfig() (Config, error) {
@@ -42,6 +45,11 @@ func (c Config) validateForServe() error {
 	case "debug", "release", "test":
 	default:
 		return fmt.Errorf("HERMES_CHAT_GIN_MODE %q must be one of debug, release, test", c.GinMode)
+	}
+	for _, p := range c.TrustedProxies {
+		if _, _, err := net.ParseCIDR(p); err != nil && net.ParseIP(p) == nil {
+			return fmt.Errorf("HERMES_CHAT_TRUSTED_PROXIES entry %q is neither an IP address nor a CIDR", p)
+		}
 	}
 	return nil
 }
