@@ -69,6 +69,15 @@ type Repository interface {
 	PutRoomAgent(ctx context.Context, m RoomAgent) error                // ErrConflict if already a member
 	DeleteRoomAgent(ctx context.Context, roomID, agentID string) error  // ErrNotFound
 	ListRoomAgents(ctx context.Context, roomID string) ([]Agent, error) // ordered by handle; empty, not nil
+
+	PutMessage(ctx context.Context, m Message) error                                           // ErrConflict on duplicate id
+	GetMessage(ctx context.Context, id string) (Message, error)                                // ErrNotFound
+	ListMessages(ctx context.Context, roomID, beforeID string, limit int64) ([]Message, error) // newest first; beforeID "" starts at the newest; empty, not nil
+	GetLastMessageID(ctx context.Context, roomID string) (string, error)                       // ErrNotFound when the room has no messages
+
+	PutEvent(ctx context.Context, e Event) (int64, error)                                          // e.ID is ignored; returns the id the log assigned
+	ListEventsForHuman(ctx context.Context, humanID string, afterID, limit int64) ([]Event, error) // ascending id; only rooms the human is a member of now; empty, not nil
+	GetLastEventID(ctx context.Context) (int64, error)                                             // 0 when the log is empty
 }
 
 type repo struct {
