@@ -204,3 +204,87 @@ func TestResolveSession_StorageFailureIsNotUnauthenticated(t *testing.T) {
 	assert.ErrorIs(t, err, errDisk)
 	assert.NotErrorIs(t, err, bus.ErrUnauthenticated)
 }
+
+// beforeTx runs fn through the real repository just before delegating to the
+// real InTx, and records every PutSession made inside the transaction.
+type beforeTx struct {
+	storage.Repository
+	fn   func()
+	puts *int
+}
+
+func (b beforeTx) InTx(ctx context.Context, f func(storage.Repository) error) error {
+	b.fn()
+	return b.Repository.InTx(ctx, func(tx storage.Repository) error {
+		return f(countPuts{Repository: tx, n: b.puts})
+	})
+}
+
+type countPuts struct {
+	storage.Repository
+	n *int
+}
+
+func (c countPuts) PutSession(ctx context.Context, s storage.Session) error {
+	*c.n++
+	return c.Repository.PutSession(ctx, s)
+}
+
+// A login racing a password change must not produce a session.
+func TestLogin_PasswordChangedBeforeSessionInsert(t *testing.T) {
+	r := storagetest.NewRepo(t)
+	_, err := bus.NewService(r, func() time.Time { return fixed }).CreateHuman(ctx, "kai", pw)
+	require.NoError(t, err)
+	newHash, err := bus.HashPassword("a whole new password")
+	require.NoError(t, err)
+	var puts int
+	racing := beforeTx{Repository: r, puts: &puts, fn: func() {
+		row, err := r.GetHumanByUsername(ctx, "kai")
+		require.NoError(t, err)
+		require.NoError(t, r.SetHumanPasswordHash(ctx, row.ID, newHash))
+	}}
+	sess, err := bus.NewService(racing, func() time.Time { return fixed }).Login(ctx, "kai", pw, "10.0.0.1")
+	assert.Equal(t, bus.ErrInvalidCredentials, err)
+	assert.Empty(t, sess.Token)
+	assert.Zero(t, puts, "no session may be written")
+}
+
+func TestLogin_HumanRemovedBeforeSessionInsert(t *testing.T) {
+	r := storagetest.NewRepo(t)
+	_, err := bus.NewService(r, func() time.Time { return fixed }).CreateHuman(ctx, "kai", pw)
+	require.NoError(t, err)
+	var puts int
+	racing := beforeTx{Repository: r, puts: &puts, fn: func() {
+		row, err := r.GetHumanByUsername(ctx, "kai")
+		require.NoError(t, err)
+		require.NoError(t, r.DeleteHuman(ctx, row.ID))
+	}}
+	_, err = bus.NewService(racing, func() time.Time { return fixed }).Login(ctx, "kai", pw, "10.0.0.1")
+	assert.Equal(t, bus.ErrInvalidCredentials, err)
+	assert.Zero(t, puts, "no session may be written")
+}
+
+type putSessionConflicts struct{ storage.Repository }
+
+func (putSessionConflicts) PutSession(context.Context, storage.Session) error {
+	return storage.ErrConflict
+}
+
+func TestLogin_NoStorageSentinelEscapes(t *testing.T) {
+	r := storagetest.NewRepo(t)
+	_, err := bus.NewService(r, func() time.Time { return fixed }).CreateHuman(ctx, "kai", pw)
+	require.NoError(t, err)
+	_, err = bus.NewService(txWith{r}, func() time.Time { return fixed }).Login(ctx, "kai", pw, "10.0.0.1")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, storage.ErrConflict)
+	assert.NotErrorIs(t, err, bus.ErrInvalidCredentials)
+}
+
+// txWith hands the transaction callback a repository whose PutSession conflicts.
+type txWith struct{ storage.Repository }
+
+func (t txWith) InTx(ctx context.Context, f func(storage.Repository) error) error {
+	return t.Repository.InTx(ctx, func(tx storage.Repository) error {
+		return f(putSessionConflicts{tx})
+	})
+}

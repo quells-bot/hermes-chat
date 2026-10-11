@@ -43,17 +43,24 @@ type Session struct {
 }
 
 var (
-	dummyOnce sync.Once
+	dummyMu   sync.Mutex
 	dummyHash string
 )
 
 // dummyPasswordHash is verified against when no real hash exists, so a missing
-// user costs the same time as a wrong password.
-func dummyPasswordHash() string {
-	dummyOnce.Do(func() {
-		dummyHash, _ = hashPassword("dummy password for timing")
-	})
-	return dummyHash
+// user costs the same time as a wrong password. It is built on first use; a
+// failure is returned, not remembered, so a later call retries.
+func dummyPasswordHash() (string, error) {
+	dummyMu.Lock()
+	defer dummyMu.Unlock()
+	if dummyHash == "" {
+		h, err := hashPassword("dummy password for timing")
+		if err != nil {
+			return "", err
+		}
+		dummyHash = h
+	}
+	return dummyHash, nil
 }
 
 // Login checks a username and password and starts a session. Every attempt
@@ -78,7 +85,11 @@ func (s *service) Login(ctx context.Context, username, password, ip string) (Ses
 		return Session{}, fmt.Errorf("login: %w", err)
 	}
 	if row.PasswordHash == "" {
-		verifyPassword(dummyPasswordHash(), password)
+		dummy, err := dummyPasswordHash()
+		if err != nil {
+			return Session{}, fmt.Errorf("login: dummy hash: %w", err)
+		}
+		verifyPassword(dummy, password)
 		return Session{}, ErrInvalidCredentials
 	}
 	if !verifyPassword(row.PasswordHash, password) {
@@ -98,6 +109,17 @@ func (s *service) Login(ctx context.Context, username, password, ip string) (Ses
 	}
 	expires := now.Add(SessionLifetime)
 	err = s.repo.InTx(ctx, func(r storage.Repository) error {
+		// A password change or removal may have committed since the read above.
+		cur, err := r.GetHumanByUsername(ctx, username)
+		if errors.Is(err, storage.ErrNotFound) {
+			return ErrInvalidCredentials
+		}
+		if err != nil {
+			return err
+		}
+		if cur.ID != row.ID || cur.PasswordHash != row.PasswordHash {
+			return ErrInvalidCredentials
+		}
 		if err := r.DeleteExpiredSessions(ctx, now.UnixMilli()); err != nil {
 			return err
 		}
@@ -106,6 +128,12 @@ func (s *service) Login(ctx context.Context, username, password, ip string) (Ses
 			CreatedAtMs: now.UnixMilli(), ExpiresAtMs: expires.UnixMilli(),
 		})
 	})
+	if errors.Is(err, ErrInvalidCredentials) {
+		return Session{}, ErrInvalidCredentials
+	}
+	if errors.Is(err, storage.ErrConflict) {
+		return Session{}, errors.New("create session: session row already exists")
+	}
 	if err != nil {
 		return Session{}, fmt.Errorf("create session: %w", err)
 	}
