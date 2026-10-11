@@ -1,0 +1,9 @@
+version: "2"
+sql:
+  - engine: sqlite
+    schema: cmd/hermes-chat/internal/storage/migrations
+    queries: cmd/hermes-chat/internal/storage/queries
+    gen:
+      go:
+        package: sqlcgen
+        out: cmd/hermes-chat/internal/storage/sqlcgen

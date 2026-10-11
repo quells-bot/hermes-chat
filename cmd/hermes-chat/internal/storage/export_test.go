@@ -10,3 +10,6 @@ func ReadDSN(path string) string { return readDSN(path) }
 
 // WriteDSN exposes the write pool connection string to black-box tests.
 func WriteDSN(path string) string { return writeDSN(path) }
+
+// Path exposes the path given to Open to black-box tests.
+func (d *DB) Path() string { return d.path }

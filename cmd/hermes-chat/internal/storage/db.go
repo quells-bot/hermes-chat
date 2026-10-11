@@ -25,6 +25,7 @@ var pragmas = []string{
 // DB holds a single-connection write pool and a multi-connection read-only pool.
 type DB struct {
 	read, write *sql.DB
+	path        string
 }
 
 func dsn(path string, extra ...string) string {
@@ -77,7 +78,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		write.Close()
 		return nil, fmt.Errorf("ping read pool: %w", err)
 	}
-	return &DB{read: read, write: write}, nil
+	return &DB{read: read, write: write, path: path}, nil
 }
 
 // Close closes both pools.

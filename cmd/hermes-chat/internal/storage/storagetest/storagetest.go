@@ -27,3 +27,9 @@ func Open(t testing.TB) *storage.DB {
 	}
 	return db
 }
+
+// NewRepo returns a Repository over a migrated temp-file database.
+func NewRepo(t testing.TB) storage.Repository {
+	t.Helper()
+	return storage.NewRepo(Open(t))
+}
