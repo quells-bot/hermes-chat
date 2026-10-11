@@ -60,6 +60,13 @@ type Service interface {
 	InviteHuman(ctx context.Context, actor Actor, roomID, humanID ulid.ULID) (Room, error)           // the same three
 	AddRoomAgent(ctx context.Context, actor Actor, roomID, agentID ulid.ULID) (Room, error)          // the same three
 	RemoveRoomAgent(ctx context.Context, actor Actor, roomID, agentID ulid.ULID) (Room, error)       // the same three
+
+	PostMessage(ctx context.Context, actor Actor, roomID ulid.ULID, text string, replyTo ulid.ULID) (Message, error) // ErrNotFound, ErrValidation, ErrRoomArchived
+	GetMessage(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) (Message, error)                       // ErrNotFound, also for a message in another room
+	// ListMessages returns up to limit messages older than before (zero: the newest), oldest first.
+	// A limit under 1 means DefaultPageSize; one over MaxPageSize means MaxPageSize.
+	ListMessages(ctx context.Context, actor Actor, roomID, before ulid.ULID, limit int) ([]Message, error) // ErrNotFound
+	MarkRoomRead(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) error                      // ErrNotFound, ErrValidation
 }
 
 var _ Service = (*service)(nil)
