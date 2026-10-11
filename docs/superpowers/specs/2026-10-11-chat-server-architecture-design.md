@@ -82,8 +82,9 @@ plugin/              Hermes platform plugin (Python)
 docs/
 ```
 
-*(Claude's calls)* Module path `github.com/quells/hermes-chat` (a guess; there
-is no git remote yet). `web/embed.go` is a tiny Go package at `web/` holding the
+The module path is `github.com/quells-bot/hermes-chat` *(Kai)*.
+
+*(Claude's calls)* `web/embed.go` is a tiny Go package at `web/` holding the
 `//go:embed` directive, because embed cannot reach outside its own package
 directory; `cmd/hermes-chat` imports it. Small leaf packages that import no
 layer (for example `internal/reqid`, 6.3) may sit beside the three layers and be
@@ -501,3 +502,36 @@ Made alongside this document so the two agree:
   document.
 - Section 7: revoking an agent token closes its stream within one heartbeat,
   not immediately.
+
+## 14. Build stages
+
+The server is built in seven stages *(agreed by Kai)*. Each ends in something
+that runs and is tested. Each stage gets its own implementation plan, written
+only once the stage before it is merged, so every plan builds on real code
+instead of guessed interfaces. Plans live in `docs/superpowers/plans/`.
+
+1. **Skeleton.** Module and layout, envconfig, JSON `slog`, grace running the
+   API and pprof servers, gin with request ID, logging and recovery, the two
+   SQLite pools with goose, sqlc and `InTx`, the layering test, the `justfile`,
+   and the `migrate` subcommand. Ends with a binary that serves `/healthz`,
+   with every convention in this document exercised once. *(Claude's call)* To
+   give sqlc, `InTx`, and the admin CLI something real to act on, this stage
+   also creates the `humans` table (ID, username, created-at) and the
+   `user add` and `user list` subcommands, without passwords.
+2. **Identity and auth.** Passwords for humans, agents and their tokens, the
+   rest of the admin CLI, sessions, login with throttling, both auth
+   middlewares, and the bus-error-to-HTTP-status mapping.
+3. **Rooms, messages, and the human stream.** Rooms and membership, posting and
+   reply-to, the event log, the in-memory hub (as a runner), and SSE with
+   cursors for browsers.
+4. **Agent API and delivery.** The agent stream, addressing rules, the queue
+   with one message per room and agent at a time, message states, turns and
+   activity, streaming edits, presence, cancel, stop, and steer. The fake agent
+   client is built here.
+5. **The off switch.** Pause a room, stop everything, and the turn cap.
+6. **Prompts, notes, and attachments.** Approvals and clarifying questions, the
+   per-human note with its quarantine, and file storage.
+7. **TLS and deploy.** Autocert, the HTTP/2 check, and the cross-compile and
+   deploy scripts.
+
+The web UI and the Hermes plugin follow as their own projects.
