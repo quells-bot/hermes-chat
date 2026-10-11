@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/bus"
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/storage"
 )
 
@@ -62,7 +63,7 @@ func TestUserAdd_Invalid(t *testing.T) {
 	migrated(t)
 	code, _, errOut := runCmd(t, "user", "add", "kai wells")
 	assert.Equal(t, 1, code)
-	assert.Contains(t, errOut, "username")
+	assert.Equal(t, "hermes-chat: "+bus.ValidationError{Message: "username must be 1-32 characters: lowercase letters, digits, '_' or '-', starting with a letter or digit"}.Message+"\n", errOut)
 }
 
 // Review Focus 4.

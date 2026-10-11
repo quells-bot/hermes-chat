@@ -29,7 +29,9 @@ type Repository interface {
 	// InTx runs fn in one write transaction. The Repository passed to fn
 	// reads and writes through that transaction; calling InTx on it returns
 	// ErrNestedTx. fn's error rolls back and is returned; a panic rolls back
-	// and propagates.
+	// and propagates. Inside fn, use only the Repository passed to it: calling a
+	// write method on the outer repository waits forever, because the write pool
+	// has one connection.
 	InTx(ctx context.Context, fn func(Repository) error) error
 	PutHuman(ctx context.Context, h Human) error                            // ErrConflict on duplicate id or username
 	GetHumanByUsername(ctx context.Context, username string) (Human, error) // ErrNotFound
@@ -62,7 +64,7 @@ func (r *repo) Ping(ctx context.Context) error {
 	return nil
 }
 
-func (r *repo) InTx(ctx context.Context, fn func(Repository) error) (err error) {
+func (r *repo) InTx(ctx context.Context, fn func(Repository) error) error {
 	if r.inTx {
 		return ErrNestedTx
 	}

@@ -93,3 +93,16 @@ func TestOpen_PathWithSpecialCharacters(t *testing.T) {
 		assert.True(t, strings.HasPrefix(e.Name(), "my db #1?100%.db"), e.Name())
 	}
 }
+
+func TestOpen_RelativePaths(t *testing.T) {
+	t.Chdir(t.TempDir())
+	require.NoError(t, os.Mkdir("sub", 0o755))
+	for _, rel := range []string{"rel.db", "./rel2.db", "sub/rel3.db"} {
+		db, err := storage.Open(ctx, rel)
+		require.NoError(t, err, rel)
+		require.NoError(t, db.Migrate(ctx), rel)
+		require.NoError(t, db.Close())
+		_, err = os.Stat(rel)
+		assert.NoError(t, err, rel)
+	}
+}

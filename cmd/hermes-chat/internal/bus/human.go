@@ -26,7 +26,7 @@ type Human struct {
 func (s *service) CreateHuman(ctx context.Context, username string) (Human, error) {
 	username = strings.ToLower(strings.TrimSpace(username))
 	if !usernamePattern.MatchString(username) {
-		return Human{}, fmt.Errorf("username must be 1-32 characters: lowercase letters, digits, '_' or '-', starting with a letter or digit: %w", ErrValidation)
+		return Human{}, ValidationError{Message: "username must be 1-32 characters: lowercase letters, digits, '_' or '-', starting with a letter or digit"}
 	}
 	at := s.now()
 	id, err := newID(at)
@@ -38,7 +38,7 @@ func (s *service) CreateHuman(ctx context.Context, username string) (Human, erro
 		return Human{}, fmt.Errorf("username %q is already taken: %w", username, ErrConflict)
 	}
 	if err != nil {
-		return Human{}, err
+		return Human{}, fmt.Errorf("create human: %w", err)
 	}
 	return Human{ID: id, Username: username, CreatedAt: at}, nil
 }
@@ -47,7 +47,7 @@ func (s *service) CreateHuman(ctx context.Context, username string) (Human, erro
 func (s *service) ListHumans(ctx context.Context) ([]Human, error) {
 	rows, err := s.repo.ListHumans(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list humans: %w", err)
 	}
 	out := make([]Human, 0, len(rows))
 	for _, r := range rows {

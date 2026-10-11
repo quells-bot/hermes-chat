@@ -97,3 +97,26 @@ func TestListHumans_BadStoredID(t *testing.T) {
 	_, err := bus.NewService(badIDRepo{storagetest.NewRepo(t)}, time.Now).ListHumans(ctx)
 	assert.Error(t, err)
 }
+
+func TestValidationError(t *testing.T) {
+	_, err := newSvc(t).CreateHuman(ctx, "kai wells")
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "validation failed")
+	assert.ErrorIs(t, err, bus.ErrValidation)
+	var ve bus.ValidationError
+	require.ErrorAs(t, err, &ve)
+	assert.Equal(t, ve.Message, err.Error())
+	assert.Contains(t, ve.Message, "username")
+}
+
+type putFailsRepo struct{ storage.Repository }
+
+func (putFailsRepo) PutHuman(context.Context, storage.Human) error { return errDisk }
+
+func TestUnexpectedStorageErrorsAreWrappedWithTheOperation(t *testing.T) {
+	_, err := bus.NewService(putFailsRepo{storagetest.NewRepo(t)}, time.Now).CreateHuman(ctx, "kai")
+	assert.ErrorIs(t, err, errDisk)
+	assert.Contains(t, err.Error(), "create human: ")
+	_, err = bus.NewService(brokenRepo{storagetest.NewRepo(t)}, time.Now).ListHumans(ctx)
+	assert.Contains(t, err.Error(), "list humans: ")
+}

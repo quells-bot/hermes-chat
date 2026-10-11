@@ -42,6 +42,9 @@ func checkLayering(pkgs []pkgImports) []string {
 					}
 				}
 			}
+			if within(imp, internalRoot+"/storage/storagetest") {
+				out = append(out, fmt.Sprintf("%s must not import %s (test helper, imports testing)", p.ImportPath, imp))
+			}
 			sqlcgen := internalRoot + "/storage/sqlcgen"
 			if within(imp, sqlcgen) && !within(p.ImportPath, internalRoot+"/storage") {
 				out = append(out, fmt.Sprintf("%s must not import %s (only storage may)", p.ImportPath, imp))

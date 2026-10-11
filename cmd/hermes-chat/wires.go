@@ -40,6 +40,8 @@ func wireUp(ctx context.Context, cfg Config, mode wireMode) (wires, error) {
 		err = db.Migrate(ctx)
 	case wireCheck:
 		err = db.CheckSchema(ctx)
+	default:
+		err = fmt.Errorf("unknown wire mode %d", mode)
 	}
 	if err != nil {
 		return w, err

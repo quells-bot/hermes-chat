@@ -11,11 +11,11 @@ import (
 
 // Config is read from HERMES_CHAT_* environment variables.
 type Config struct {
-	HTTPAddr  string `envconfig:"HTTP_ADDR"  default:":8080"`
-	DebugAddr string `envconfig:"DEBUG_ADDR" default:"127.0.0.1:6060"`
-	DBPath    string `envconfig:"DB_PATH"    required:"true"`
-	LogLevel  string `envconfig:"LOG_LEVEL"  default:"info"` // debug | info | warn | error
-	GinMode   string `envconfig:"GIN_MODE"   default:"release"`
+	HTTPAddr  string `split_words:"true" default:":8080"`
+	DebugAddr string `split_words:"true" default:"127.0.0.1:6060"`
+	DBPath    string `split_words:"true"`
+	LogLevel  string `split_words:"true" default:"info"` // debug | info | warn | error
+	GinMode   string `split_words:"true" default:"release"`
 }
 
 func loadConfig() (Config, error) {
@@ -30,15 +30,20 @@ func loadConfig() (Config, error) {
 	if _, ok := parseLevel(c.LogLevel); !ok {
 		return Config{}, fmt.Errorf("HERMES_CHAT_LOG_LEVEL %q must be one of debug, info, warn, error", c.LogLevel)
 	}
+	return c, nil
+}
+
+// validateForServe checks the settings only the serve command uses.
+func (c Config) validateForServe() error {
 	if err := checkLoopback(c.DebugAddr); err != nil {
-		return Config{}, fmt.Errorf("HERMES_CHAT_DEBUG_ADDR %q: %w", c.DebugAddr, err)
+		return fmt.Errorf("HERMES_CHAT_DEBUG_ADDR %q: %w", c.DebugAddr, err)
 	}
 	switch c.GinMode {
 	case "debug", "release", "test":
 	default:
-		return Config{}, fmt.Errorf("HERMES_CHAT_GIN_MODE %q must be one of debug, release, test", c.GinMode)
+		return fmt.Errorf("HERMES_CHAT_GIN_MODE %q must be one of debug, release, test", c.GinMode)
 	}
-	return c, nil
+	return nil
 }
 
 func parseLevel(s string) (slog.Level, bool) {

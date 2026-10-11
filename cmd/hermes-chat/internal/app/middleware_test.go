@@ -49,7 +49,7 @@ func TestRequestLogger_OneLineWithRoutePattern(t *testing.T) {
 	e, buf := newEngine(t, realSvc(t))
 	e.GET("/things/:id", func(c *gin.Context) { c.Status(204) })
 	w := do(e, "GET", "/things/42?token=hunter2", "Authorization", "Bearer s3cr3t", "Cookie", "sid=c00kie")
-	ls := lines(buf)
+	ls := lines(t, buf)
 	require.Len(t, ls, 1)
 	l := ls[0]
 	assert.Equal(t, "request", l["msg"])
@@ -67,7 +67,7 @@ func TestRequestLogger_OneLineWithRoutePattern(t *testing.T) {
 func TestRequestLogger_Unmatched(t *testing.T) {
 	e, buf := newEngine(t, realSvc(t))
 	do(e, "GET", "/nope/secret-path")
-	l := lines(buf)[0]
+	l := lines(t, buf)[0]
 	assert.Equal(t, "unmatched", l["route"])
 	assert.EqualValues(t, 404, l["status"])
 	assert.NotContains(t, buf.String(), "secret-path")
@@ -82,7 +82,7 @@ func TestRequestLogger_PanicIsRecoveredAndLoggedAsError(t *testing.T) {
 	w := do(e, "GET", "/boom")
 	assert.Equal(t, 500, w.Code)
 	var req map[string]any
-	for _, l := range lines(buf) {
+	for _, l := range lines(t, buf) {
 		if l["msg"] == "request" {
 			req = l
 		}

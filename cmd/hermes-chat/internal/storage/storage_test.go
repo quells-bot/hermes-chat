@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"modernc.org/sqlite"
 
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/storage"
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/storage/storagetest"
@@ -65,7 +66,8 @@ func TestInTx_CommitsTogether(t *testing.T) {
 		}
 		return tx.PutHuman(ctx, ada)
 	}))
-	got, _ := r.ListHumans(ctx)
+	got, err := r.ListHumans(ctx)
+	require.NoError(t, err)
 	assert.Len(t, got, 2)
 }
 
@@ -77,7 +79,8 @@ func TestInTx_RollsBackAndReturnsTheCallbackError(t *testing.T) {
 		return boom
 	})
 	assert.ErrorIs(t, err, boom)
-	got, _ := r.ListHumans(ctx)
+	got, err := r.ListHumans(ctx)
+	require.NoError(t, err)
 	assert.Empty(t, got)
 }
 
@@ -113,7 +116,8 @@ func TestInTx_PanicReleasesTheWriteConnection(t *testing.T) {
 	short, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	require.NoError(t, r.PutHuman(short, ada)) // would block forever if the connection leaked
-	got, _ := r.ListHumans(ctx)
+	got, err := r.ListHumans(ctx)
+	require.NoError(t, err)
 	assert.Equal(t, []storage.Human{ada}, got) // kai rolled back
 }
 
@@ -126,9 +130,14 @@ func TestInTx_TakesWriteLockAtBegin(t *testing.T) {
 	other, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(0)")
 	require.NoError(t, err)
 	defer other.Close()
+	var one int
+	require.NoError(t, other.QueryRowContext(ctx, "SELECT 1").Scan(&one)) // the side connection works before the transaction begins
 	require.NoError(t, r.InTx(ctx, func(storage.Repository) error {
 		_, err := other.ExecContext(ctx, "BEGIN IMMEDIATE")
-		assert.Error(t, err) // SQLITE_BUSY: our transaction already holds the lock
+		var se *sqlite.Error
+		if assert.ErrorAs(t, err, &se, "our transaction already holds the lock") {
+			assert.Equal(t, 5, se.Code()) // SQLITE_BUSY
+		}
 		return nil
 	}))
 }

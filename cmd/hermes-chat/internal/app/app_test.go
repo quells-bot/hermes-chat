@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/app"
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/bus"
@@ -53,16 +54,15 @@ func do(e *gin.Engine, method, target string, hdr ...string) *httptest.ResponseR
 }
 
 // lines decodes one JSON object per log line.
-func lines(buf *bytes.Buffer) []map[string]any {
+func lines(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
 	var out []map[string]any
 	for _, s := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
 		if s == "" {
 			continue
 		}
 		m := map[string]any{}
-		if err := json.Unmarshal([]byte(s), &m); err != nil {
-			panic(err)
-		}
+		require.NoError(t, json.Unmarshal([]byte(s), &m))
 		out = append(out, m)
 	}
 	return out
@@ -86,7 +86,7 @@ func TestHealthz_Unavailable(t *testing.T) {
 	assert.JSONEq(t, `{"status":"unavailable"}`, w.Body.String())
 	assert.NotContains(t, w.Body.String(), "disk on fire")
 	var found bool
-	for _, l := range lines(buf) {
+	for _, l := range lines(t, buf) {
 		if l["level"] == "ERROR" && strings.Contains(fmt.Sprint(l), "disk on fire") {
 			found = true
 			assert.Equal(t, w.Header().Get(app.RequestIDHeader), l["request_id"])

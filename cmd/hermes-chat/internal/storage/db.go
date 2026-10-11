@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"runtime"
+	"strings"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, registered as "sqlite"
 )
@@ -35,19 +37,10 @@ func dsn(path string, extra ...string) string {
 		q.Add("_pragma", p)
 	}
 	for _, e := range extra {
-		k, v, _ := splitParam(e)
+		k, v, _ := strings.Cut(e, "=")
 		q.Add(k, v)
 	}
 	return u.String() + "?" + q.Encode()
-}
-
-func splitParam(s string) (k, v string, ok bool) {
-	for i := 0; i < len(s); i++ {
-		if s[i] == '=' {
-			return s[:i], s[i+1:], true
-		}
-	}
-	return s, "", false
 }
 
 func writeDSN(path string) string { return dsn(path, "_txlock=immediate") }
@@ -57,6 +50,11 @@ func readDSN(path string) string { return dsn(path, "_pragma=query_only(true)") 
 // Open opens the write pool first (creating the file and switching it to WAL),
 // then the read pool.
 func Open(ctx context.Context, path string) (*DB, error) {
+	// A relative path would be read as a URI authority in the file: URI.
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve database path: %w", err)
+	}
 	write, err := sql.Open("sqlite", writeDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open write pool: %w", err)

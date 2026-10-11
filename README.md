@@ -31,15 +31,15 @@ not needed.
 
 ## Configuration
 
-Set through environment variables.
+Set through environment variables. Only variables with the `HERMES_CHAT_` prefix are read; unprefixed names such as `LOG_LEVEL` are ignored.
 
 | Variable | Default | Notes |
 |---|---|---|
 | `HERMES_CHAT_HTTP_ADDR` | `:8080` | Address of the HTTP server. |
-| `HERMES_CHAT_DEBUG_ADDR` | `127.0.0.1:6060` | Serves pprof. Must be `localhost`, a 127.0.0.0/8 address, or `::1`; anything else is rejected at start-up. |
-| `HERMES_CHAT_DB_PATH` | none | Path to the SQLite file. Required. |
+| `HERMES_CHAT_DEBUG_ADDR` | `127.0.0.1:6060` | Serves pprof. Must be `localhost`, a 127.0.0.0/8 address, or `::1`; anything else is rejected when `serve` starts. |
+| `HERMES_CHAT_DB_PATH` | none | Path to the SQLite file, relative (resolved against the working directory) or absolute. Required. |
 | `HERMES_CHAT_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error`. |
-| `HERMES_CHAT_GIN_MODE` | `release` | `debug`, `release`, or `test`. |
+| `HERMES_CHAT_GIN_MODE` | `release` | `debug`, `release`, or `test`; checked when `serve` starts. |
 
 ## Commands
 

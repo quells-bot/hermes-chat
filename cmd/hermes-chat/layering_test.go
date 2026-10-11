@@ -26,6 +26,8 @@ func TestCheckLayering_Violations(t *testing.T) {
 		{I + "/storage", []string{I + "/bus"}},
 		{I + "/storage/storagetest", []string{I + "/app"}},
 		{I + "/reqid", []string{I + "/bus"}},
+		{I + "/bus", []string{I + "/storage/storagetest"}},
+		{"github.com/quells-bot/hermes-chat/cmd/hermes-chat", []string{I + "/storage/storagetest"}},
 		{"github.com/quells-bot/hermes-chat/cmd/hermes-chat", []string{I + "/storage/sqlcgen"}},
 	}
 	for _, c := range cases {
