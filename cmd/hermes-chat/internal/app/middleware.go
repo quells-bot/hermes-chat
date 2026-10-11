@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/oklog/ulid/v2"
 
+	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/bus"
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/reqid"
 )
 
@@ -39,11 +40,17 @@ func RequestLogger(log *slog.Logger) gin.HandlerFunc {
 		if status >= http.StatusInternalServerError {
 			level = slog.LevelError
 		}
-		log.LogAttrs(c.Request.Context(), level, "request",
+		attrs := []slog.Attr{
 			slog.String("method", c.Request.Method),
 			slog.String("route", route),
 			slog.Int("status", status),
 			slog.Float64("duration_ms", float64(time.Since(start))/float64(time.Millisecond)),
-		)
+		}
+		if actor, ok := c.Get(ActorKey); ok {
+			if a, ok := actor.(bus.Actor); ok {
+				attrs = append(attrs, slog.String("actor", a.String()))
+			}
+		}
+		log.LogAttrs(c.Request.Context(), level, "request", attrs...)
 	}
 }

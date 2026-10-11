@@ -26,7 +26,7 @@ func TestRoutes_MiddlewareChain(t *testing.T) {
 
 	var buf bytes.Buffer
 	e := gin.New()
-	routes(e, app.NewController(bus.NewService(storagetest.NewRepo(t), nil)), newLogger(&buf, -4))
+	routes(e, app.NewController(bus.NewService(storagetest.NewRepo(t), nil), app.Options{}), newLogger(&buf, -4))
 	e.GET("/boom", func(*gin.Context) { panic("boom") })
 
 	serveReq := func(path string) *httptest.ResponseRecorder {
@@ -61,4 +61,19 @@ func TestRoutes_MiddlewareChain(t *testing.T) {
 	require.Len(t, ls, 1)
 	assert.Equal(t, "ERROR", ls[0]["level"])
 	assert.EqualValues(t, 500, ls[0]["status"])
+
+	// The auth groups are wired: no credentials is 401, even for a same-origin POST.
+	w = httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/logout", nil)
+	r.Header.Set("Origin", "http://"+r.Host)
+	e.ServeHTTP(w, r)
+	assert.Equal(t, 401, w.Code)
+	assert.Equal(t, 401, serveReq("/agent/me").Code)
+
+	// The same-origin check runs before authentication: a cross-origin POST with no cookie is 403, not 401.
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodPost, "/api/logout", nil)
+	r.Header.Set("Origin", "https://evil.test")
+	e.ServeHTTP(w, r)
+	assert.Equal(t, 403, w.Code)
 }

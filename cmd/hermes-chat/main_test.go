@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,8 +24,13 @@ func setDB(t *testing.T) string {
 
 func runCmd(t *testing.T, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
+	return runCmdIn(t, "", args...)
+}
+
+func runCmdIn(t *testing.T, stdin string, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
 	var out, errOut bytes.Buffer
-	code = run(context.Background(), args, &out, &errOut)
+	code = run(context.Background(), args, strings.NewReader(stdin), &out, &errOut)
 	return code, out.String(), errOut.String()
 }
 

@@ -19,7 +19,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	t.Setenv("HERMES_CHAT_DB_PATH", "/tmp/x.db")
 	c, err := loadConfig()
 	require.NoError(t, err)
-	assert.Equal(t, Config{HTTPAddr: ":8080", DebugAddr: "127.0.0.1:6060", DBPath: "/tmp/x.db", LogLevel: "info", GinMode: "release"}, c)
+	assert.Equal(t, Config{HTTPAddr: ":8080", DebugAddr: "127.0.0.1:6060", DBPath: "/tmp/x.db", LogLevel: "info", GinMode: "release", CookieSecure: true}, c)
 }
 
 func TestLoadConfig_MissingDBPath(t *testing.T) {
@@ -91,7 +91,7 @@ func TestLoadConfig_IgnoresUnprefixedVariables(t *testing.T) {
 	t.Setenv("GIN_MODE", "fast")
 	c, err := loadConfig()
 	require.NoError(t, err)
-	assert.Equal(t, Config{HTTPAddr: ":8080", DebugAddr: "127.0.0.1:6060", DBPath: "/tmp/x.db", LogLevel: "info", GinMode: "release"}, c)
+	assert.Equal(t, Config{HTTPAddr: ":8080", DebugAddr: "127.0.0.1:6060", DBPath: "/tmp/x.db", LogLevel: "info", GinMode: "release", CookieSecure: true}, c)
 }
 
 func TestLoadConfig_UnprefixedDBPathIsNotRead(t *testing.T) {
@@ -111,5 +111,20 @@ func TestLoadConfig_PrefixedVariablesOverrideDefaults(t *testing.T) {
 	t.Setenv("HERMES_CHAT_GIN_MODE", "test")
 	c, err := loadConfig()
 	require.NoError(t, err)
-	assert.Equal(t, Config{HTTPAddr: ":9090", DebugAddr: "localhost:7070", DBPath: "/tmp/y.db", LogLevel: "debug", GinMode: "test"}, c)
+	assert.Equal(t, Config{HTTPAddr: ":9090", DebugAddr: "localhost:7070", DBPath: "/tmp/y.db", LogLevel: "debug", GinMode: "test", CookieSecure: true}, c)
+}
+
+func TestLoadConfig_AuthSettings(t *testing.T) {
+	setDB(t)
+	t.Setenv("HERMES_CHAT_COOKIE_SECURE", "false")
+	t.Setenv("HERMES_CHAT_TRUSTED_PROXIES", "127.0.0.1,10.0.0.0/8")
+	c, err := loadConfig()
+	require.NoError(t, err)
+	assert.False(t, c.CookieSecure)
+	assert.Equal(t, []string{"127.0.0.1", "10.0.0.0/8"}, c.TrustedProxies)
+	assert.NoError(t, c.validateForServe())
+	c.TrustedProxies = []string{"not-an-ip"}
+	err = c.validateForServe()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "HERMES_CHAT_TRUSTED_PROXIES")
 }

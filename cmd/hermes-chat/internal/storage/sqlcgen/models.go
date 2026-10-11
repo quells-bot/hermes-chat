@@ -4,8 +4,30 @@
 
 package sqlcgen
 
+import (
+	"database/sql"
+)
+
+type Agent struct {
+	ID          string
+	Handle      string
+	DisplayName string
+	TokenHash   string
+	RevokedAt   sql.NullInt64
+	CreatedAt   int64
+}
+
 type Human struct {
+	ID           string
+	Username     string
+	CreatedAt    int64
+	PasswordHash string
+}
+
+type Session struct {
 	ID        string
-	Username  string
+	TokenHash string
+	HumanID   string
 	CreatedAt int64
+	ExpiresAt int64
 }
