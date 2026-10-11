@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"net/netip"
 	"sync"
 	"time"
 
@@ -77,4 +78,23 @@ func (t *throttle) entries() (users, ips int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return len(t.users), len(t.ips)
+}
+
+// ipKey is the limiter key for a client address. An IPv6 address maps to its
+// /64, since one host normally owns the whole prefix; an IPv4 address (mapped
+// or not) is used whole; anything unparseable is used as given.
+func ipKey(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	a = a.Unmap()
+	if a.Is6() {
+		p, err := a.Prefix(64)
+		if err != nil {
+			return ip
+		}
+		return p.String()
+	}
+	return a.String()
 }

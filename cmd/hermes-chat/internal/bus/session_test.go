@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -287,4 +289,104 @@ func (t txWith) InTx(ctx context.Context, f func(storage.Repository) error) erro
 	return t.Repository.InTx(ctx, func(tx storage.Repository) error {
 		return f(putSessionConflicts{tx})
 	})
+}
+
+func TestLogin_ArgonWorkIsBounded(t *testing.T) {
+	s := bus.NewService(storagetest.NewRepo(t), func() time.Time { return fixed })
+	kai, err := s.CreateHuman(ctx, "kai", pw)
+	require.NoError(t, err)
+	const n = 12
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			user := fmt.Sprintf("nobody%d", i) // unknown users still verify the dummy hash
+			if i == 0 {
+				user = "kai"
+			}
+			_, errs[i] = s.Login(ctx, user, "wrong password", fmt.Sprintf("10.4.0.%d", i))
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		assert.ErrorIs(t, err, bus.ErrInvalidCredentials, "login %d", i)
+	}
+	assert.LessOrEqual(t, s.ArgonPeak(), 2)
+	assert.Positive(t, s.ArgonPeak())
+	_, err = s.Login(ctx, "kai", pw, "10.4.1.1") // slots were all released
+	require.NoError(t, err)
+	_ = kai
+}
+
+func TestLogin_CancelledWhileWaitingForASlot(t *testing.T) {
+	s := bus.NewService(storagetest.NewRepo(t), func() time.Time { return fixed })
+	_, err := s.CreateHuman(ctx, "kai", pw)
+	require.NoError(t, err)
+	r1, err := s.HoldArgonSlot(ctx)
+	require.NoError(t, err)
+	r2, err := s.HoldArgonSlot(ctx)
+	require.NoError(t, err)
+	defer r1()
+	defer r2()
+
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.Login(cctx, "kai", "wrong password", "10.5.0.1")
+		done <- err
+	}()
+	for s.ArgonWaiting() == 0 { // blocked on the semaphore, not on anything else
+		runtime.Gosched()
+	}
+	cancel()
+	err = <-done
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.NotErrorIs(t, err, bus.ErrInvalidCredentials)
+}
+
+func TestLogin_IPv6ThrottlesPerSlash64(t *testing.T) {
+	s := bus.NewService(storagetest.NewRepo(t), func() time.Time { return fixed })
+	for i := 0; i < 20; i++ { // empty password: no hashing
+		_, err := s.Login(ctx, "kai", "", fmt.Sprintf("2001:db8:1:2::%x", i+1))
+		require.ErrorIs(t, err, bus.ErrInvalidCredentials, "attempt %d", i)
+	}
+	_, err := s.Login(ctx, "kai", "", "2001:db8:1:2:aaaa:bbbb:cccc:dddd")
+	var te bus.ThrottledError
+	assert.ErrorAs(t, err, &te)
+	_, err = s.Login(ctx, "kai", "", "2001:db8:1:3::1") // a different /64
+	assert.ErrorIs(t, err, bus.ErrInvalidCredentials)
+}
+
+func TestLogin_MappedIPv4SharesABucketWithIPv4(t *testing.T) {
+	s := bus.NewService(storagetest.NewRepo(t), func() time.Time { return fixed })
+	for i := 0; i < 20; i++ {
+		ip := "10.0.3.7"
+		if i%2 == 1 {
+			ip = "::ffff:10.0.3.7"
+		}
+		_, err := s.Login(ctx, "kai", "", ip)
+		require.ErrorIs(t, err, bus.ErrInvalidCredentials, "attempt %d", i)
+	}
+	_, err := s.Login(ctx, "kai", "", "10.0.3.7")
+	assert.ErrorIs(t, err, bus.ErrThrottled)
+	_, err = s.Login(ctx, "kai", "", "::ffff:10.0.3.7")
+	assert.ErrorIs(t, err, bus.ErrThrottled)
+}
+
+func TestLogin_UsernameLimitersAreSweptToo(t *testing.T) {
+	now := fixed
+	s := bus.NewService(storagetest.NewRepo(t), func() time.Time { return now })
+	for i := 0; i < 4; i++ { // a real name and password length, so each reaches the username limiter
+		_, err := s.Login(ctx, fmt.Sprintf("user%d", i), pw, fmt.Sprintf("10.6.0.%d", i))
+		require.ErrorIs(t, err, bus.ErrInvalidCredentials)
+	}
+	users, _ := s.ThrottleEntries()
+	require.Equal(t, 4, users)
+	now = now.Add(time.Hour)
+	_, _ = s.Login(ctx, "other", pw, "10.6.1.1")
+	users, _ = s.ThrottleEntries()
+	assert.LessOrEqual(t, users, 1)
 }

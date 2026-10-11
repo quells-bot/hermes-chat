@@ -69,4 +69,11 @@ func TestRoutes_MiddlewareChain(t *testing.T) {
 	e.ServeHTTP(w, r)
 	assert.Equal(t, 401, w.Code)
 	assert.Equal(t, 401, serveReq("/agent/me").Code)
+
+	// The same-origin check runs before authentication: a cross-origin POST with no cookie is 403, not 401.
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodPost, "/api/logout", nil)
+	r.Header.Set("Origin", "https://evil.test")
+	e.ServeHTTP(w, r)
+	assert.Equal(t, 403, w.Code)
 }

@@ -59,11 +59,12 @@ type service struct {
 	repo     storage.Repository
 	clock    Clock
 	throttle *throttle
+	argon    argonLimiter
 }
 
 // NewService returns a Service backed by repo, reading time from clock.
 func NewService(repo storage.Repository, clock Clock) *service {
-	return &service{repo: repo, clock: clock, throttle: newThrottle()}
+	return &service{repo: repo, clock: clock, throttle: newThrottle(), argon: newArgonLimiter()}
 }
 
 // Health reports whether storage is reachable.

@@ -43,6 +43,8 @@ Set through environment variables. Only variables with the `HERMES_CHAT_` prefix
 | `HERMES_CHAT_COOKIE_SECURE` | `true` | The `Secure` attribute on the session cookie. Set `false` only for plain HTTP on a development machine. |
 | `HERMES_CHAT_TRUSTED_PROXIES` | empty | Comma-separated IPs or CIDRs whose `X-Forwarded-For` is believed. Needed only behind a reverse proxy; empty trusts none, so the client IP is the TCP peer. Checked when `serve` starts. |
 
+Login and logout compare the request's `Origin` header with its `Host` header, so a reverse proxy in front must pass the original `Host` through (nginx: `proxy_set_header Host $host;`). Otherwise every login returns 403.
+
 ## Commands
 
     hermes-chat serve                         run the HTTP server

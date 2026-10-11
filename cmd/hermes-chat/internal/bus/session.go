@@ -50,11 +50,11 @@ var (
 // dummyPasswordHash is verified against when no real hash exists, so a missing
 // user costs the same time as a wrong password. It is built on first use; a
 // failure is returned, not remembered, so a later call retries.
-func dummyPasswordHash() (string, error) {
+func (s *service) dummyPasswordHash(ctx context.Context) (string, error) {
 	dummyMu.Lock()
 	defer dummyMu.Unlock()
 	if dummyHash == "" {
-		h, err := hashPassword("dummy password for timing")
+		h, err := s.hash(ctx, "dummy password for timing")
 		if err != nil {
 			return "", err
 		}
@@ -68,7 +68,7 @@ func dummyPasswordHash() (string, error) {
 func (s *service) Login(ctx context.Context, username, password, ip string) (Session, error) {
 	now := s.now()
 	s.throttle.sweep(now)
-	if d, ok := s.throttle.takeIP(ip, now); !ok {
+	if d, ok := s.throttle.takeIP(ipKey(ip), now); !ok {
 		return Session{}, ThrottledError{RetryAfter: d}
 	}
 	username, ok := normalizeUsername(username)
@@ -85,14 +85,20 @@ func (s *service) Login(ctx context.Context, username, password, ip string) (Ses
 		return Session{}, fmt.Errorf("login: %w", err)
 	}
 	if row.PasswordHash == "" {
-		dummy, err := dummyPasswordHash()
+		dummy, err := s.dummyPasswordHash(ctx)
 		if err != nil {
 			return Session{}, fmt.Errorf("login: dummy hash: %w", err)
 		}
-		verifyPassword(dummy, password)
+		if _, err := s.verify(ctx, dummy, password); err != nil {
+			return Session{}, fmt.Errorf("login: %w", err)
+		}
 		return Session{}, ErrInvalidCredentials
 	}
-	if !verifyPassword(row.PasswordHash, password) {
+	match, err := s.verify(ctx, row.PasswordHash, password)
+	if err != nil {
+		return Session{}, fmt.Errorf("login: %w", err)
+	}
+	if !match {
 		return Session{}, ErrInvalidCredentials
 	}
 	humanID, err := ulid.ParseStrict(row.ID)

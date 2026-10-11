@@ -1,11 +1,13 @@
 package bus
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
@@ -28,6 +30,66 @@ func validatePassword(password string) error {
 		return ValidationError{Message: passwordMessage}
 	}
 	return nil
+}
+
+// maxConcurrentArgon caps how many argon2 computations run at once. Each one
+// allocates argonMemoryKiB, so an unbounded burst of logins could exhaust memory.
+const maxConcurrentArgon = 2
+
+// argonLimiter is a counting semaphore for argon2 work. inflight, peak and
+// waiting exist so tests can observe it.
+type argonLimiter struct {
+	slots    chan struct{}
+	inflight atomic.Int32
+	peak     atomic.Int32
+	waiting  atomic.Int32
+}
+
+func newArgonLimiter() argonLimiter {
+	return argonLimiter{slots: make(chan struct{}, maxConcurrentArgon)}
+}
+
+// acquire waits for a free slot or for ctx to be done. On success the caller
+// must call the returned release, ideally with defer.
+func (l *argonLimiter) acquire(ctx context.Context) (release func(), err error) {
+	select {
+	case l.slots <- struct{}{}:
+	default:
+		l.waiting.Add(1)
+		defer l.waiting.Add(-1)
+		select {
+		case l.slots <- struct{}{}:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("wait for password hashing slot: %w", ctx.Err())
+		}
+	}
+	n := l.inflight.Add(1)
+	for p := l.peak.Load(); n > p && !l.peak.CompareAndSwap(p, n); p = l.peak.Load() {
+	}
+	return func() {
+		l.inflight.Add(-1)
+		<-l.slots
+	}, nil
+}
+
+// hash is hashPassword under the semaphore.
+func (s *service) hash(ctx context.Context, password string) (string, error) {
+	release, err := s.argon.acquire(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	return hashPassword(password)
+}
+
+// verify is verifyPassword under the semaphore.
+func (s *service) verify(ctx context.Context, encoded, password string) (bool, error) {
+	release, err := s.argon.acquire(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	return verifyPassword(encoded, password), nil
 }
 
 // hashPassword returns a PHC-format argon2id hash of password with a fresh salt.

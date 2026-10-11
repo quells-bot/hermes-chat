@@ -39,7 +39,7 @@ func (s *service) CreateHuman(ctx context.Context, username, password string) (H
 	if err := validatePassword(password); err != nil {
 		return Human{}, err
 	}
-	hash, err := hashPassword(password)
+	hash, err := s.hash(ctx, password)
 	if err != nil {
 		return Human{}, fmt.Errorf("hash password: %w", err)
 	}
@@ -80,7 +80,7 @@ func (s *service) SetHumanPassword(ctx context.Context, username, password strin
 	if err := validatePassword(password); err != nil {
 		return err
 	}
-	hash, err := hashPassword(password) // before the transaction: hashing is slow
+	hash, err := s.hash(ctx, password) // before the transaction: hashing is slow
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}
