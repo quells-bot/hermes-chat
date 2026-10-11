@@ -36,6 +36,23 @@ type Repository interface {
 	PutHuman(ctx context.Context, h Human) error                            // ErrConflict on duplicate id or username
 	GetHumanByUsername(ctx context.Context, username string) (Human, error) // ErrNotFound
 	ListHumans(ctx context.Context) ([]Human, error)                        // ordered by username
+	GetHumanByID(ctx context.Context, id string) (Human, error)             // ErrNotFound
+	SetHumanPasswordHash(ctx context.Context, id, hash string) error        // ErrNotFound
+	DeleteHuman(ctx context.Context, id string) error                       // ErrNotFound; that human's sessions go with it
+
+	PutAgent(ctx context.Context, a Agent) error                                // ErrConflict on duplicate id, handle, or token hash
+	GetAgentByID(ctx context.Context, id string) (Agent, error)                 // ErrNotFound
+	GetAgentByHandle(ctx context.Context, handle string) (Agent, error)         // ErrNotFound
+	GetAgentByTokenHash(ctx context.Context, hash string) (Agent, error)        // ErrNotFound; revoked agents are returned, the bus decides
+	ListAgents(ctx context.Context) ([]Agent, error)                            // ordered by handle; empty, not nil
+	SetAgentTokenHash(ctx context.Context, id, hash string) error               // ErrNotFound; ErrConflict
+	SetAgentRevokedAt(ctx context.Context, id string, revokedAtMs *int64) error // ErrNotFound; nil clears
+
+	PutSession(ctx context.Context, s Session) error                         // ErrConflict on duplicate id or token hash
+	GetSessionByTokenHash(ctx context.Context, hash string) (Session, error) // ErrNotFound; expired rows are returned, the bus decides
+	DeleteSessionByTokenHash(ctx context.Context, hash string) error         // nil when there is no such row
+	DeleteSessionsByHuman(ctx context.Context, humanID string) error
+	DeleteExpiredSessions(ctx context.Context, nowMs int64) error // rows with expires_at <= nowMs
 }
 
 type repo struct {
@@ -103,4 +120,15 @@ func mapErr(err error) error {
 		}
 	}
 	return err
+}
+
+// requireRow maps an UPDATE or DELETE that touched no rows to ErrNotFound.
+func requireRow(n int64, err error) error {
+	if err != nil {
+		return mapErr(err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

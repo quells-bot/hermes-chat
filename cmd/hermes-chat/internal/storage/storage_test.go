@@ -151,3 +151,58 @@ func TestInTx_CancelledContext(t *testing.T) {
 	assert.Error(t, err)
 	assert.False(t, called)
 }
+
+func TestHuman_PasswordHashRoundTrip(t *testing.T) {
+	r := storagetest.NewRepo(t)
+	h := kai
+	h.PasswordHash = "$argon2id$stub"
+	require.NoError(t, r.PutHuman(ctx, h))
+	byName, err := r.GetHumanByUsername(ctx, "kai")
+	require.NoError(t, err)
+	assert.Equal(t, h, byName)
+	byID, err := r.GetHumanByID(ctx, kai.ID)
+	require.NoError(t, err)
+	assert.Equal(t, h, byID)
+	all, err := r.ListHumans(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []storage.Human{h}, all)
+	_, err = r.GetHumanByID(ctx, ada.ID)
+	assert.ErrorIs(t, err, storage.ErrNotFound)
+}
+
+// A row written before this migration existed has an empty hash.
+func TestHuman_RowWithoutPasswordColumnHasEmptyHash(t *testing.T) {
+	db := storagetest.Open(t)
+	_, write := db.Pools()
+	_, err := write.ExecContext(ctx, `INSERT INTO humans (id, username, created_at) VALUES (?, 'kai', 1)`, kai.ID)
+	require.NoError(t, err)
+	got, err := storage.NewRepo(db).GetHumanByUsername(ctx, "kai")
+	require.NoError(t, err)
+	assert.Equal(t, "", got.PasswordHash)
+}
+
+func TestSetHumanPasswordHash(t *testing.T) {
+	r := storagetest.NewRepo(t)
+	require.NoError(t, r.PutHuman(ctx, kai))
+	require.NoError(t, r.SetHumanPasswordHash(ctx, kai.ID, "h2"))
+	got, err := r.GetHumanByID(ctx, kai.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "h2", got.PasswordHash)
+	assert.ErrorIs(t, r.SetHumanPasswordHash(ctx, ada.ID, "h"), storage.ErrNotFound)
+}
+
+func TestDeleteHuman_TakesSessionsWithIt(t *testing.T) {
+	r := storagetest.NewRepo(t)
+	require.NoError(t, r.PutHuman(ctx, kai))
+	require.NoError(t, r.PutHuman(ctx, ada))
+	require.NoError(t, r.PutSession(ctx, sess("1", kai.ID, 100)))
+	require.NoError(t, r.PutSession(ctx, sess("2", ada.ID, 100)))
+	require.NoError(t, r.DeleteHuman(ctx, kai.ID))
+	_, err := r.GetHumanByID(ctx, kai.ID)
+	assert.ErrorIs(t, err, storage.ErrNotFound)
+	_, err = r.GetSessionByTokenHash(ctx, "hash-1")
+	assert.ErrorIs(t, err, storage.ErrNotFound)
+	_, err = r.GetSessionByTokenHash(ctx, "hash-2")
+	assert.NoError(t, err)
+	assert.ErrorIs(t, r.DeleteHuman(ctx, kai.ID), storage.ErrNotFound)
+}

@@ -9,34 +9,73 @@ import (
 	"context"
 )
 
+const deleteHuman = `-- name: DeleteHuman :execrows
+DELETE FROM humans WHERE id = ?
+`
+
+func (q *Queries) DeleteHuman(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteHuman, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const getHumanByID = `-- name: GetHumanByID :one
+SELECT id, username, created_at, password_hash FROM humans WHERE id = ?
+`
+
+func (q *Queries) GetHumanByID(ctx context.Context, id string) (Human, error) {
+	row := q.db.QueryRowContext(ctx, getHumanByID, id)
+	var i Human
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.CreatedAt,
+		&i.PasswordHash,
+	)
+	return i, err
+}
+
 const getHumanByUsername = `-- name: GetHumanByUsername :one
-SELECT id, username, created_at FROM humans WHERE username = ?
+SELECT id, username, created_at, password_hash FROM humans WHERE username = ?
 `
 
 func (q *Queries) GetHumanByUsername(ctx context.Context, username string) (Human, error) {
 	row := q.db.QueryRowContext(ctx, getHumanByUsername, username)
 	var i Human
-	err := row.Scan(&i.ID, &i.Username, &i.CreatedAt)
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.CreatedAt,
+		&i.PasswordHash,
+	)
 	return i, err
 }
 
 const insertHuman = `-- name: InsertHuman :exec
-INSERT INTO humans (id, username, created_at) VALUES (?, ?, ?)
+INSERT INTO humans (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)
 `
 
 type InsertHumanParams struct {
-	ID        string
-	Username  string
-	CreatedAt int64
+	ID           string
+	Username     string
+	PasswordHash string
+	CreatedAt    int64
 }
 
 func (q *Queries) InsertHuman(ctx context.Context, arg InsertHumanParams) error {
-	_, err := q.db.ExecContext(ctx, insertHuman, arg.ID, arg.Username, arg.CreatedAt)
+	_, err := q.db.ExecContext(ctx, insertHuman,
+		arg.ID,
+		arg.Username,
+		arg.PasswordHash,
+		arg.CreatedAt,
+	)
 	return err
 }
 
 const listHumans = `-- name: ListHumans :many
-SELECT id, username, created_at FROM humans ORDER BY username
+SELECT id, username, created_at, password_hash FROM humans ORDER BY username
 `
 
 func (q *Queries) ListHumans(ctx context.Context) ([]Human, error) {
@@ -48,7 +87,12 @@ func (q *Queries) ListHumans(ctx context.Context) ([]Human, error) {
 	var items []Human
 	for rows.Next() {
 		var i Human
-		if err := rows.Scan(&i.ID, &i.Username, &i.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.Username,
+			&i.CreatedAt,
+			&i.PasswordHash,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -60,4 +104,21 @@ func (q *Queries) ListHumans(ctx context.Context) ([]Human, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const setHumanPasswordHash = `-- name: SetHumanPasswordHash :execrows
+UPDATE humans SET password_hash = ? WHERE id = ?
+`
+
+type SetHumanPasswordHashParams struct {
+	PasswordHash string
+	ID           string
+}
+
+func (q *Queries) SetHumanPasswordHash(ctx context.Context, arg SetHumanPasswordHashParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setHumanPasswordHash, arg.PasswordHash, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
