@@ -27,6 +27,8 @@ var errorTable = []errorRow{
 	{bus.ErrForbidden, http.StatusForbidden, "forbidden", "not allowed"},
 	{bus.ErrNotFound, http.StatusNotFound, "not_found", "not found"},
 	{bus.ErrConflict, http.StatusConflict, "conflict", "already exists"},
+	{bus.ErrRoomArchived, http.StatusConflict, "room_archived", "room is archived"},
+	{bus.ErrUnavailable, http.StatusServiceUnavailable, "unavailable", "shutting down; try again shortly"},
 	{bus.ErrThrottled, http.StatusTooManyRequests, "throttled", "too many attempts; try again later"},
 }
 

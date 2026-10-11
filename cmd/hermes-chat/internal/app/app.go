@@ -22,6 +22,20 @@ type Controller interface {
 	Logout(c *gin.Context)
 	Me(c *gin.Context)
 	AgentMe(c *gin.Context)
+	ListAgents(c *gin.Context)
+	ListHumans(c *gin.Context)
+	ListRooms(c *gin.Context)
+	CreateRoom(c *gin.Context)
+	OpenDM(c *gin.Context)
+	GetRoom(c *gin.Context)
+	UpdateRoom(c *gin.Context)
+	InviteHuman(c *gin.Context)
+	AddRoomAgent(c *gin.Context)
+	RemoveRoomAgent(c *gin.Context)
+	MarkRoomRead(c *gin.Context)
+	ListMessages(c *gin.Context)
+	PostMessage(c *gin.Context)
+	GetMessage(c *gin.Context)
 }
 
 // Options are the settings the handlers need.
