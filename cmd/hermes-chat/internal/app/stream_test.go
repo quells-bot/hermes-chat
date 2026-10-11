@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/bus"
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/reqid"
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/sse"
+	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/storage"
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/storage/storagetest"
 )
 
@@ -64,9 +66,25 @@ type rig struct {
 // newRig builds a rig. tune, if not nil, adjusts the server before it starts.
 func newRig(t *testing.T, opts app.Options, tune func(*httptest.Server)) rig {
 	t.Helper()
+	return newFaultyRig(t, opts, tune, nil, nil)
+}
+
+// newFaultyRig is newRig with mocks to force errors: wrapRepo, if not nil, wraps
+// the repository under the bus; wrapSvc, if not nil, wraps the service the
+// controller calls. The rig's own svc is always the real one.
+func newFaultyRig(t *testing.T, opts app.Options, tune func(*httptest.Server), wrapRepo func(storage.Repository) storage.Repository, wrapSvc func(bus.Service) bus.Service) rig {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
-	svc := bus.NewService(storagetest.NewRepo(t), time.Now)
+	repo := storagetest.NewRepo(t)
+	if wrapRepo != nil {
+		repo = wrapRepo(repo)
+	}
+	svc := bus.NewService(repo, time.Now)
 	r := rig{log: &syncBuffer{}, svc: svc, hub: svc.Hub()}
+	var handled bus.Service = svc
+	if wrapSvc != nil {
+		handled = wrapSvc(svc)
+	}
 
 	log := slog.New(reqid.NewHandler(slog.NewJSONHandler(r.log, nil)))
 	prev := slog.Default()
@@ -75,7 +93,7 @@ func newRig(t *testing.T, opts app.Options, tune func(*httptest.Server)) rig {
 
 	e := gin.New()
 	e.Use(app.RequestID(), app.RequestLogger(log), gin.Recovery())
-	ctrl := app.NewController(svc, opts)
+	ctrl := app.NewController(handled, opts)
 	e.Group("/api", app.SameOrigin(), ctrl.HumanAuth).GET("/events", ctrl.Events)
 
 	kai, err := svc.CreateHuman(ctx, "kai", pw)
@@ -359,4 +377,75 @@ func TestEvents_NoWriteDeadlineIs500(t *testing.T) {
 	assert.JSONEq(t, `{"error":{"code":"internal","message":"internal error"}}`, w.Body.String())
 	assert.NotEqual(t, "text/event-stream", w.Header().Get("Content-Type"))
 	assert.Empty(t, w.Header().Get("X-Accel-Buffering"))
+}
+
+// errorLine reports whether the log holds an ERROR line carrying text.
+func errorLine(log, text string) bool {
+	for _, line := range strings.Split(log, "\n") {
+		if strings.Contains(line, `"level":"ERROR"`) && strings.Contains(line, text) {
+			return true
+		}
+	}
+	return false
+}
+
+// eventsFail is a repository whose event listing fails once broken is set.
+type eventsFail struct {
+	storage.Repository
+	broken *atomic.Bool
+}
+
+func (r eventsFail) ListEventsForHuman(ctx context.Context, humanID string, after, limit int64) ([]storage.Event, error) {
+	if r.broken.Load() {
+		return nil, errors.New("disk on fire")
+	}
+	return r.Repository.ListEventsForHuman(ctx, humanID, after, limit)
+}
+
+// A Poll error that is not the request's own cancellation is logged and ends the stream.
+func TestEvents_APollErrorIsLoggedAndEndsTheStream(t *testing.T) {
+	var broken atomic.Bool
+	r := newFaultyRig(t, app.Options{}, nil, func(repo storage.Repository) storage.Repository { return eventsFail{repo, &broken} }, nil)
+	_, d := r.open(t, r.cookie, "")
+	assert.Equal(t, "ready", next(t, d).Event)
+	assert.NotContains(t, r.log.String(), `"level":"ERROR"`)
+	broken.Store(true)
+	r.post(t, "wake the handler so it polls")
+	assert.True(t, ended(d))
+	eventually(t, func() bool { return errorLine(r.log.String(), "disk on fire") }, "the poll error was logged")
+	assert.Contains(t, r.log.String(), `"msg":"stream poll failed"`)
+}
+
+// sessionCheckFails is a service whose ResolveSession fails once broken is set.
+type sessionCheckFails struct {
+	bus.Service
+	broken *atomic.Bool
+}
+
+func (s sessionCheckFails) ResolveSession(ctx context.Context, token string) (bus.Actor, error) {
+	if s.broken.Load() {
+		return bus.Actor{}, errors.New("disk on fire")
+	}
+	return s.Service.ResolveSession(ctx, token)
+}
+
+// At the heartbeat, a session check that fails for a reason other than the session
+// having ended is logged; either way the stream ends.
+func TestEvents_AFailedSessionCheckIsLoggedAndEndsTheStream(t *testing.T) {
+	var broken atomic.Bool
+	r := newFaultyRig(t, app.Options{HeartbeatInterval: 20 * time.Millisecond}, nil, nil, func(svc bus.Service) bus.Service { return sessionCheckFails{svc, &broken} })
+	_, d := r.open(t, r.cookie, "")
+	assert.Equal(t, "ready", next(t, d).Event)
+	broken.Store(true)
+	assert.True(t, ended(d))
+	eventually(t, func() bool { return errorLine(r.log.String(), "disk on fire") }, "the session error was logged")
+	assert.Contains(t, r.log.String(), `"msg":"stream session check failed"`)
+
+	// A session that simply ended is not an error.
+	r = newRig(t, app.Options{HeartbeatInterval: 20 * time.Millisecond}, nil)
+	_, d = r.open(t, r.cookie, "")
+	next(t, d)
+	require.NoError(t, r.svc.Logout(ctx, r.token))
+	assert.True(t, ended(d))
+	assert.NotContains(t, r.log.String(), `"level":"ERROR"`)
 }

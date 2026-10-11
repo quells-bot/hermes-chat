@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -40,6 +42,12 @@ func streamCursor(c *gin.Context) (int64, bool) {
 		return 0, false
 	}
 	return int64(n), true
+}
+
+// canceled reports whether err is the request's own cancellation: the client
+// leaving while the stream was reading, which is not a failure.
+func canceled(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // eventFrame is the frame for one bus event.
@@ -112,7 +120,7 @@ func (h *controller) Events(c *gin.Context) {
 		for {
 			events, err := sub.Poll(ctx)
 			if err != nil {
-				if ctx.Err() == nil { // the client leaving mid-read is not a failure
+				if !canceled(err) {
 					slog.ErrorContext(ctx, "stream poll failed", "error", err)
 				}
 				return
@@ -142,7 +150,14 @@ func (h *controller) Events(c *gin.Context) {
 			}
 		case <-heartbeat.C:
 			// The session may have ended since the stream opened.
-			if current, err := h.svc.ResolveSession(ctx, token); err != nil || current != actor {
+			current, err := h.svc.ResolveSession(ctx, token)
+			if err != nil {
+				if !errors.Is(err, bus.ErrUnauthenticated) && !canceled(err) {
+					slog.ErrorContext(ctx, "stream session check failed", "error", err)
+				}
+				return
+			}
+			if current != actor {
 				return
 			}
 			if write(sse.Frame{Comment: "hb"}) != nil || rc.Flush() != nil {
