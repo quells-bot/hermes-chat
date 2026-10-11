@@ -176,10 +176,14 @@ func loadRoom(ctx context.Context, r storage.Repository, row storage.Room, viewe
 	return room, nil
 }
 
-// record runs fn in one write transaction. Task 5 makes it ring the hub after
-// the commit.
+// record runs fn in one write transaction and, once it has committed, rings
+// the hub. It is for the changes that write an event; nothing else rings.
 func (s *service) record(ctx context.Context, fn func(storage.Repository) error) error {
-	return s.repo.InTx(ctx, fn)
+	if err := s.repo.InTx(ctx, fn); err != nil {
+		return err
+	}
+	s.hub.ring()
+	return nil
 }
 
 // requireAgents checks that every id names an agent, once each.

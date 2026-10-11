@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/oklog/ulid/v2"
+
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/storage"
 )
 
@@ -15,6 +17,16 @@ const (
 	EventRoomChanged   EventKind = "room.changed"   // subject: the room's id
 	EventMessagePosted EventKind = "message.posted" // subject: the message's id
 )
+
+// Event is one entry of the log, as one subscriber sees it.
+type Event struct {
+	ID      int64 // the stream cursor
+	Kind    EventKind
+	RoomID  ulid.ULID
+	At      time.Time
+	Room    *Room    // room.changed: the room as it is now, for this subscriber
+	Message *Message // message.posted
+}
 
 // putEvent appends an event to the log. Call it inside the transaction that
 // made the change, so the two land together or not at all.

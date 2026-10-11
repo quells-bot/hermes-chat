@@ -20,6 +20,7 @@ import (
 type world struct {
 	s            bus.Service
 	r            storage.Repository
+	hub          *bus.Hub
 	now          *time.Time
 	kai, ada     bus.Actor
 	scout, atlas bus.Agent
@@ -29,7 +30,8 @@ func newWorld(t *testing.T) world {
 	t.Helper()
 	now := fixed
 	r := storagetest.NewRepo(t)
-	s := bus.NewService(r, func() time.Time { return now })
+	svc := bus.NewService(r, func() time.Time { return now })
+	var s bus.Service = svc
 	human := func(name string) bus.Actor {
 		h, err := s.CreateHuman(ctx, name, pw)
 		require.NoError(t, err)
@@ -40,7 +42,7 @@ func newWorld(t *testing.T) world {
 		require.NoError(t, err)
 		return a
 	}
-	return world{s: s, r: r, now: &now, kai: human("kai"), ada: human("ada"), scout: agent("scout", "Scout"), atlas: agent("atlas", "Atlas")}
+	return world{s: s, r: r, hub: svc.Hub(), now: &now, kai: human("kai"), ada: human("ada"), scout: agent("scout", "Scout"), atlas: agent("atlas", "Atlas")}
 }
 
 // kinds returns the kind of every event a can see, in log order.

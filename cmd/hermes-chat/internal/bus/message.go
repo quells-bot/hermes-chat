@@ -231,6 +231,7 @@ func (s *service) ListMessages(ctx context.Context, actor Actor, roomID, before 
 // MarkRoomRead moves the actor's read marker forward to messageID. A message
 // that is not newer than the marker changes nothing. It writes no event.
 func (s *service) MarkRoomRead(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) error {
+	// Not record: this writes no event, so it must not ring the hub.
 	err := s.repo.InTx(ctx, func(r storage.Repository) error {
 		if _, err := roomForMember(ctx, r, actor, roomID); err != nil {
 			return err

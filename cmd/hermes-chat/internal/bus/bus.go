@@ -18,6 +18,9 @@ var (
 
 	ErrUnauthenticated = errors.New("unauthenticated")
 	ErrForbidden       = errors.New("forbidden")
+
+	// ErrUnavailable reports that the server is shutting down.
+	ErrUnavailable = errors.New("unavailable")
 )
 
 // ValidationError reports invalid input. Its text is the message alone;
@@ -67,6 +70,9 @@ type Service interface {
 	// A limit under 1 means DefaultPageSize; one over MaxPageSize means MaxPageSize.
 	ListMessages(ctx context.Context, actor Actor, roomID, before ulid.ULID, limit int) ([]Message, error) // ErrNotFound
 	MarkRoomRead(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) error                      // ErrNotFound, ErrValidation
+
+	// Subscribe opens a stream of the actor's events after the given event ID; FromNow starts at the end of the log.
+	Subscribe(ctx context.Context, actor Actor, after int64) (*Subscription, error) // ErrForbidden, ErrValidation, ErrUnavailable
 }
 
 var _ Service = (*service)(nil)
@@ -76,11 +82,12 @@ type service struct {
 	clock    Clock
 	throttle *throttle
 	argon    argonLimiter
+	hub      *Hub
 }
 
 // NewService returns a Service backed by repo, reading time from clock.
 func NewService(repo storage.Repository, clock Clock) *service {
-	return &service{repo: repo, clock: clock, throttle: newThrottle(), argon: newArgonLimiter()}
+	return &service{repo: repo, clock: clock, throttle: newThrottle(), argon: newArgonLimiter(), hub: newHub()}
 }
 
 // Health reports whether storage is reachable.
