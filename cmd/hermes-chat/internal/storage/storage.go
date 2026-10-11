@@ -53,6 +53,22 @@ type Repository interface {
 	DeleteSessionByTokenHash(ctx context.Context, hash string) error         // nil when there is no such row
 	DeleteSessionsByHuman(ctx context.Context, humanID string) error
 	DeleteExpiredSessions(ctx context.Context, nowMs int64) error // rows with expires_at <= nowMs
+
+	PutRoom(ctx context.Context, r Room) error                                   // ErrConflict on duplicate id, or a second DM for the same human and agent
+	GetRoom(ctx context.Context, id string) (Room, error)                        // ErrNotFound
+	GetDMRoom(ctx context.Context, humanID, agentID string) (Room, error)        // ErrNotFound
+	ListRoomsByHuman(ctx context.Context, humanID string) ([]Room, error)        // ordered by id; archived rooms included; empty, not nil
+	SetRoomTopic(ctx context.Context, id, topic string) error                    // ErrNotFound
+	SetRoomArchivedAt(ctx context.Context, id string, archivedAtMs *int64) error // ErrNotFound; nil clears
+
+	PutRoomHuman(ctx context.Context, m RoomHuman) error                               // ErrConflict if already a member
+	GetRoomHuman(ctx context.Context, roomID, humanID string) (RoomHuman, error)       // ErrNotFound: not a member
+	ListRoomHumans(ctx context.Context, roomID string) ([]Human, error)                // ordered by username; PasswordHash is left empty; empty, not nil
+	SetRoomHumanLastRead(ctx context.Context, roomID, humanID, messageID string) error // ErrNotFound
+
+	PutRoomAgent(ctx context.Context, m RoomAgent) error                // ErrConflict if already a member
+	DeleteRoomAgent(ctx context.Context, roomID, agentID string) error  // ErrNotFound
+	ListRoomAgents(ctx context.Context, roomID string) ([]Agent, error) // ordered by handle; empty, not nil
 }
 
 type repo struct {
