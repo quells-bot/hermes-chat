@@ -47,18 +47,23 @@ type Service interface {
 	ListAgents(ctx context.Context) ([]Agent, error)                                    // ordered by handle
 	GetAgent(ctx context.Context, id ulid.ULID) (Agent, error)                          // ErrNotFound
 	ResolveAgentToken(ctx context.Context, token string) (Actor, error)                 // ErrUnauthenticated: empty, unknown, or revoked
+
+	Login(ctx context.Context, username, password, ip string) (Session, error) // ErrInvalidCredentials, ThrottledError
+	Logout(ctx context.Context, token string) error                            // an unknown or empty token is not an error
+	ResolveSession(ctx context.Context, token string) (Actor, error)           // ErrUnauthenticated: empty, unknown, or expired
 }
 
 var _ Service = (*service)(nil)
 
 type service struct {
-	repo  storage.Repository
-	clock Clock
+	repo     storage.Repository
+	clock    Clock
+	throttle *throttle
 }
 
 // NewService returns a Service backed by repo, reading time from clock.
 func NewService(repo storage.Repository, clock Clock) *service {
-	return &service{repo: repo, clock: clock}
+	return &service{repo: repo, clock: clock, throttle: newThrottle()}
 }
 
 // Health reports whether storage is reachable.

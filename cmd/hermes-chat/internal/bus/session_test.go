@@ -1,0 +1,206 @@
+package bus_test
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/oklog/ulid/v2"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/bus"
+	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/storage"
+	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/storage/storagetest"
+)
+
+// clockSvc returns a service whose clock the test can move, with kai already created.
+func clockSvc(t *testing.T) (bus.Service, *time.Time, bus.Human) {
+	now := fixed
+	s := bus.NewService(storagetest.NewRepo(t), func() time.Time { return now })
+	kai, err := s.CreateHuman(ctx, "kai", pw)
+	require.NoError(t, err)
+	return s, &now, kai
+}
+
+func TestLogin_Success(t *testing.T) {
+	s, _, kai := clockSvc(t)
+	sess, err := s.Login(ctx, " KAI ", pw, "10.0.0.1")
+	require.NoError(t, err)
+	assert.Regexp(t, `^hcs_[A-Za-z0-9_-]{43}$`, sess.Token)
+	assert.Equal(t, kai, sess.Human)
+	assert.Equal(t, fixed.Add(bus.SessionLifetime), sess.ExpiresAt)
+	actor, err := s.ResolveSession(ctx, sess.Token)
+	require.NoError(t, err)
+	assert.Equal(t, bus.Actor{Kind: bus.ActorHuman, ID: kai.ID}, actor)
+	again, _ := s.Login(ctx, "kai", pw, "10.0.0.1")
+	assert.NotEqual(t, sess.Token, again.Token)
+	_, err = s.ResolveSession(ctx, sess.Token)
+	assert.NoError(t, err) // a second login does not end the first
+}
+
+func TestLogin_OnlyTheTokenHashIsStored(t *testing.T) {
+	r := storagetest.NewRepo(t)
+	s := bus.NewService(r, func() time.Time { return fixed })
+	_, _ = s.CreateHuman(ctx, "kai", pw)
+	sess, _ := s.Login(ctx, "kai", pw, "10.0.0.1")
+	_, err := r.GetSessionByTokenHash(ctx, sess.Token)
+	assert.ErrorIs(t, err, storage.ErrNotFound)
+	sum := sha256.Sum256([]byte(sess.Token))
+	_, err = r.GetSessionByTokenHash(ctx, hex.EncodeToString(sum[:]))
+	assert.NoError(t, err)
+}
+
+// Review Focus 3. Every failure is the same error, whatever the cause.
+func TestLogin_InvalidCredentials(t *testing.T) {
+	r := storagetest.NewRepo(t)
+	s := bus.NewService(r, func() time.Time { return fixed })
+	_, _ = s.CreateHuman(ctx, "kai", pw)
+	require.NoError(t, r.PutHuman(ctx, storage.Human{ID: ulid.Make().String(), Username: "legacy"})) // stage 1 row: no password
+	cases := [][2]string{
+		{"kai", "wrong password"}, {"nobody", pw}, {"not a name", pw}, {"", pw},
+		{"kai", ""}, {"legacy", ""}, {"legacy", pw}, {"kai", strings.Repeat("a", 257)},
+	}
+	for i, c := range cases {
+		_, err := s.Login(ctx, c[0], c[1], fmt.Sprintf("10.0.1.%d", i)) // a fresh IP each time
+		assert.ErrorIs(t, err, bus.ErrInvalidCredentials, "%q", c)
+		assert.Equal(t, bus.ErrInvalidCredentials.Error(), err.Error(), "%q: the error must not say which part was wrong", c)
+	}
+}
+
+func TestLogin_ThrottlePerUsername(t *testing.T) {
+	s, now, _ := clockSvc(t)
+	for i := 0; i < 5; i++ { // burst of 5, each from a different IP
+		_, err := s.Login(ctx, "kai", "wrong password", fmt.Sprintf("10.0.2.%d", i))
+		require.ErrorIs(t, err, bus.ErrInvalidCredentials)
+	}
+	_, err := s.Login(ctx, "kai", pw, "10.0.2.99") // even the right password
+	var te bus.ThrottledError
+	require.ErrorAs(t, err, &te)
+	assert.ErrorIs(t, err, bus.ErrThrottled)
+	assert.InDelta(t, time.Minute, te.RetryAfter, float64(time.Millisecond))
+	_, err = s.Login(ctx, "ada", "wrong password", "10.0.2.99")
+	assert.ErrorIs(t, err, bus.ErrInvalidCredentials) // other names are unaffected
+
+	*now = now.Add(59 * time.Second)
+	_, err = s.Login(ctx, "kai", pw, "10.0.2.99")
+	require.ErrorAs(t, err, &te)
+	assert.InDelta(t, time.Second, te.RetryAfter, float64(time.Millisecond))
+	*now = now.Add(2 * time.Second) // being refused did not push the wait further out
+	_, err = s.Login(ctx, "kai", pw, "10.0.2.99")
+	assert.NoError(t, err)
+}
+
+func TestLogin_ThrottlePerIP(t *testing.T) {
+	s, now, _ := clockSvc(t)
+	for i := 0; i < 20; i++ { // burst of 20, a different name each time
+		_, err := s.Login(ctx, fmt.Sprintf("user%d", i), "", "10.0.3.1")
+		require.ErrorIs(t, err, bus.ErrInvalidCredentials)
+	}
+	_, err := s.Login(ctx, "kai", pw, "10.0.3.1")
+	var te bus.ThrottledError
+	require.ErrorAs(t, err, &te)
+	assert.InDelta(t, 10*time.Second, te.RetryAfter, float64(time.Millisecond))
+	_, err = s.Login(ctx, "kai", pw, "10.0.3.2")
+	assert.NoError(t, err) // another IP is fine, and kai's own bucket was not charged
+	*now = now.Add(11 * time.Second)
+	_, err = s.Login(ctx, "kai", pw, "10.0.3.1")
+	assert.NoError(t, err)
+}
+
+// Review Focus 2.
+func TestLogin_ThrottleMapsDoNotGrowWithoutBound(t *testing.T) {
+	now := fixed
+	s := bus.NewService(storagetest.NewRepo(t), func() time.Time { return now })
+	for i := 0; i < 3000; i++ { // empty password: refused at step 3, so no hashing
+		_, _ = s.Login(ctx, fmt.Sprintf("user%d", i), "", fmt.Sprintf("10.1.%d.%d", i/250, i%250))
+	}
+	users, ips := s.ThrottleEntries()
+	assert.Zero(t, users, "a name that never reaches the username limiter gets no entry")
+	assert.Equal(t, 3000, ips) // the clock has not moved: none has refilled, so none may be dropped
+	now = now.Add(time.Hour)
+	_, _ = s.Login(ctx, "kai", "", "10.9.9.9")
+	_, ips = s.ThrottleEntries()
+	assert.LessOrEqual(t, ips, 1)
+}
+
+// Review Focus 5.
+func TestResolveSession_Expiry(t *testing.T) {
+	s, now, _ := clockSvc(t)
+	sess, _ := s.Login(ctx, "kai", pw, "10.0.0.1")
+	*now = fixed.Add(bus.SessionLifetime - time.Millisecond)
+	_, err := s.ResolveSession(ctx, sess.Token)
+	assert.NoError(t, err)
+	*now = fixed.Add(bus.SessionLifetime)
+	_, err = s.ResolveSession(ctx, sess.Token)
+	assert.ErrorIs(t, err, bus.ErrUnauthenticated)
+}
+
+func TestResolveSession_BadTokens(t *testing.T) {
+	s, _, _ := clockSvc(t)
+	sess, _ := s.Login(ctx, "kai", pw, "10.0.0.1")
+	for _, bad := range []string{"", "hcs_", sess.Token + "x", strings.ToUpper(sess.Token)} {
+		_, err := s.ResolveSession(ctx, bad)
+		assert.ErrorIs(t, err, bus.ErrUnauthenticated, "%q", bad)
+	}
+	_, agentToken, _ := s.CreateAgent(ctx, "scout", "Scout")
+	_, err := s.ResolveSession(ctx, agentToken)
+	assert.ErrorIs(t, err, bus.ErrUnauthenticated) // an agent token is not a session
+	_, err = s.ResolveAgentToken(ctx, sess.Token)
+	assert.ErrorIs(t, err, bus.ErrUnauthenticated) // and the reverse
+}
+
+// Review Focus 5.
+func TestSession_EndsOnLogoutPasswdAndRemove(t *testing.T) {
+	s, _, _ := clockSvc(t)
+	a, _ := s.Login(ctx, "kai", pw, "10.0.0.1")
+	b, _ := s.Login(ctx, "kai", pw, "10.0.0.1")
+	require.NoError(t, s.Logout(ctx, a.Token))
+	_, err := s.ResolveSession(ctx, a.Token)
+	assert.ErrorIs(t, err, bus.ErrUnauthenticated)
+	_, err = s.ResolveSession(ctx, b.Token)
+	assert.NoError(t, err) // logout ends one session, not all
+	assert.NoError(t, s.Logout(ctx, a.Token))
+	assert.NoError(t, s.Logout(ctx, "")) // repeat and empty are fine
+
+	require.NoError(t, s.SetHumanPassword(ctx, "kai", "a whole new password"))
+	_, err = s.ResolveSession(ctx, b.Token)
+	assert.ErrorIs(t, err, bus.ErrUnauthenticated)
+
+	c, err := s.Login(ctx, "kai", "a whole new password", "10.0.0.2")
+	require.NoError(t, err)
+	require.NoError(t, s.RemoveHuman(ctx, "kai"))
+	_, err = s.ResolveSession(ctx, c.Token)
+	assert.ErrorIs(t, err, bus.ErrUnauthenticated)
+}
+
+func TestLogin_SweepsExpiredSessions(t *testing.T) {
+	now := fixed
+	r := storagetest.NewRepo(t)
+	s := bus.NewService(r, func() time.Time { return now })
+	_, _ = s.CreateHuman(ctx, "kai", pw)
+	old, _ := s.Login(ctx, "kai", pw, "10.0.0.1")
+	now = fixed.Add(bus.SessionLifetime + time.Hour)
+	_, err := s.Login(ctx, "kai", pw, "10.0.0.1")
+	require.NoError(t, err)
+	sum := sha256.Sum256([]byte(old.Token))
+	_, err = r.GetSessionByTokenHash(ctx, hex.EncodeToString(sum[:]))
+	assert.ErrorIs(t, err, storage.ErrNotFound)
+}
+
+type sessionReadFails struct{ storage.Repository }
+
+func (sessionReadFails) GetSessionByTokenHash(context.Context, string) (storage.Session, error) {
+	return storage.Session{}, errDisk
+}
+
+// A database failure is not "you are logged out".
+func TestResolveSession_StorageFailureIsNotUnauthenticated(t *testing.T) {
+	_, err := bus.NewService(sessionReadFails{storagetest.NewRepo(t)}, time.Now).ResolveSession(ctx, "hcs_x")
+	assert.ErrorIs(t, err, errDisk)
+	assert.NotErrorIs(t, err, bus.ErrUnauthenticated)
+}
