@@ -10,12 +10,12 @@ import (
 )
 
 func main() {
-	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
 // command runs with a loaded config and returns the process exit code. A
 // command reports its own usage errors by returning 2.
-type command func(ctx context.Context, cfg Config, args []string, stdout, stderr io.Writer) int
+type command func(ctx context.Context, cfg Config, args []string, stdin io.Reader, stdout, stderr io.Writer) int
 
 // subcommand is one entry of the command list that drives both dispatch and usage.
 type subcommand struct {
@@ -27,7 +27,7 @@ type subcommand struct {
 // a variable, because the commands print usage, which reads the list.
 func commandList() []subcommand {
 	return []subcommand{
-		{"serve", "run the HTTP server", func(ctx context.Context, cfg Config, args []string, _, stderr io.Writer) int {
+		{"serve", "run the HTTP server", func(ctx context.Context, cfg Config, args []string, _ io.Reader, _, stderr io.Writer) int {
 			if len(args) > 0 {
 				fmt.Fprint(stderr, usage())
 				return 2
@@ -37,14 +37,14 @@ func commandList() []subcommand {
 			}
 			return report(stderr, serve(ctx, cfg, newLogger(stderr, cfg.slogLevel()), listeners{}))
 		}},
-		{"migrate", "apply database migrations", func(ctx context.Context, cfg Config, args []string, stdout, stderr io.Writer) int {
+		{"migrate", "apply database migrations", func(ctx context.Context, cfg Config, args []string, _ io.Reader, stdout, stderr io.Writer) int {
 			if len(args) > 0 {
 				fmt.Fprint(stderr, usage())
 				return 2
 			}
 			return report(stderr, migrate(ctx, cfg, stdout))
 		}},
-		{"user", "manage users (add, list)", user},
+		{"user", "manage users (add, passwd, remove, list)", user},
 	}
 }
 
@@ -67,7 +67,7 @@ func report(stderr io.Writer, err error) int {
 
 // run dispatches a subcommand and returns the process exit code. Usage errors
 // (exit 2) are reported before configuration is loaded.
-func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage())
 		return 2
@@ -86,5 +86,5 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return report(stderr, err)
 	}
-	return cmd(ctx, cfg, args[1:], stdout, stderr)
+	return cmd(ctx, cfg, args[1:], stdin, stdout, stderr)
 }

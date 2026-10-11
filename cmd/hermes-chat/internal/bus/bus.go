@@ -32,7 +32,10 @@ type Clock func() time.Time
 // Service is the business-logic surface the app layer depends on.
 type Service interface {
 	Health(ctx context.Context) error
-	CreateHuman(ctx context.Context, username string) (Human, error)
+	CreateHuman(ctx context.Context, username, password string) (Human, error) // ErrValidation, ErrConflict
+	SetHumanPassword(ctx context.Context, username, password string) error     // ErrNotFound, ErrValidation; ends all that human's sessions
+	RemoveHuman(ctx context.Context, username string) error                    // ErrNotFound
+	GetHuman(ctx context.Context, id ulid.ULID) (Human, error)                 // ErrNotFound
 	ListHumans(ctx context.Context) ([]Human, error)
 }
 
