@@ -339,7 +339,9 @@ safe image type. Human uploads are v1.5 and will reuse this storage.
   stores only its SHA-256 hash.
 - The token goes in that Hermes profile's `.env`. The plugin sends it as a
   bearer token.
-- Revoking a token in the CLI closes that agent's live stream immediately.
+- Revoking a token in the CLI closes that agent's live stream within one
+  heartbeat interval (the CLI is a separate process; the stream re-checks its
+  token on each heartbeat).
 - One live stream per agent token; a second connection replaces the first.
 
 ### Admin CLI
@@ -378,6 +380,9 @@ manifest. Screens:
 
 ## 9. Technology decisions
 
+How the Go server's code is organized, and the libraries it is built from, are
+specified in `2026-10-11-chat-server-architecture-design.md`.
+
 Decided by Kai:
 
 - Go server, SQLite database, single cheap VPS.
@@ -395,8 +400,8 @@ rest; change freely if there is a reason):
   and cross-compiles cleanly. WAL mode.
 - **The binary serves HTTPS itself** and obtains its certificate from Let's
   Encrypt using `golang.org/x/crypto/acme/autocert`, with the certificate cache
-  in a directory on disk. A flag runs it as plain HTTP for local development or
-  behind a reverse proxy. CertMagic (the library Caddy uses) is the alternative
+  in a directory on disk. A config setting runs it as plain HTTP for local
+  development or behind a reverse proxy. CertMagic (the library Caddy uses) is the alternative
   if DNS challenges or more robust renewal are ever needed.
 - **Storage layout:** one SQLite file, one attachments directory, one
   certificate cache directory.
