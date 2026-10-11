@@ -49,8 +49,9 @@ Set through environment variables.
     hermes-chat user list        list users
 
 With no command or an unknown one, `hermes-chat` prints usage and exits 2
-without needing any configuration. `serve`, `user add`, and `user list` expect
-the database to be migrated already; run `migrate` first.
+without needing any configuration. `serve` and `migrate` apply migrations;
+`user add` and `user list` require the schema to be current, so run `migrate`
+first.
 
 `user add` creates a human without a password. Passwords arrive in a later
 stage, so login does not work yet.
