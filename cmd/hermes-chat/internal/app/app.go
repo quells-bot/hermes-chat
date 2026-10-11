@@ -4,6 +4,7 @@ package app
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -36,11 +37,14 @@ type Controller interface {
 	ListMessages(c *gin.Context)
 	PostMessage(c *gin.Context)
 	GetMessage(c *gin.Context)
+	Events(c *gin.Context)
 }
 
 // Options are the settings the handlers need.
 type Options struct {
-	CookieSecure bool // the Secure attribute on the session cookie
+	CookieSecure       bool          // the Secure attribute on the session cookie
+	HeartbeatInterval  time.Duration // between a stream's heartbeats; zero means DefaultHeartbeatInterval
+	StreamWriteTimeout time.Duration // for one write to a stream; zero means DefaultStreamWriteTimeout
 }
 
 type controller struct {
@@ -50,6 +54,12 @@ type controller struct {
 
 // NewController returns a Controller backed by svc.
 func NewController(svc bus.Service, opts Options) *controller {
+	if opts.HeartbeatInterval <= 0 {
+		opts.HeartbeatInterval = DefaultHeartbeatInterval
+	}
+	if opts.StreamWriteTimeout <= 0 {
+		opts.StreamWriteTimeout = DefaultStreamWriteTimeout
+	}
 	return &controller{svc: svc, opts: opts}
 }
 

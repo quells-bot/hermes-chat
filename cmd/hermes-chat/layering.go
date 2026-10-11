@@ -20,6 +20,7 @@ var forbidden = map[string][]string{
 	internalRoot + "/bus":     {internalRoot + "/app", internalRoot + "/storage/sqlcgen", "github.com/gin-gonic/gin", "net/http"},
 	internalRoot + "/storage": {internalRoot + "/bus", internalRoot + "/app", "github.com/gin-gonic/gin"},
 	internalRoot + "/reqid":   {internalRoot + "/app", internalRoot + "/bus", internalRoot + "/storage"},
+	internalRoot + "/sse":     {internalRoot + "/app", internalRoot + "/bus", internalRoot + "/storage"},
 }
 
 // within reports whether path is root or lies under it.
