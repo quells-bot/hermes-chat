@@ -76,8 +76,24 @@ type Repository interface {
 	GetLastMessageID(ctx context.Context, roomID string) (string, error)                       // ErrNotFound when the room has no messages
 
 	PutEvent(ctx context.Context, e Event) (int64, error)                                          // e.ID is ignored; returns the id the log assigned
-	ListEventsForHuman(ctx context.Context, humanID string, afterID, limit int64) ([]Event, error) // ascending id; only rooms the human is a member of now; empty, not nil
+	ListEventsForHuman(ctx context.Context, humanID string, afterID, limit int64) ([]Event, error) // ascending id; only rooms the human is a member of now, and only non-agent-targeted rows; empty, not nil
+	ListEventsForAgent(ctx context.Context, agentID string, afterID, limit int64) ([]Event, error) // ascending id; agent-targeted rows only; empty, not nil
 	GetLastEventID(ctx context.Context) (int64, error)                                             // 0 when the log is empty
+
+	PutDelivery(ctx context.Context, d Delivery) error                                             // ErrConflict on duplicate (room, agent, message)
+	GetDelivery(ctx context.Context, agentID, messageID string) (Delivery, error)                  // ErrNotFound
+	ListDeliveriesForMessage(ctx context.Context, roomID, messageID string) ([]Delivery, error)    // by agent handle; empty, not nil
+	ListDeliveriesInRange(ctx context.Context, roomID, firstID, lastID string) ([]Delivery, error) // by message id, then handle; empty, not nil
+	HeadWaiting(ctx context.Context, roomID, agentID string) (Delivery, bool, error)               // the pair's releasable head; false when none
+	ReleasableDeliveries(ctx context.Context, agentID string) ([]Delivery, error)                  // each pair's head, by room id; empty, not nil
+	SetDeliveryState(ctx context.Context, roomID, agentID, messageID, state string) error          // ErrNotFound
+	CancelDeliveries(ctx context.Context, roomID, agentID string) (int64, error)                   // waiting → cancelled; rows touched
+	ListAgentRoomIDs(ctx context.Context, agentID string) ([]string, error)                        // ordered by id; empty, not nil
+
+	PutActivity(ctx context.Context, a Activity) error                                        // ErrConflict on duplicate id
+	GetActivity(ctx context.Context, id string) (Activity, error)                             // ErrNotFound
+	SetActivityResult(ctx context.Context, id string, durationMs int64, succeeded bool) error // ErrNotFound, also for a remark
+	ListActivities(ctx context.Context, roomID, messageID string) ([]Activity, error)         // oldest first; empty, not nil
 }
 
 type repo struct {

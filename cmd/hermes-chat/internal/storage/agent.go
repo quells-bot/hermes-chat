@@ -24,6 +24,27 @@ func nullInt64(p *int64) sql.NullInt64 {
 	return sql.NullInt64{Int64: *p, Valid: true}
 }
 
+// nullBool bridges a *bool to the INTEGER column that stores it as 0 or 1.
+func nullBool(p *bool) sql.NullInt64 {
+	if p == nil {
+		return sql.NullInt64{}
+	}
+	v := int64(0)
+	if *p {
+		v = 1
+	}
+	return sql.NullInt64{Int64: v, Valid: true}
+}
+
+// boolPtr bridges an INTEGER column back to a *bool.
+func boolPtr(n sql.NullInt64) *bool {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Int64 != 0
+	return &v
+}
+
 func agentFromRow(row sqlcgen.Agent) Agent {
 	a := Agent{
 		ID: row.ID, Handle: row.Handle, DisplayName: row.DisplayName,
