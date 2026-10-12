@@ -1,6 +1,7 @@
 package storage_test
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,8 +13,8 @@ import (
 
 func sp(s string) *string { return &s }
 
-var trip = storage.Room{ID: "01JA00000000000000000000R1", Topic: "Trip planning", CreatedAtMs: 1791700000100}
-var dm = storage.Room{ID: "01JA00000000000000000000R2", DMHumanID: sp(kai.ID), DMAgentID: sp(scout.ID), CreatedAtMs: 1791700000200}
+var trip = storage.Room{ID: "01JA00000000000000000000R1", Topic: "Trip planning", CreatedAtMs: 1791700000100, TurnCap: 6}
+var dm = storage.Room{ID: "01JA00000000000000000000R2", DMHumanID: sp(kai.ID), DMAgentID: sp(scout.ID), CreatedAtMs: 1791700000200, TurnCap: 6}
 
 // seeded returns a repository holding kai, ada, scout, and atlas.
 func seeded(t *testing.T) storage.Repository {
@@ -147,4 +148,66 @@ func TestRoomMembers_UnknownRoomOrMemberIsRejected(t *testing.T) { // foreign ke
 	require.NoError(t, r.PutRoom(ctx, trip))
 	assert.Error(t, r.PutRoomHuman(ctx, storage.RoomHuman{RoomID: trip.ID, HumanID: "01JA0000000000000000000009"}))
 	assert.Error(t, r.PutRoomAgent(ctx, storage.RoomAgent{RoomID: trip.ID, AgentID: "01JA0000000000000000000009"}))
+}
+
+func TestRoom_PauseCapAndTurns(t *testing.T) {
+	r := seeded(t)
+	require.NoError(t, r.PutRoom(ctx, trip))
+	got, _ := r.GetRoom(ctx, trip.ID)
+	assert.Nil(t, got.PausedAtMs)
+	assert.Equal(t, "", got.PauseReason)
+	assert.EqualValues(t, 6, got.TurnCap)
+	assert.EqualValues(t, 0, got.AgentTurns)
+
+	require.NoError(t, r.SetRoomPause(ctx, trip.ID, ms(5), "turn_cap"))
+	require.NoError(t, r.SetRoomTurnCap(ctx, trip.ID, 3))
+	require.NoError(t, r.SetRoomAgentTurns(ctx, trip.ID, 2))
+	got, _ = r.GetRoom(ctx, trip.ID)
+	assert.Equal(t, ms(5), got.PausedAtMs)
+	assert.Equal(t, "turn_cap", got.PauseReason)
+	assert.EqualValues(t, 3, got.TurnCap)
+	assert.EqualValues(t, 2, got.AgentTurns)
+
+	require.NoError(t, r.SetRoomPause(ctx, trip.ID, nil, ""))
+	got, _ = r.GetRoom(ctx, trip.ID)
+	assert.Nil(t, got.PausedAtMs)
+
+	assert.Error(t, r.SetRoomTurnCap(ctx, trip.ID, 0)) // the table CHECKs 1..100
+	assert.Error(t, r.SetRoomTurnCap(ctx, trip.ID, 101))
+	assert.Error(t, r.SetRoomPause(ctx, trip.ID, ms(5), "because"))
+	assert.ErrorIs(t, r.SetRoomPause(ctx, "nope", ms(5), "human"), storage.ErrNotFound)
+	assert.ErrorIs(t, r.SetRoomTurnCap(ctx, "nope", 3), storage.ErrNotFound)
+	assert.ErrorIs(t, r.SetRoomAgentTurns(ctx, "nope", 1), storage.ErrNotFound)
+
+	// the list queries carry the same columns
+	require.NoError(t, r.PutRoomHuman(ctx, storage.RoomHuman{RoomID: trip.ID, HumanID: kai.ID, JoinedAtMs: 1}))
+	list, _ := r.ListRoomsByHuman(ctx, kai.ID)
+	require.Len(t, list, 1)
+	assert.EqualValues(t, 3, list[0].TurnCap)
+}
+
+func TestListAllRoomAgents(t *testing.T) {
+	r := seeded(t)
+	none, err := r.ListAllRoomAgents(ctx)
+	require.NoError(t, err)
+	assert.NotNil(t, none)
+	assert.Empty(t, none)
+	require.NoError(t, r.PutRoom(ctx, trip))
+	require.NoError(t, r.PutRoom(ctx, dm))
+	a := storage.RoomAgent{RoomID: trip.ID, AgentID: scout.ID, JoinedAtMs: 1}
+	b := storage.RoomAgent{RoomID: trip.ID, AgentID: atlas.ID, JoinedAtMs: 1}
+	c := storage.RoomAgent{RoomID: dm.ID, AgentID: scout.ID, JoinedAtMs: 1}
+	for _, m := range []storage.RoomAgent{a, b, c} {
+		require.NoError(t, r.PutRoomAgent(ctx, m))
+	}
+	got, err := r.ListAllRoomAgents(ctx)
+	require.NoError(t, err)
+	want := []storage.RoomAgent{a, b, c}
+	sort.Slice(want, func(i, j int) bool {
+		if want[i].RoomID != want[j].RoomID {
+			return want[i].RoomID < want[j].RoomID
+		}
+		return want[i].AgentID < want[j].AgentID
+	})
+	assert.Equal(t, want, got)
 }

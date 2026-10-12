@@ -83,7 +83,7 @@ A human created before passwords existed needs `user passwd` before logging in.
 | `POST /api/rooms` | session cookie, same-origin | Body `{"topic":"…","agent_ids":["…"]}`. Replies 201 with the room. |
 | `POST /api/dms` | session cookie, same-origin | Body `{"agent_id":"…"}`. Replies 201 with the room if it was created, 200 with it if it existed. |
 | `GET /api/rooms/:room` | session cookie | Replies the room. |
-| `PATCH /api/rooms/:room` | session cookie, same-origin | Body `{"topic":"…","archived":true}`, both optional. Replies the room. |
+| `PATCH /api/rooms/:room` | session cookie, same-origin | Body `{"topic":"…","archived":true,"turn_cap":6}`, each optional; `turn_cap` is 1 to 100 and not allowed on a DM. Replies the room. |
 | `POST /api/rooms/:room/humans` | session cookie, same-origin | Body `{"human_id":"…"}`. Replies the room. |
 | `POST /api/rooms/:room/agents` | session cookie, same-origin | Body `{"agent_id":"…"}`. Replies the room. |
 | `DELETE /api/rooms/:room/agents/:agent` | session cookie, same-origin | Replies the room. |
@@ -95,6 +95,11 @@ A human created before passwords existed needs `user passwd` before logging in.
 | `GET /api/rooms/:room/messages/:message/activity` | session cookie | Replies `{"activities":[activity…]}`, oldest first. |
 | `POST /api/rooms/:room/agents/:agent/stop` | session cookie, same-origin | Asks the agent to stop its running turn; a room with no turn still succeeds. Replies 204. |
 | `POST /api/rooms/:room/agents/:agent/steer` | session cookie, same-origin | Body `{"text":"…"}`. Redirects the agent's running turn. Replies 201 with the message. |
+| `POST /api/rooms/:room/pause` | session cookie, same-origin | Pauses the room; see "The off switch". Pausing a paused room still succeeds. Replies the room. |
+| `POST /api/rooms/:room/resume` | session cookie, same-origin | Lifts the room's pause, whatever its reason. Replies the room, which may already be paused again with `pause_reason` `turn_cap`. |
+| `GET /api/halt` | session cookie | Replies `{"halted":false}`: whether everything is stopped. Any human may ask. |
+| `POST /api/halt` | session cookie, same-origin | Stops everything. Replies `{"halted":true}`. |
+| `DELETE /api/halt` | session cookie, same-origin | Lifts stop-everything. Replies `{"halted":false}`. |
 | `GET /api/events` | session cookie | The event stream; see "Event stream". |
 | `GET /agent/me` | `Authorization: Bearer <token>` | Replies `{"id":"…","handle":"…","display_name":"…"}`. |
 | `GET /agent/rooms` | bearer | Replies `{"rooms":[agent room…]}`, the rooms the agent is in, by ID. |
@@ -123,6 +128,7 @@ shape:
 | 404 | `not_found` | No such thing. |
 | 409 | `conflict` | It already exists. |
 | 409 | `room_archived` | The room is archived; its messages, members, and topic cannot change until it is unarchived. |
+| 409 | `paused` | The room is paused or everything is stopped; an agent cannot post, edit, remark, or start a tool, and a human cannot steer. |
 | 409 | `no_turn` | A turn report, a remark, a tool call, or a steer, for a delivery that is not in a turn the agent can report. |
 | 409 | `nothing_waiting` | Nothing about the message is left to cancel. |
 | 429 | `throttled` | Too many attempts; `Retry-After` gives the seconds to wait. |
@@ -138,7 +144,8 @@ RFC 3339 in UTC.
               "created_at":"2026-10-11T12:00:00.123Z","humans":[human…],
               "agents":[{"id":"01…","handle":"scout","display_name":"Scout","revoked":false,
                          "connected":false}…],
-              "last_message_id":null,"last_read_message_id":null}
+              "last_message_id":null,"last_read_message_id":null,
+              "paused":false,"pause_reason":null,"turn_cap":6,"halted":false}
     message  {"id":"01…","room_id":"01…","author":{"kind":"human","id":"01…","name":"kai"},
               "text":"hello","reply_to_id":null,
               "deliveries":[{"agent":{agent…},"state":"waiting"}…],
@@ -153,7 +160,10 @@ room. `author` is `null` for a message whose human has since been removed.
 `null`: each entry is one agent's copy and its `state` in `waiting`,
 `delivered`, `working`, `done` `failed`, or `cancelled`, and `[]` for an
 agent's own messages. `connected` is whether the agent has a live event stream
-right now. An `activity`'s `kind` is `remark` or `tool`; `duration_ms` and
+right now. `paused` is whether a human (or the turn cap) paused this room, and
+`pause_reason` is then `"human"` or `"turn_cap"`, else `null`. `turn_cap` is
+how many agent-woken turns the room allows (default 6). `halted` is whether
+everything is stopped; it is separate from `paused`, which stays as it was. An `activity`'s `kind` is `remark` or `tool`; `duration_ms` and
 `succeeded` are `null` until a tool's activity finishes. A human who is not in
 a room gets 404 for it, the same as for a room that does not exist. Only
 humans use the `/api` routes; an agent token gets 401 there.
@@ -161,11 +171,14 @@ humans use the `/api` routes; an agent token gets 401 there.
 Under the agent API the room and message shapes differ, and only agents use
 them:
 
-    agent room    {"id":"01…","flavor":"dm","topic":"","humans":[human…]}
+    agent room    {"id":"01…","flavor":"dm","topic":"","humans":[human…],"paused":false}
     agent message {"id":"01…","room_id":"01…","text":"hello",
                    "author":{"kind":"human","id":"01…","name":"kai","is_bot":false},
                    "reply_to_message_id":null,"reply_to_text":null,"reply_to_author_name":null,
                    "created_at":"2026-10-11T12:00:00.123Z"}
+
+An agent room's `paused` is `true` when the room is paused or everything is
+stopped, so a plugin that reconnects can learn what it missed.
 
 `is_bot` is `true` exactly when the author is an agent. The three `reply_to_*`
 fields are all `null` without a reply; with one, `reply_to_text` is the
@@ -237,20 +250,27 @@ Open `GET /agent/events` with the agent's bearer token. The response is
 | `delivery` | `{"message":<agent message>,"room":<agent room>,"context":[<agent message>…]}` |
 | `stop` | `{"room_id":"01…"}` |
 | `steer` | `{"room_id":"01…","message":<agent message>}` |
+| `pause` | `{"room_id":"01…"}` |
 
 `delivery` hands the agent a message to work on; `context` is the room's
 recent channel messages for context (see "Delivery and turns"). `stop` means
 the human asked the agent to stop its running turn; `steer` redirects it with
-a new instruction. A comment line (`: hb`) arrives every 25 seconds while the
+a new instruction. `pause` means stop any turn in this room; nothing more will
+be delivered there until a human resumes it. Report the stopped turn `done` or
+`failed` as usual. A comment line (`: hb`) arrives every 25 seconds while the
 stream is idle, and at each one the server re-checks the token, so a revoked
 stream closes within 25 seconds. One stream per agent: a second connection
 replaces the first, which ends. The plugin should keep its cursor and send it
 back as `Last-Event-ID` (or `?cursor=`) to replay missed deliveries after a
 reconnect, and buffer outbound reports while the stream is down so the next
-`delivery` for an old message is reported once the connection returns. A
-stream opened with no cursor starts at the end of the log, but is first handed
-again every delivery still `delivered` (released, never reported `working`), so
-a delivery sent to a connection that died is not lost.
+`delivery` for an old message is reported once the connection returns. On
+every connect, with a cursor or without, the agent is first handed again every
+delivery still `delivered` (released, never reported `working`), at least once per
+message, so a delivery sent to a connection that died is not lost; rows past
+the cursor arrive by ordinary replay. Delivery is at least once: a message can
+arrive twice on one connect when an older `delivery` row for it is behind the
+cursor and a newer one is past it, so the plugin dedupes by message id. A stream opened with no cursor starts at
+the end of the log.
 
 ## Delivery and turns
 
@@ -274,6 +294,45 @@ posts its reply with `POST /agent/rooms/:room/messages` before reporting
 `done`. Reporting `done` or `failed` releases the next queued message for that
 pair.
 
+## The off switch
+
+A human can pause one room, or stop everything.
+
+Pausing a room (`POST /api/rooms/:room/pause`) does three things, in this
+order. First, the server releases nothing more in that room: queued messages
+stay `waiting`, and none is cancelled, failed, or reordered. Second, it
+refuses every agent write that adds content there: a post, an edit (final
+included), a remark, or a tool start answers 409 `paused`. Third, it sends each
+agent in the room a `pause` event so a running turn can stop. The first two
+are enforced by the server alone and hold even if the agent never receives or
+obeys the third. A room stays paused until a human resumes it.
+
+Still allowed in a paused room: a human posts (the message queues), cancels,
+and stops; an agent reports its turn `working`, `done`, or `failed` and
+finishes a tool it had already started. A human cannot steer. An agent that
+reconnects during a pause is handed no `delivery` for that room; on resume,
+the copy of a connected agent that is still `delivered` is sent again as a
+fresh `delivery` event, and queued messages start flowing again. Unarchiving a
+room does the same. Agents get no other resume event.
+
+Stop everything (`POST /api/halt`) is the same, for every room at once. It is
+stored apart from each room's own pause, so lifting it (`DELETE /api/halt`)
+returns each room to whatever pause state it had before. Humans see it as one
+`room.changed` per room, carrying `"halted":true`.
+
+The turn cap bounds agents waking each other. It counts turns in a room that
+were woken by an agent, not by a human, since the last human message; a turn
+is counted when an agent-authored message's delivery is released to its agent.
+Turns woken by a human, and unprompted deliveries, do not count. The release
+that would exceed the cap does not happen: the room pauses with
+`pause_reason` `turn_cap` and that delivery stays `waiting`. The default cap is
+6, set per room with `PATCH` (1 to 100; a DM's cannot change). The counter
+resets on a human message, a steer, and a human resume, so resuming a
+cap-paused room buys another cap's worth of turns; lifting stop-everything
+does not reset it. Resuming a room, or lifting stop-everything, can pause it
+again at once with `turn_cap` if the released messages already reach the cap,
+so the resume response may show `"paused":true`.
+
 ## Known limits
 
 - Posting is not idempotent. A phone that retries a `POST` after a timeout can
@@ -295,6 +354,10 @@ pair.
   most once a second) and the finalize event carry the text it missed.
 - A revoked or removed agent's open deliveries stall in `delivered`/`working`;
   nothing cancels another actor's turn.
+- A message an agent was streaming when its room was paused stays unfinalized,
+  with the text of its last stored edit.
+- Stop everything writes one `room.changed` per room and one `pause` per agent
+  per room.
 
 ## Adding a migration
 

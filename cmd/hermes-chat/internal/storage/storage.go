@@ -54,12 +54,17 @@ type Repository interface {
 	DeleteSessionsByHuman(ctx context.Context, humanID string) error
 	DeleteExpiredSessions(ctx context.Context, nowMs int64) error // rows with expires_at <= nowMs
 
-	PutRoom(ctx context.Context, r Room) error                                   // ErrConflict on duplicate id, or a second DM for the same human and agent
-	GetRoom(ctx context.Context, id string) (Room, error)                        // ErrNotFound
-	GetDMRoom(ctx context.Context, humanID, agentID string) (Room, error)        // ErrNotFound
-	ListRoomsByHuman(ctx context.Context, humanID string) ([]Room, error)        // ordered by id; archived rooms included; empty, not nil
-	SetRoomTopic(ctx context.Context, id, topic string) error                    // ErrNotFound
-	SetRoomArchivedAt(ctx context.Context, id string, archivedAtMs *int64) error // ErrNotFound; nil clears
+	PutRoom(ctx context.Context, r Room) error                                           // ErrConflict on duplicate id, or a second DM for the same human and agent
+	GetRoom(ctx context.Context, id string) (Room, error)                                // ErrNotFound
+	GetDMRoom(ctx context.Context, humanID, agentID string) (Room, error)                // ErrNotFound
+	ListRoomsByHuman(ctx context.Context, humanID string) ([]Room, error)                // ordered by id; archived rooms included; empty, not nil
+	SetRoomTopic(ctx context.Context, id, topic string) error                            // ErrNotFound
+	SetRoomArchivedAt(ctx context.Context, id string, archivedAtMs *int64) error         // ErrNotFound; nil clears
+	SetRoomPause(ctx context.Context, id string, pausedAtMs *int64, reason string) error // ErrNotFound; nil and "" clear
+	SetRoomTurnCap(ctx context.Context, id string, turnCap int64) error                  // ErrNotFound
+	SetRoomAgentTurns(ctx context.Context, id string, turns int64) error                 // ErrNotFound
+	GetHaltedAtMs(ctx context.Context) (*int64, error)                                   // nil while not halted
+	SetHaltedAtMs(ctx context.Context, haltedAtMs *int64) error                          // nil clears
 
 	PutRoomHuman(ctx context.Context, m RoomHuman) error                               // ErrConflict if already a member
 	GetRoomHuman(ctx context.Context, roomID, humanID string) (RoomHuman, error)       // ErrNotFound: not a member
@@ -69,24 +74,26 @@ type Repository interface {
 	PutRoomAgent(ctx context.Context, m RoomAgent) error                // ErrConflict if already a member
 	DeleteRoomAgent(ctx context.Context, roomID, agentID string) error  // ErrNotFound
 	ListRoomAgents(ctx context.Context, roomID string) ([]Agent, error) // ordered by handle; empty, not nil
+	ListAllRoomAgents(ctx context.Context) ([]RoomAgent, error)         // ordered by room id, then agent id; empty, not nil
 
 	PutMessage(ctx context.Context, m Message) error                                           // ErrConflict on duplicate id
 	GetMessage(ctx context.Context, id string) (Message, error)                                // ErrNotFound
 	ListMessages(ctx context.Context, roomID, beforeID string, limit int64) ([]Message, error) // newest first; beforeID "" starts at the newest; empty, not nil
 	GetLastMessageID(ctx context.Context, roomID string) (string, error)                       // ErrNotFound when the room has no messages
 
-	SetMessageBody(ctx context.Context, id, body string) error                                          // ErrNotFound
+	SetMessageBody(ctx context.Context, id, body string) error                       // ErrNotFound
 	FinalizeMessage(ctx context.Context, id, body string, finalizedAtMs int64) error // ErrNotFound; sets the body and marks the message finalized
 
-	PutEvent(ctx context.Context, e Event) (int64, error)                                          // e.ID is ignored; returns the id the log assigned
-	ListEventsForHuman(ctx context.Context, humanID string, afterID, limit int64) ([]Event, error) // ascending id; only rooms the human is a member of now, and only non-agent-targeted rows; empty, not nil
-	ListEventsForAgent(ctx context.Context, agentID string, afterID, limit int64) ([]Event, error) // ascending id; agent-targeted rows only; empty, not nil
+	PutEvent(ctx context.Context, e Event) (int64, error)                                                   // e.ID is ignored; returns the id the log assigned
+	ListEventsForHuman(ctx context.Context, humanID string, afterID, limit int64) ([]Event, error)          // ascending id; only rooms the human is a member of now, and only non-agent-targeted rows; empty, not nil
+	ListEventsForAgent(ctx context.Context, agentID string, afterID, limit int64) ([]Event, error)          // ascending id; agent-targeted rows only; empty, not nil
 	ListUnacknowledgedDeliveryEvents(ctx context.Context, agentID string, throughID int64) ([]Event, error) // ascending id; the delivery rows, up to throughID, of the agent's deliveries still in 'delivered'; empty, not nil
-	GetLastEventID(ctx context.Context) (int64, error)                                             // 0 when the log is empty
+	GetLastEventID(ctx context.Context) (int64, error)                                                      // 0 when the log is empty
 
 	PutDelivery(ctx context.Context, d Delivery) error                                             // ErrConflict on duplicate (room, agent, message)
 	GetDelivery(ctx context.Context, agentID, messageID string) (Delivery, error)                  // ErrNotFound
 	GetWorkingDelivery(ctx context.Context, roomID, agentID string) (Delivery, error)              // ErrNotFound: the pair's only working turn is its currently-working delivery
+	GetDeliveredDelivery(ctx context.Context, roomID, agentID string) (Delivery, error)            // ErrNotFound: the pair has no delivery in 'delivered'
 	ListDeliveriesForMessage(ctx context.Context, roomID, messageID string) ([]Delivery, error)    // by agent handle; empty, not nil
 	ListDeliveriesInRange(ctx context.Context, roomID, firstID, lastID string) ([]Delivery, error) // by message id, then handle; empty, not nil
 	HeadWaiting(ctx context.Context, roomID, agentID string) (Delivery, bool, error)               // the pair's releasable head; false when none

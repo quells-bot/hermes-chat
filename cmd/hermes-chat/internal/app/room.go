@@ -137,7 +137,7 @@ func (h *controller) GetRoom(c *gin.Context) {
 	})
 }
 
-// UpdateRoom changes a room's topic or archived state; absent or null fields are left alone.
+// UpdateRoom changes a room's topic, archived state, or turn cap; absent or null fields are left alone.
 func (h *controller) UpdateRoom(c *gin.Context) {
 	roomID, ok := pathID(c, "room")
 	if !ok {
@@ -146,11 +146,12 @@ func (h *controller) UpdateRoom(c *gin.Context) {
 	var body struct {
 		Topic    *string `json:"topic"`
 		Archived *bool   `json:"archived"`
+		TurnCap  *int    `json:"turn_cap"`
 	}
 	if !readJSON(c, maxBody, &body) {
 		return
 	}
-	room, err := h.svc.UpdateRoom(c.Request.Context(), actorFrom(c), roomID, bus.RoomUpdate{Topic: body.Topic, Archived: body.Archived})
+	room, err := h.svc.UpdateRoom(c.Request.Context(), actorFrom(c), roomID, bus.RoomUpdate{Topic: body.Topic, Archived: body.Archived, TurnCap: body.TurnCap})
 	if err != nil {
 		writeError(c, err)
 		return

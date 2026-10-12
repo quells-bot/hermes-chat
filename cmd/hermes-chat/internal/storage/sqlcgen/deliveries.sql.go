@@ -26,6 +26,29 @@ func (q *Queries) CancelDeliveries(ctx context.Context, arg CancelDeliveriesPara
 	return result.RowsAffected()
 }
 
+const getDeliveredDelivery = `-- name: GetDeliveredDelivery :one
+SELECT room_id, agent_id, message_id, state FROM deliveries
+WHERE room_id = ? AND agent_id = ? AND state = 'delivered'
+ORDER BY message_id LIMIT 1
+`
+
+type GetDeliveredDeliveryParams struct {
+	RoomID  string
+	AgentID string
+}
+
+func (q *Queries) GetDeliveredDelivery(ctx context.Context, arg GetDeliveredDeliveryParams) (Delivery, error) {
+	row := q.db.QueryRowContext(ctx, getDeliveredDelivery, arg.RoomID, arg.AgentID)
+	var i Delivery
+	err := row.Scan(
+		&i.RoomID,
+		&i.AgentID,
+		&i.MessageID,
+		&i.State,
+	)
+	return i, err
+}
+
 const getDelivery = `-- name: GetDelivery :one
 SELECT room_id, agent_id, message_id, state FROM deliveries WHERE agent_id = ? AND message_id = ?
 `

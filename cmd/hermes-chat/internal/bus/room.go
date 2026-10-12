@@ -37,15 +37,32 @@ type Room struct {
 	Agents            []RoomAgent // ordered by handle
 	LastMessageID     ulid.ULID   // zero when the room has no messages
 	LastReadMessageID ulid.ULID   // the viewer's read marker; zero when nothing is read
+	PausedAt          time.Time   // zero while running
+	PauseReason       PauseReason // PauseNone while running
+	TurnCap           int         // agent-woken turns allowed since the last human message
+	Halted            bool        // whether everything is stopped
 }
 
 // Archived reports whether the room is archived.
 func (r Room) Archived() bool { return !r.ArchivedAt.IsZero() }
 
-// RoomUpdate changes what is non-nil. Archived is applied before Topic.
+// Paused reports whether the room itself is paused.
+func (r Room) Paused() bool { return !r.PausedAt.IsZero() }
+
+// PauseReason says why a room is paused.
+type PauseReason string
+
+const (
+	PauseNone    PauseReason = ""         // the room is running
+	PauseHuman   PauseReason = "human"    // a human paused it
+	PauseTurnCap PauseReason = "turn_cap" // its agents reached the turn cap
+)
+
+// RoomUpdate changes what is non-nil. Archived is applied first, then Topic, then TurnCap.
 type RoomUpdate struct {
 	Topic    *string
 	Archived *bool
+	TurnCap  *int // 1 to MaxTurnCap
 }
 
 func validateTopic(topic string) (string, error) {
@@ -139,9 +156,13 @@ func (s *service) buildRoomLayout(ctx context.Context, r storage.Repository, row
 		ID: id, Flavor: roomFlavor(row, len(agentRows)), Topic: row.Topic,
 		CreatedAt: time.UnixMilli(row.CreatedAtMs).UTC(),
 		Humans:    make([]Human, 0, len(humanRows)), Agents: make([]RoomAgent, 0, len(agentRows)),
+		PauseReason: PauseReason(row.PauseReason), TurnCap: int(row.TurnCap),
 	}
 	if row.ArchivedAtMs != nil {
 		room.ArchivedAt = time.UnixMilli(*row.ArchivedAtMs).UTC()
+	}
+	if row.PausedAtMs != nil {
+		room.PausedAt = time.UnixMilli(*row.PausedAtMs).UTC()
 	}
 	for _, hr := range humanRows {
 		h, err := humanFromRow(hr)
@@ -157,6 +178,11 @@ func (s *service) buildRoomLayout(ctx context.Context, r storage.Repository, row
 		}
 		room.Agents = append(room.Agents, RoomAgent{Agent: a, Connected: s.hub.agentConnected(a.ID)})
 	}
+	halted, err := r.GetHaltedAtMs(ctx)
+	if err != nil {
+		return Room{}, fmt.Errorf("get halt: %w", err)
+	}
+	room.Halted = halted != nil
 	last, err := r.GetLastMessageID(ctx, row.ID)
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return Room{}, fmt.Errorf("get last message: %w", err)
@@ -399,7 +425,8 @@ func (s *service) mutateRoom(ctx context.Context, op string, actor Actor, roomID
 	return s.GetRoom(ctx, actor, roomID)
 }
 
-// UpdateRoom applies the non-nil fields of u: Archived first, then Topic.
+// UpdateRoom applies the non-nil fields of u: Archived first, then Topic, then
+// TurnCap. Neither the topic nor the cap of an archived room can be changed.
 func (s *service) UpdateRoom(ctx context.Context, actor Actor, roomID ulid.ULID, u RoomUpdate) (Room, error) {
 	return s.mutateRoom(ctx, "update room", actor, roomID, true, func(r storage.Repository, row storage.Room, at time.Time) (bool, error) {
 		archived := row.ArchivedAtMs != nil
@@ -417,28 +444,42 @@ func (s *service) UpdateRoom(ctx context.Context, actor Actor, roomID ulid.ULID,
 			changed = true
 			if !*u.Archived {
 				// the room is live again, so the queue thaws to connected agents
-				if err := s.thawQueue(ctx, r, row, at); err != nil {
+				if err := s.resumeDeliveries(ctx, r, row.ID, at); err != nil {
 					return false, err
 				}
 			}
 		}
-		if u.Topic == nil {
-			return changed, nil
+		if u.Topic != nil {
+			if archived {
+				return false, ErrRoomArchived
+			}
+			topic, err := validateTopic(*u.Topic)
+			if err != nil {
+				return false, err
+			}
+			if topic != row.Topic {
+				if err := r.SetRoomTopic(ctx, row.ID, topic); err != nil {
+					return false, fmt.Errorf("set topic: %w", err)
+				}
+				changed = true
+			}
 		}
-		if archived {
-			return false, ErrRoomArchived
+		if u.TurnCap != nil {
+			if archived {
+				return false, ErrRoomArchived
+			}
+			turnCap := int64(*u.TurnCap)
+			if turnCap < 1 || turnCap > MaxTurnCap {
+				return false, errTurnCap
+			}
+			if turnCap != row.TurnCap {
+				if err := r.SetRoomTurnCap(ctx, row.ID, turnCap); err != nil {
+					return false, fmt.Errorf("set turn cap: %w", err)
+				}
+				changed = true
+			}
 		}
-		topic, err := validateTopic(*u.Topic)
-		if err != nil {
-			return false, err
-		}
-		if topic == row.Topic {
-			return changed, nil
-		}
-		if err := r.SetRoomTopic(ctx, row.ID, topic); err != nil {
-			return false, fmt.Errorf("set topic: %w", err)
-		}
-		return true, nil
+		return changed, nil
 	})
 }
 
@@ -506,25 +547,4 @@ func (s *service) RemoveRoomAgent(ctx context.Context, actor Actor, roomID, agen
 		}
 		return true, nil
 	})
-}
-
-// thawQueue releases the current head to every room agent after the room is
-// live again: an unarchived room's queue thaws to its connected agents.
-func (s *service) thawQueue(ctx context.Context, r storage.Repository, row storage.Room, at time.Time) error {
-	live := row
-	live.ArchivedAtMs = nil
-	agentRows, err := r.ListRoomAgents(ctx, row.ID)
-	if err != nil {
-		return fmt.Errorf("list room agents: %w", err)
-	}
-	for _, ar := range agentRows {
-		a, err := agentFromRow(ar)
-		if err != nil {
-			return err
-		}
-		if err := s.releaseHead(ctx, r, live, a, at, true); err != nil {
-			return err
-		}
-	}
-	return nil
 }

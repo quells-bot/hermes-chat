@@ -2,13 +2,13 @@
 INSERT INTO rooms (id, topic, dm_human_id, dm_agent_id, created_at, archived_at) VALUES (?, ?, ?, ?, ?, ?);
 
 -- name: GetRoom :one
-SELECT id, topic, dm_human_id, dm_agent_id, created_at, archived_at FROM rooms WHERE id = ?;
+SELECT id, topic, dm_human_id, dm_agent_id, created_at, archived_at, paused_at, pause_reason, turn_cap, agent_turns FROM rooms WHERE id = ?;
 
 -- name: GetDMRoom :one
-SELECT id, topic, dm_human_id, dm_agent_id, created_at, archived_at FROM rooms WHERE dm_human_id = ? AND dm_agent_id = ?;
+SELECT id, topic, dm_human_id, dm_agent_id, created_at, archived_at, paused_at, pause_reason, turn_cap, agent_turns FROM rooms WHERE dm_human_id = ? AND dm_agent_id = ?;
 
 -- name: ListRoomsByHuman :many
-SELECT r.id, r.topic, r.dm_human_id, r.dm_agent_id, r.created_at, r.archived_at
+SELECT r.id, r.topic, r.dm_human_id, r.dm_agent_id, r.created_at, r.archived_at, r.paused_at, r.pause_reason, r.turn_cap, r.agent_turns
 FROM rooms r JOIN room_humans rh ON rh.room_id = r.id
 WHERE rh.human_id = ?
 ORDER BY r.id;
@@ -45,3 +45,15 @@ SELECT a.id, a.handle, a.display_name, a.token_hash, a.revoked_at, a.created_at
 FROM agents a JOIN room_agents ra ON ra.agent_id = a.id
 WHERE ra.room_id = ?
 ORDER BY a.handle;
+
+-- name: SetRoomPause :execrows
+UPDATE rooms SET paused_at = ?, pause_reason = ? WHERE id = ?;
+
+-- name: SetRoomTurnCap :execrows
+UPDATE rooms SET turn_cap = ? WHERE id = ?;
+
+-- name: SetRoomAgentTurns :execrows
+UPDATE rooms SET agent_turns = ? WHERE id = ?;
+
+-- name: ListAllRoomAgents :many
+SELECT room_id, agent_id, joined_at FROM room_agents ORDER BY room_id, agent_id;

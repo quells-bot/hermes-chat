@@ -48,6 +48,11 @@ type Event struct {
 	AgentID   sql.NullString
 }
 
+type Halt struct {
+	ID       int64
+	HaltedAt sql.NullInt64
+}
+
 type Human struct {
 	ID           string
 	Username     string
@@ -67,12 +72,16 @@ type Message struct {
 }
 
 type Room struct {
-	ID         string
-	Topic      string
-	DmHumanID  sql.NullString
-	DmAgentID  sql.NullString
-	CreatedAt  int64
-	ArchivedAt sql.NullInt64
+	ID          string
+	Topic       string
+	DmHumanID   sql.NullString
+	DmAgentID   sql.NullString
+	CreatedAt   int64
+	ArchivedAt  sql.NullInt64
+	PausedAt    sql.NullInt64
+	PauseReason string
+	TurnCap     int64
+	AgentTurns  int64
 }
 
 type RoomAgent struct {

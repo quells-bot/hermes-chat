@@ -13,6 +13,10 @@ type Room struct {
 	DMHumanID, DMAgentID *string // both set for a DM, both nil otherwise
 	CreatedAtMs          int64   // Unix milliseconds, UTC
 	ArchivedAtMs         *int64  // nil while live
+	PausedAtMs           *int64  // nil while running
+	PauseReason          string  // "" while running, else "human" or "turn_cap"
+	TurnCap              int64   // agent turns allowed since the last human message, 1..100
+	AgentTurns           int64   // agent-woken turns counted since the last human message
 }
 
 // RoomHuman is a human's membership in a room.
@@ -53,6 +57,11 @@ func roomFromRow(row sqlcgen.Room) Room {
 		v := row.ArchivedAt.Int64
 		rm.ArchivedAtMs = &v
 	}
+	if row.PausedAt.Valid {
+		v := row.PausedAt.Int64
+		rm.PausedAtMs = &v
+	}
+	rm.PauseReason, rm.TurnCap, rm.AgentTurns = row.PauseReason, row.TurnCap, row.AgentTurns
 	return rm
 }
 
@@ -100,6 +109,18 @@ func (r *repo) SetRoomTopic(ctx context.Context, id, topic string) error {
 
 func (r *repo) SetRoomArchivedAt(ctx context.Context, id string, archivedAtMs *int64) error {
 	return requireRow(r.writes.SetRoomArchivedAt(ctx, sqlcgen.SetRoomArchivedAtParams{ArchivedAt: nullInt64(archivedAtMs), ID: id}))
+}
+
+func (r *repo) SetRoomPause(ctx context.Context, id string, pausedAtMs *int64, reason string) error {
+	return requireRow(r.writes.SetRoomPause(ctx, sqlcgen.SetRoomPauseParams{PausedAt: nullInt64(pausedAtMs), PauseReason: reason, ID: id}))
+}
+
+func (r *repo) SetRoomTurnCap(ctx context.Context, id string, turnCap int64) error {
+	return requireRow(r.writes.SetRoomTurnCap(ctx, sqlcgen.SetRoomTurnCapParams{TurnCap: turnCap, ID: id}))
+}
+
+func (r *repo) SetRoomAgentTurns(ctx context.Context, id string, turns int64) error {
+	return requireRow(r.writes.SetRoomAgentTurns(ctx, sqlcgen.SetRoomAgentTurnsParams{AgentTurns: turns, ID: id}))
 }
 
 func (r *repo) PutRoomHuman(ctx context.Context, m RoomHuman) error {
@@ -154,6 +175,18 @@ func (r *repo) ListRoomAgents(ctx context.Context, roomID string) ([]Agent, erro
 	out := make([]Agent, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, agentFromRow(row))
+	}
+	return out, nil
+}
+
+func (r *repo) ListAllRoomAgents(ctx context.Context) ([]RoomAgent, error) {
+	rows, err := r.reads.ListAllRoomAgents(ctx)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := make([]RoomAgent, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, RoomAgent{RoomID: row.RoomID, AgentID: row.AgentID, JoinedAtMs: row.JoinedAt})
 	}
 	return out, nil
 }

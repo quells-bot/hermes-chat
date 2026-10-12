@@ -154,8 +154,9 @@ type Subscription struct {
 	cursor int64
 	wake   chan struct{} // sent to and closed by the hub alone
 	edits  chan LiveEdit // buffered live edits; nil for an agent's subscription
-	// again holds the delivery rows of an agent's unacknowledged deliveries,
-	// which a stream opened without a cursor is handed once more.
+	// again holds the newest delivery row of each of an agent's unacknowledged
+	// deliveries at or behind its starting cursor; every agent stream is handed
+	// them once more (delivery is at-least-once; the plugin dedupes by message id).
 	again []storage.Event
 }
 
@@ -169,6 +170,8 @@ func (s *Subscription) Edits() <-chan LiveEdit { return s.edits }
 // that follows releases its waiting queue; the presence rows and the releases
 // commit together, one ring. A second subscription for the same agent replaces
 // the first: the old one's wake channel is closed, so its handler returns.
+// An agent is also handed again its unacknowledged deliveries at or behind the
+// cursor, whatever cursor it names: delivery is at-least-once.
 func (s *service) Subscribe(ctx context.Context, actor Actor, after int64) (*Subscription, error) {
 	if after < FromNow {
 		return nil, ValidationError{Message: "cursor must not be negative"}
@@ -181,15 +184,19 @@ func (s *service) Subscribe(ctx context.Context, actor Actor, after int64) (*Sub
 	if fromNow || after > last {
 		after = last
 	}
-	// An agent that names no cursor remembers nothing, so a delivery released
-	// to a stream that died before reading it would hold its pair's queue for
-	// good. Hand those over again: the same log rows, not a second release.
+	// A delivery released to a stream that died before reading it, or skipped
+	// while its room was paused, would hold its pair's queue for good if the
+	// agent's cursor has moved past its row. So every agent subscribe hands
+	// over again the deliveries still 'delivered' whose rows lie at or behind
+	// the starting cursor (rows past it arrive by ordinary replay): the same
+	// log rows, not a second release, one per message.
 	var again []storage.Event
-	if fromNow && actor.Kind == ActorAgent {
-		again, err = s.repo.ListUnacknowledgedDeliveryEvents(ctx, actor.ID.String(), last)
+	if actor.Kind == ActorAgent {
+		rows, err := s.repo.ListUnacknowledgedDeliveryEvents(ctx, actor.ID.String(), after)
 		if err != nil {
 			return nil, fmt.Errorf("subscribe: list unacknowledged deliveries: %w", err)
 		}
+		again = newestPerSubject(rows)
 	}
 	// The cursor was read before the presence sweep, so the events it commits
 	// lie past it and the first Poll reads them.
@@ -222,6 +229,21 @@ func (s *service) Subscribe(ctx context.Context, actor Actor, after int64) (*Sub
 	return sub, nil
 }
 
+// newestPerSubject keeps the last row for each subject, in ascending order.
+func newestPerSubject(rows []storage.Event) []storage.Event {
+	newest := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		newest[row.SubjectID] = row.ID
+	}
+	out := make([]storage.Event, 0, len(newest))
+	for _, row := range rows {
+		if newest[row.SubjectID] == row.ID {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
 // releaseSweep releases every releasable delivery head for the agent. Call it
 // inside a record transaction; at stamps the events it writes.
 func (s *service) releaseSweep(ctx context.Context, r storage.Repository, agentID ulid.ULID, at time.Time) error {
@@ -230,10 +252,6 @@ func (s *service) releaseSweep(ctx context.Context, r storage.Repository, agentI
 		return fmt.Errorf("list releasable: %w", err)
 	}
 	for _, d := range rows {
-		roomRow, err := r.GetRoom(ctx, d.RoomID)
-		if err != nil {
-			return fmt.Errorf("get room: %w", err)
-		}
 		ar, err := r.GetAgentByID(ctx, d.AgentID)
 		if err != nil {
 			return fmt.Errorf("get agent: %w", err)
@@ -242,7 +260,7 @@ func (s *service) releaseSweep(ctx context.Context, r storage.Repository, agentI
 		if err != nil {
 			return err
 		}
-		if err := s.releaseHead(ctx, r, roomRow, agent, at, true); err != nil {
+		if err := s.releaseHead(ctx, r, d.RoomID, agent, at, true); err != nil {
 			return err
 		}
 	}
@@ -397,10 +415,23 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 			return Event{}, false, err
 		}
 		e.Activity = &a // the activity carries its turn's message id
-	case EventControlStop:
+	case EventControlStop, EventControlPause:
 		// There is nothing to load: the event's subject is the room itself,
-		// which names the turn's room, already set on e.RoomID.
+		// already set on e.RoomID.
 	case EventControlSteer:
+		// A closed room hands an agent no human text, even a steer written
+		// before the pause that the agent missed while its stream was down.
+		// The skipped steer is dropped: resuming the room does not send it.
+		roomRow, err := r.GetRoom(ctx, row.RoomID)
+		if errors.Is(err, storage.ErrNotFound) {
+			return Event{}, false, nil
+		}
+		if err != nil {
+			return Event{}, false, fmt.Errorf("get room: %w", err)
+		}
+		if closed, err := paused(ctx, r, roomRow); err != nil || closed {
+			return Event{}, false, err
+		}
 		msgRow, err := r.GetMessage(ctx, row.SubjectID)
 		if errors.Is(err, storage.ErrNotFound) {
 			return Event{}, false, nil
@@ -453,6 +484,11 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 		}
 		if err != nil {
 			return Event{}, false, fmt.Errorf("get room: %w", err)
+		}
+		// A closed room hands nothing over, not even a delivery already in the
+		// log; resuming the room hands it over again.
+		if closed, err := paused(ctx, r, roomRow); err != nil || closed {
+			return Event{}, false, err
 		}
 		room, err := s.svc.loadRoomForAgent(ctx, r, roomRow)
 		if err != nil {

@@ -49,6 +49,14 @@ func (r *repo) GetWorkingDelivery(ctx context.Context, roomID, agentID string) (
 	return deliveryFromRow(row), nil
 }
 
+func (r *repo) GetDeliveredDelivery(ctx context.Context, roomID, agentID string) (Delivery, error) {
+	row, err := r.reads.GetDeliveredDelivery(ctx, sqlcgen.GetDeliveredDeliveryParams{RoomID: roomID, AgentID: agentID})
+	if err != nil {
+		return Delivery{}, mapErr(err)
+	}
+	return deliveryFromRow(row), nil
+}
+
 func (r *repo) ListDeliveriesForMessage(ctx context.Context, roomID, messageID string) ([]Delivery, error) {
 	rows, err := r.reads.ListDeliveriesForMessage(ctx, sqlcgen.ListDeliveriesForMessageParams{RoomID: roomID, MessageID: messageID})
 	if err != nil {

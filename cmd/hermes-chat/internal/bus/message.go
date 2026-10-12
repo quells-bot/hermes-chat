@@ -199,6 +199,14 @@ func (s *service) PostMessage(ctx context.Context, actor Actor, roomID ulid.ULID
 		if row.ArchivedAtMs != nil {
 			return ErrRoomArchived
 		}
+		if actor.Kind == ActorAgent {
+			// a human may still post into a closed room; the message queues
+			if closed, err := paused(ctx, r, row); err != nil {
+				return err
+			} else if closed {
+				return ErrPaused
+			}
+		}
 		var replyRow *storage.Message
 		var replyToID *string
 		if !replyTo.IsZero() {
@@ -243,8 +251,14 @@ func (s *service) PostMessage(ctx context.Context, actor Actor, roomID ulid.ULID
 		if err := putEvent(ctx, r, EventMessagePosted, row.ID, msg.ID, at); err != nil {
 			return err
 		}
+		if actor.Kind == ActorHuman {
+			// a human message starts the agent-turn count over
+			if err := resetAgentTurns(ctx, r, row); err != nil {
+				return err
+			}
+		}
 		for _, a := range wake {
-			if err := s.releaseHead(ctx, r, row, a, at, false); err != nil {
+			if err := s.releaseHead(ctx, r, row.ID, a, at, false); err != nil {
 				return err
 			}
 		}
@@ -343,7 +357,7 @@ func (s *service) MarkRoomRead(ctx context.Context, actor Actor, roomID, message
 const editThrottleInterval = time.Second
 
 // EditMessage rewrites the body of a message the actor agent wrote, in a room
-// it is still in. A final edit always writes the row and one message.edited
+// it is still in and that is open to agents (ErrPaused otherwise). A final edit always writes the row and one message.edited
 // event, and marks the message finalized; a non-final edit writes the row only
 // when the last write for that message is at least editThrottleInterval old,
 // and changes nothing once the message is finalized. Every edit that counts,
@@ -376,6 +390,9 @@ func (s *service) EditMessage(ctx context.Context, actor Actor, messageID ulid.U
 			return ErrForbidden
 		}
 		if err := requireAgentInRoom(ctx, r, row.RoomID, actor.ID); err != nil {
+			return err
+		}
+		if err := requireRoomOpen(ctx, r, row.RoomID); err != nil {
 			return err
 		}
 		if row.FinalizedAtMs != nil && !final {

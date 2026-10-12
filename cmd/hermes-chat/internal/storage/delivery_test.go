@@ -154,3 +154,20 @@ func TestListAgentRoomIDs(t *testing.T) {
 	assert.NotNil(t, none)
 	assert.Empty(t, none)
 }
+
+func TestGetDeliveredDelivery(t *testing.T) {
+	r := roomed(t)
+	m1 := msg("1", trip.ID, kai.ID)
+	require.NoError(t, r.PutMessage(ctx, m1))
+	d := storage.Delivery{RoomID: trip.ID, AgentID: scout.ID, MessageID: m1.ID, State: "waiting"}
+	require.NoError(t, r.PutDelivery(ctx, d))
+	_, err := r.GetDeliveredDelivery(ctx, trip.ID, scout.ID)
+	assert.ErrorIs(t, err, storage.ErrNotFound)
+	require.NoError(t, r.SetDeliveryState(ctx, trip.ID, scout.ID, m1.ID, "delivered"))
+	got, err := r.GetDeliveredDelivery(ctx, trip.ID, scout.ID)
+	require.NoError(t, err)
+	d.State = "delivered"
+	assert.Equal(t, d, got)
+	_, err = r.GetDeliveredDelivery(ctx, trip.ID, atlas.ID)
+	assert.ErrorIs(t, err, storage.ErrNotFound)
+}

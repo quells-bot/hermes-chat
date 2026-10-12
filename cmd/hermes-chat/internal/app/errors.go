@@ -26,6 +26,7 @@ var errorTable = []errorRow{
 	{bus.ErrUnauthenticated, http.StatusUnauthorized, "unauthenticated", "authentication required"},
 	{bus.ErrForbidden, http.StatusForbidden, "forbidden", "not allowed"},
 	{bus.ErrNotFound, http.StatusNotFound, "not_found", "not found"},
+	{bus.ErrPaused, http.StatusConflict, "paused", "the room is paused or everything is stopped"},
 	{bus.ErrConflict, http.StatusConflict, "conflict", "already exists"},
 	{bus.ErrRoomArchived, http.StatusConflict, "room_archived", "room is archived"},
 	{bus.ErrNoTurn, http.StatusConflict, "no_turn", "no turn is running"},
