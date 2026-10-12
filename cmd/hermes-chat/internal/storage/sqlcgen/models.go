@@ -63,6 +63,7 @@ type Message struct {
 	ReplyToID     sql.NullString
 	Body          string
 	CreatedAt     int64
+	FinalizedAt   sql.NullInt64
 }
 
 type Room struct {

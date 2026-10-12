@@ -342,11 +342,12 @@ func (s *service) MarkRoomRead(ctx context.Context, actor Actor, roomID, message
 // editThrottleInterval is how long a non-final edit may skip writing the row.
 const editThrottleInterval = time.Second
 
-// EditMessage rewrites the body of a message the actor agent wrote. A final
-// edit always writes the row and one message.edited event; a non-final edit
-// writes the row only when the last write for that message is at least
-// editThrottleInterval old. Every edit, final included, is broadcast to live
-// human streams.
+// EditMessage rewrites the body of a message the actor agent wrote, in a room
+// it is still in. A final edit always writes the row and one message.edited
+// event, and marks the message finalized; a non-final edit writes the row only
+// when the last write for that message is at least editThrottleInterval old,
+// and changes nothing once the message is finalized. Every edit that counts,
+// final included, is broadcast to the live streams of the room's humans.
 func (s *service) EditMessage(ctx context.Context, actor Actor, messageID ulid.ULID, text string, final bool) error {
 	if !validMessageText(text) {
 		return errMessageText
@@ -362,6 +363,7 @@ func (s *service) EditMessage(ctx context.Context, actor Actor, messageID ulid.U
 		write = true
 	}
 	s.editWrites.mu.Unlock()
+	var hear []ulid.ULID // the room's humans; empty when the edit changed nothing
 	err := s.record(ctx, func(r storage.Repository) error {
 		row, err := r.GetMessage(ctx, messageID.String())
 		if errors.Is(err, storage.ErrNotFound) {
@@ -373,7 +375,30 @@ func (s *service) EditMessage(ctx context.Context, actor Actor, messageID ulid.U
 		if row.AuthorAgentID == nil || *row.AuthorAgentID != actor.ID.String() {
 			return ErrForbidden
 		}
-		if write {
+		if err := requireAgentInRoom(ctx, r, row.RoomID, actor.ID); err != nil {
+			return err
+		}
+		if row.FinalizedAtMs != nil && !final {
+			// A non-final edit that arrives after the final one is stale (a
+			// retry, or two requests that crossed): the final text stands.
+			return nil
+		}
+		humans, err := r.ListRoomHumans(ctx, row.RoomID)
+		if err != nil {
+			return fmt.Errorf("list room humans: %w", err)
+		}
+		for _, h := range humans {
+			id, err := ulid.ParseStrict(h.ID)
+			if err != nil {
+				return fmt.Errorf("stored human has an invalid id %q: %w", h.ID, err)
+			}
+			hear = append(hear, id)
+		}
+		if final {
+			if err := r.FinalizeMessage(ctx, messageID.String(), text, at.UnixMilli()); err != nil {
+				return fmt.Errorf("finalize message: %w", err)
+			}
+		} else if write {
 			if err := r.SetMessageBody(ctx, messageID.String(), text); err != nil {
 				return fmt.Errorf("set message body: %w", err)
 			}
@@ -394,7 +419,8 @@ func (s *service) EditMessage(ctx context.Context, actor Actor, messageID ulid.U
 	if err != nil {
 		return wrapOp("edit message", err)
 	}
-	// Live browsers see every edit immediately, so broadcast after the commit.
-	s.hub.broadcastEdit(LiveEdit{MessageID: messageID, Text: text})
+	// Live browsers in the room see every edit immediately, so broadcast after
+	// the commit.
+	s.hub.broadcastEdit(LiveEdit{MessageID: messageID, Text: text}, hear)
 	return nil
 }

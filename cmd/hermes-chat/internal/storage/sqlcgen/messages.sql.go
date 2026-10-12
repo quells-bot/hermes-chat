@@ -10,6 +10,24 @@ import (
 	"database/sql"
 )
 
+const finalizeMessage = `-- name: FinalizeMessage :execrows
+UPDATE messages SET body = ?, finalized_at = ? WHERE id = ?
+`
+
+type FinalizeMessageParams struct {
+	Body        string
+	FinalizedAt sql.NullInt64
+	ID          string
+}
+
+func (q *Queries) FinalizeMessage(ctx context.Context, arg FinalizeMessageParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, finalizeMessage, arg.Body, arg.FinalizedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getLastMessageID = `-- name: GetLastMessageID :one
 SELECT id FROM messages WHERE room_id = ? ORDER BY id DESC LIMIT 1
 `
@@ -22,7 +40,7 @@ func (q *Queries) GetLastMessageID(ctx context.Context, roomID string) (string, 
 }
 
 const getMessage = `-- name: GetMessage :one
-SELECT id, room_id, author_human_id, author_agent_id, reply_to_id, body, created_at FROM messages WHERE id = ?
+SELECT id, room_id, author_human_id, author_agent_id, reply_to_id, body, created_at, finalized_at FROM messages WHERE id = ?
 `
 
 func (q *Queries) GetMessage(ctx context.Context, id string) (Message, error) {
@@ -36,6 +54,7 @@ func (q *Queries) GetMessage(ctx context.Context, id string) (Message, error) {
 		&i.ReplyToID,
 		&i.Body,
 		&i.CreatedAt,
+		&i.FinalizedAt,
 	)
 	return i, err
 }
@@ -68,7 +87,7 @@ func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) er
 }
 
 const listMessagesBefore = `-- name: ListMessagesBefore :many
-SELECT id, room_id, author_human_id, author_agent_id, reply_to_id, body, created_at FROM messages
+SELECT id, room_id, author_human_id, author_agent_id, reply_to_id, body, created_at, finalized_at FROM messages
 WHERE room_id = ? AND id < ?
 ORDER BY id DESC LIMIT ?
 `
@@ -96,6 +115,7 @@ func (q *Queries) ListMessagesBefore(ctx context.Context, arg ListMessagesBefore
 			&i.ReplyToID,
 			&i.Body,
 			&i.CreatedAt,
+			&i.FinalizedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -111,7 +131,7 @@ func (q *Queries) ListMessagesBefore(ctx context.Context, arg ListMessagesBefore
 }
 
 const listNewestMessages = `-- name: ListNewestMessages :many
-SELECT id, room_id, author_human_id, author_agent_id, reply_to_id, body, created_at FROM messages
+SELECT id, room_id, author_human_id, author_agent_id, reply_to_id, body, created_at, finalized_at FROM messages
 WHERE room_id = ?
 ORDER BY id DESC LIMIT ?
 `
@@ -138,6 +158,7 @@ func (q *Queries) ListNewestMessages(ctx context.Context, arg ListNewestMessages
 			&i.ReplyToID,
 			&i.Body,
 			&i.CreatedAt,
+			&i.FinalizedAt,
 		); err != nil {
 			return nil, err
 		}

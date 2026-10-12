@@ -12,16 +12,22 @@ type Message struct {
 	AuthorHumanID, AuthorAgentID *string // at most one is set; both nil once the human who wrote it is removed
 	ReplyToID                    *string
 	Body                         string
-	CreatedAtMs                  int64 // Unix milliseconds, UTC
+	CreatedAtMs                  int64  // Unix milliseconds, UTC
+	FinalizedAtMs                *int64 // set once an agent's final edit landed; nil otherwise
 }
 
 func messageFromRow(row sqlcgen.Message) Message {
-	return Message{
+	m := Message{
 		ID: row.ID, RoomID: row.RoomID,
 		AuthorHumanID: stringPtr(row.AuthorHumanID), AuthorAgentID: stringPtr(row.AuthorAgentID),
 		ReplyToID: stringPtr(row.ReplyToID),
 		Body:      row.Body, CreatedAtMs: row.CreatedAt,
 	}
+	if row.FinalizedAt.Valid {
+		v := row.FinalizedAt.Int64
+		m.FinalizedAtMs = &v
+	}
+	return m
 }
 
 func (r *repo) PutMessage(ctx context.Context, m Message) error {
@@ -69,4 +75,10 @@ func (r *repo) GetLastMessageID(ctx context.Context, roomID string) (string, err
 
 func (r *repo) SetMessageBody(ctx context.Context, id, body string) error {
 	return requireRow(r.writes.SetMessageBody(ctx, sqlcgen.SetMessageBodyParams{Body: body, ID: id}))
+}
+
+func (r *repo) FinalizeMessage(ctx context.Context, id, body string, finalizedAtMs int64) error {
+	return requireRow(r.writes.FinalizeMessage(ctx, sqlcgen.FinalizeMessageParams{
+		Body: body, FinalizedAt: nullInt64(&finalizedAtMs), ID: id,
+	}))
 }

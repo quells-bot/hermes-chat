@@ -148,3 +148,54 @@ func (q *Queries) ListEventsForHuman(ctx context.Context, arg ListEventsForHuman
 	}
 	return items, nil
 }
+
+const listUnacknowledgedDeliveryEvents = `-- name: ListUnacknowledgedDeliveryEvents :many
+SELECT e.id, e.room_id, e.kind, e.subject_id, e.agent_id, e.created_at FROM events e
+JOIN deliveries d ON d.room_id = e.room_id AND d.agent_id = e.agent_id AND d.message_id = e.subject_id
+WHERE e.agent_id = ? AND e.kind = 'delivery' AND e.id <= ? AND d.state = 'delivered'
+ORDER BY e.id
+`
+
+type ListUnacknowledgedDeliveryEventsParams struct {
+	AgentID sql.NullString
+	ID      int64
+}
+
+type ListUnacknowledgedDeliveryEventsRow struct {
+	ID        int64
+	RoomID    string
+	Kind      string
+	SubjectID string
+	AgentID   sql.NullString
+	CreatedAt int64
+}
+
+func (q *Queries) ListUnacknowledgedDeliveryEvents(ctx context.Context, arg ListUnacknowledgedDeliveryEventsParams) ([]ListUnacknowledgedDeliveryEventsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listUnacknowledgedDeliveryEvents, arg.AgentID, arg.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUnacknowledgedDeliveryEventsRow
+	for rows.Next() {
+		var i ListUnacknowledgedDeliveryEventsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RoomID,
+			&i.Kind,
+			&i.SubjectID,
+			&i.AgentID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

@@ -121,6 +121,39 @@ func requireTurnDelivery(ctx context.Context, r storage.Repository, actorID ulid
 	return d, nil
 }
 
+// requireAgentInRoom returns the bus's own ErrNotFound unless the agent is a
+// member of the room: an agent taken out of a room writes nothing more into it.
+func requireAgentInRoom(ctx context.Context, r storage.Repository, roomID string, agentID ulid.ULID) error {
+	rows, err := r.ListRoomAgents(ctx, roomID)
+	if err != nil {
+		return fmt.Errorf("list room agents: %w", err)
+	}
+	for _, a := range rows {
+		if a.ID == agentID.String() {
+			return nil
+		}
+	}
+	return fmt.Errorf("room %s: %w", roomID, ErrNotFound)
+}
+
+// requireOpenTurn returns the actor's delivery of the message when the agent
+// may report activity on it: the agent is still in the room, and the delivery
+// was handed over and has not ended. A delivery still waiting, cancelled, or
+// finished is ErrNoTurn.
+func requireOpenTurn(ctx context.Context, r storage.Repository, actorID ulid.ULID, messageID ulid.ULID) (storage.Delivery, error) {
+	d, err := requireTurnDelivery(ctx, r, actorID, messageID)
+	if err != nil {
+		return storage.Delivery{}, err
+	}
+	if err := requireAgentInRoom(ctx, r, d.RoomID, actorID); err != nil {
+		return storage.Delivery{}, err
+	}
+	if st := DeliveryState(d.State); st != DeliveryDelivered && st != DeliveryWorking {
+		return storage.Delivery{}, ErrNoTurn
+	}
+	return d, nil
+}
+
 // roomHasAgent reports whether agentID is a member of the room.
 func roomHasAgent(ctx context.Context, r storage.Repository, roomID, agentID ulid.ULID) (bool, error) {
 	rows, err := r.ListRoomAgents(ctx, roomID.String())
@@ -224,7 +257,7 @@ func (s *service) ReportRemark(ctx context.Context, actor Actor, messageID ulid.
 	at := s.now()
 	var created Activity
 	err := s.record(ctx, func(r storage.Repository) error {
-		d, err := requireTurnDelivery(ctx, r, actor.ID, messageID)
+		d, err := requireOpenTurn(ctx, r, actor.ID, messageID)
 		if err != nil {
 			return err
 		}
@@ -267,7 +300,7 @@ func (s *service) StartTool(ctx context.Context, actor Actor, messageID ulid.ULI
 	at := s.now()
 	var created Activity
 	err := s.record(ctx, func(r storage.Repository) error {
-		d, err := requireTurnDelivery(ctx, r, actor.ID, messageID)
+		d, err := requireOpenTurn(ctx, r, actor.ID, messageID)
 		if err != nil {
 			return err
 		}

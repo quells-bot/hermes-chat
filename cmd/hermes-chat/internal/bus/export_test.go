@@ -26,8 +26,8 @@ func (s *service) Subscribers() int { return s.hub.count() }
 // AgentConnected reports whether the agent has a live stream.
 func (s *service) AgentConnected(id ulid.ULID) bool { return s.hub.agentConnected(id) }
 
-// BroadcastEdit offers e to every human subscription, dropping when full.
-func (s *service) BroadcastEdit(e LiveEdit) { s.hub.broadcastEdit(e) }
+// BroadcastEdit offers e to the given humans' subscriptions, dropping when full.
+func (s *service) BroadcastEdit(e LiveEdit, humans ...ulid.ULID) { s.hub.broadcastEdit(e, humans) }
 
 // MentionedAgents and WakeAgents export the addressing rules, which black-box
 // tests reach through type assertions on the Service value.

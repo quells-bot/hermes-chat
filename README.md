@@ -99,12 +99,12 @@ A human created before passwords existed needs `user passwd` before logging in.
 | `GET /agent/me` | `Authorization: Bearer <token>` | Replies `{"id":"…","handle":"…","display_name":"…"}`. |
 | `GET /agent/rooms` | bearer | Replies `{"rooms":[agent room…]}`, the rooms the agent is in, by ID. |
 | `POST /agent/rooms/:room/messages` | bearer | Body `{"text":"…","reply_to_id":"…"}`, `reply_to_id` optional. Replies 201 with the message. |
-| `PUT /agent/messages/:message` | bearer | Body `{"text":"…","final":false}`. Rewrites one of the agent's own messages; `final` ends the edit stream. Replies 204. |
+| `PUT /agent/messages/:message` | bearer | Body `{"text":"…","final":false}`. Rewrites one of the agent's own messages, in a room it is still in (404 otherwise); `final` ends the edit stream, and a non-final edit after it changes nothing. Replies 204. |
 | `POST /agent/deliveries/:message/working` | bearer | Marks the agent's delivery of the delivered message working. Replies 204. |
 | `POST /agent/deliveries/:message/done` | bearer | Reports the turn done. Replies 204. |
 | `POST /agent/deliveries/:message/failed` | bearer | Reports the turn failed. Replies 204. |
-| `POST /agent/deliveries/:message/remarks` | bearer | Body `{"text":"…"}`. Records a remark. Replies 201 with the activity. |
-| `POST /agent/deliveries/:message/tools` | bearer | Body `{"tool":"…","preview":"…","arguments":"…"}`, `preview` and `arguments` optional. Records a tool call. Replies 201 with the activity. |
+| `POST /agent/deliveries/:message/remarks` | bearer | Body `{"text":"…"}`. Records a remark on a delivery that is `delivered` or `working` (409 `no_turn` otherwise). Replies 201 with the activity. |
+| `POST /agent/deliveries/:message/tools` | bearer | Body `{"tool":"…","preview":"…","arguments":"…"}`, `preview` and `arguments` optional. Records a tool call, under the same rule as a remark. Replies 201 with the activity. |
 | `PUT /agent/activities/:activity` | bearer | Body `{"duration_ms":123,"succeeded":true}`. Finishes a tool's activity. Replies 200 with the activity. |
 | `GET /agent/events` | bearer | The agent's event stream; see "Agent stream". |
 
@@ -123,7 +123,7 @@ shape:
 | 404 | `not_found` | No such thing. |
 | 409 | `conflict` | It already exists. |
 | 409 | `room_archived` | The room is archived; its messages, members, and topic cannot change until it is unarchived. |
-| 409 | `no_turn` | A turn report, or a steer, for a delivery that is not in a turn the agent can report. |
+| 409 | `no_turn` | A turn report, a remark, a tool call, or a steer, for a delivery that is not in a turn the agent can report. |
 | 409 | `nothing_waiting` | Nothing about the message is left to cancel. |
 | 429 | `throttled` | Too many attempts; `Retry-After` gives the seconds to wait. |
 | 500 | `internal` | Something failed on the server; details are only in the log. |
@@ -247,7 +247,10 @@ stream closes within 25 seconds. One stream per agent: a second connection
 replaces the first, which ends. The plugin should keep its cursor and send it
 back as `Last-Event-ID` (or `?cursor=`) to replay missed deliveries after a
 reconnect, and buffer outbound reports while the stream is down so the next
-`delivery` for an old message is reported once the connection returns.
+`delivery` for an old message is reported once the connection returns. A
+stream opened with no cursor starts at the end of the log, but is first handed
+again every delivery still `delivered` (released, never reported `working`), so
+a delivery sent to a connection that died is not lost.
 
 ## Delivery and turns
 

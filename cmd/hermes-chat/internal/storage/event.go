@@ -57,6 +57,18 @@ func (r *repo) ListEventsForAgent(ctx context.Context, agentID string, afterID, 
 	return out, nil
 }
 
+func (r *repo) ListUnacknowledgedDeliveryEvents(ctx context.Context, agentID string, throughID int64) ([]Event, error) {
+	rows, err := r.reads.ListUnacknowledgedDeliveryEvents(ctx, sqlcgen.ListUnacknowledgedDeliveryEventsParams{AgentID: nullString(&agentID), ID: throughID})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := make([]Event, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, eventFromRow(row.ID, row.RoomID, row.Kind, row.SubjectID, row.AgentID, row.CreatedAt))
+	}
+	return out, nil
+}
+
 func (r *repo) GetLastEventID(ctx context.Context) (int64, error) {
 	id, err := r.reads.GetLastEventID(ctx)
 	if errors.Is(err, sql.ErrNoRows) {

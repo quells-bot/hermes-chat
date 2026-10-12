@@ -124,13 +124,15 @@ func (h *Hub) agentConnected(id ulid.ULID) bool {
 	return ok
 }
 
-// broadcastEdit offers e to every human subscription, in memory; a subscription
-// whose buffer is full drops the edit. It never blocks. Agents get no edits.
-func (h *Hub) broadcastEdit(e LiveEdit) {
+// broadcastEdit offers e to the live subscriptions of the given humans, in
+// memory; a subscription whose buffer is full drops the edit. It never blocks.
+// The caller names the humans of the message's room: an edit carries message
+// text, so nobody else may hear it. Agents get no edits.
+func (h *Hub) broadcastEdit(e LiveEdit, humans []ulid.ULID) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for sub := range h.subs {
-		if sub.edits == nil {
+		if sub.edits == nil || !slices.Contains(humans, sub.actor.ID) {
 			continue
 		}
 		select {
@@ -152,6 +154,9 @@ type Subscription struct {
 	cursor int64
 	wake   chan struct{} // sent to and closed by the hub alone
 	edits  chan LiveEdit // buffered live edits; nil for an agent's subscription
+	// again holds the delivery rows of an agent's unacknowledged deliveries,
+	// which a stream opened without a cursor is handed once more.
+	again []storage.Event
 }
 
 // Edits receives live edits; nil for an agent's subscription.
@@ -172,8 +177,19 @@ func (s *service) Subscribe(ctx context.Context, actor Actor, after int64) (*Sub
 	if err != nil {
 		return nil, fmt.Errorf("subscribe: get last event id: %w", err)
 	}
-	if after == FromNow || after > last {
+	fromNow := after == FromNow
+	if fromNow || after > last {
 		after = last
+	}
+	// An agent that names no cursor remembers nothing, so a delivery released
+	// to a stream that died before reading it would hold its pair's queue for
+	// good. Hand those over again: the same log rows, not a second release.
+	var again []storage.Event
+	if fromNow && actor.Kind == ActorAgent {
+		again, err = s.repo.ListUnacknowledgedDeliveryEvents(ctx, actor.ID.String(), last)
+		if err != nil {
+			return nil, fmt.Errorf("subscribe: list unacknowledged deliveries: %w", err)
+		}
 	}
 	// The cursor was read before the presence sweep, so the events it commits
 	// lie past it and the first Poll reads them.
@@ -181,7 +197,7 @@ func (s *service) Subscribe(ctx context.Context, actor Actor, after int64) (*Sub
 	if actor.Kind == ActorHuman {
 		edits = make(chan LiveEdit, editsBuffer)
 	}
-	sub := &Subscription{svc: s, actor: actor, cursor: after, wake: make(chan struct{}, 1), edits: edits}
+	sub := &Subscription{svc: s, actor: actor, cursor: after, wake: make(chan struct{}, 1), edits: edits, again: again}
 	if !s.hub.add(sub) {
 		return nil, ErrUnavailable
 	}
@@ -280,6 +296,25 @@ func (s *Subscription) Close() { s.svc.hub.remove(s) }
 // drained. On an error the cursor stays where it was.
 func (s *Subscription) Poll(ctx context.Context) ([]Event, error) {
 	repo := s.svc.repo
+	if len(s.again) > 0 {
+		again := s.again
+		s.again = nil
+		events := make([]Event, 0, len(again))
+		for _, row := range again {
+			e, ok, err := s.event(ctx, repo, row)
+			if err != nil {
+				s.again = again
+				return nil, fmt.Errorf("poll: event %d: %w", row.ID, err)
+			}
+			if ok {
+				e.ID = s.cursor // an old row: it must not move the reader's cursor back
+				events = append(events, e)
+			}
+		}
+		if len(events) > 0 {
+			return events, nil
+		}
+	}
 	for {
 		var rows []storage.Event
 		var err error

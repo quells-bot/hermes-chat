@@ -76,10 +76,12 @@ type Repository interface {
 	GetLastMessageID(ctx context.Context, roomID string) (string, error)                       // ErrNotFound when the room has no messages
 
 	SetMessageBody(ctx context.Context, id, body string) error                                          // ErrNotFound
+	FinalizeMessage(ctx context.Context, id, body string, finalizedAtMs int64) error // ErrNotFound; sets the body and marks the message finalized
 
 	PutEvent(ctx context.Context, e Event) (int64, error)                                          // e.ID is ignored; returns the id the log assigned
 	ListEventsForHuman(ctx context.Context, humanID string, afterID, limit int64) ([]Event, error) // ascending id; only rooms the human is a member of now, and only non-agent-targeted rows; empty, not nil
 	ListEventsForAgent(ctx context.Context, agentID string, afterID, limit int64) ([]Event, error) // ascending id; agent-targeted rows only; empty, not nil
+	ListUnacknowledgedDeliveryEvents(ctx context.Context, agentID string, throughID int64) ([]Event, error) // ascending id; the delivery rows, up to throughID, of the agent's deliveries still in 'delivered'; empty, not nil
 	GetLastEventID(ctx context.Context) (int64, error)                                             // 0 when the log is empty
 
 	PutDelivery(ctx context.Context, d Delivery) error                                             // ErrConflict on duplicate (room, agent, message)

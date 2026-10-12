@@ -230,10 +230,13 @@ func TestPostMessage_AgentAuthorAndChannelContext(t *testing.T) {
 	defer dmSub.Close()
 	_, err = w.s.PostMessage(ctx, w.kai, dm.ID, "dm message", ulid.Zero)
 	require.NoError(t, err)
+	// The new stream named no cursor while the channel delivery was still
+	// unacknowledged, so that one is handed over again ahead of the DM's.
 	dev := drain(t, dmSub)
-	require.Len(t, dev, 1)
-	assert.Equal(t, bus.EventDelivery, dev[0].Kind)
-	assert.Nil(t, dev[0].Context, "a non-channel has no context")
+	require.Len(t, dev, 2)
+	assert.Equal(t, m.ID, dev[0].Message.ID)
+	assert.Equal(t, bus.EventDelivery, dev[1].Kind)
+	assert.Nil(t, dev[1].Context, "a non-channel has no context")
 }
 
 // TestCancelMessage (Review Focus 1). A conversation so a second human can be a

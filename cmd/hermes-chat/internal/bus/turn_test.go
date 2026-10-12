@@ -362,3 +362,109 @@ func TestStopTurnAndSteer(t *testing.T) {
 	require.NoError(t, w.s.StopTurn(ctx, w.kai, room.ID, w.scout.ID), "stop with no turn running still succeeds")
 	require.ErrorIs(t, w.s.StopTurn(ctx, w.kai, room.ID, w.atlas.ID), bus.ErrNotFound)
 }
+
+// A live edit carries message text, so it goes only to the humans of the
+// message's room: a human in no room with it hears nothing.
+func TestEditMessage_BroadcastsOnlyToTheRoomsHumans(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w) // kai and scout; ada is not in it
+	scoutActor := bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}
+	m, err := w.s.PostMessage(ctx, scoutActor, room.ID, "original", ulid.Zero)
+	require.NoError(t, err)
+	kaiSub, err := w.s.Subscribe(ctx, w.kai, bus.FromNow)
+	require.NoError(t, err)
+	defer kaiSub.Close()
+	adaSub, err := w.s.Subscribe(ctx, w.ada, bus.FromNow)
+	require.NoError(t, err)
+	defer adaSub.Close()
+
+	require.NoError(t, w.s.EditMessage(ctx, scoutActor, m.ID, "kai's private answer", false))
+	require.NoError(t, w.s.EditMessage(ctx, scoutActor, m.ID, "kai's private answer, done", true))
+
+	assert.Len(t, readAllAvailable(kaiSub.Edits()), 2, "the room's human sees both edits")
+	assert.Empty(t, readAllAvailable(adaSub.Edits()), "a human outside the room sees none")
+}
+
+// Review Focus 4: once a message is finalized, a late non-final edit (a retried
+// or crossed request) must not overwrite the final text or reach a browser.
+func TestEditMessage_NonFinalAfterFinalChangesNothing(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	scoutActor := bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}
+	m, err := w.s.PostMessage(ctx, scoutActor, room.ID, "original", ulid.Zero)
+	require.NoError(t, err)
+	require.NoError(t, w.s.EditMessage(ctx, scoutActor, m.ID, "final text", true))
+	humanSub, err := w.s.Subscribe(ctx, w.kai, bus.FromNow)
+	require.NoError(t, err)
+	defer humanSub.Close()
+
+	*w.now = fixed.Add(2 * time.Second) // well past the throttle
+	require.NoError(t, w.s.EditMessage(ctx, scoutActor, m.ID, "stale partial", false))
+	got, err := w.s.GetMessage(ctx, w.kai, room.ID, m.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "final text", got.Text, "the final text stands")
+	assert.Empty(t, readAllAvailable(humanSub.Edits()), "the stale edit is not broadcast")
+
+	// a repeated final still writes and reports
+	require.NoError(t, w.s.EditMessage(ctx, scoutActor, m.ID, "final text, corrected", true))
+	got, err = w.s.GetMessage(ctx, w.kai, room.ID, m.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "final text, corrected", got.Text)
+	require.Len(t, drain(t, humanSub), 1)
+}
+
+// Activity belongs to a turn the agent actually holds: a delivery that was
+// never handed over, or was cancelled, takes none.
+func TestActivity_NeedsADeliveredTurn(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	scoutActor := bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}
+	m, err := w.s.PostMessage(ctx, w.kai, room.ID, "queued", ulid.Zero) // scout is offline: waiting
+	require.NoError(t, err)
+
+	_, err = w.s.ReportRemark(ctx, scoutActor, m.ID, "peeking")
+	require.ErrorIs(t, err, bus.ErrNoTurn, "a waiting delivery was never handed over")
+	_, err = w.s.StartTool(ctx, scoutActor, m.ID, "search", "p", "{}")
+	require.ErrorIs(t, err, bus.ErrNoTurn)
+
+	require.NoError(t, w.s.CancelMessage(ctx, w.kai, room.ID, m.ID))
+	_, err = w.s.ReportRemark(ctx, scoutActor, m.ID, "still here")
+	require.ErrorIs(t, err, bus.ErrNoTurn, "a cancelled delivery takes no activity")
+	_, err = w.s.StartTool(ctx, scoutActor, m.ID, "search", "p", "{}")
+	require.ErrorIs(t, err, bus.ErrNoTurn)
+
+	acts, err := w.s.ListActivity(ctx, w.kai, room.ID, m.ID)
+	require.NoError(t, err)
+	assert.Empty(t, acts)
+}
+
+// An agent taken out of a room writes nothing more into it: no activity for its
+// old delivery, no edit of its old message.
+func TestRemovedAgent_WritesNothingMore(t *testing.T) {
+	w := newWorld(t)
+	room := channelRoom(t, w) // atlas and scout
+	scoutActor := bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}
+	sub := scoutSub(t, w)
+	defer sub.Close()
+	m, err := w.s.PostMessage(ctx, w.kai, room.ID, "@scout go", ulid.Zero)
+	require.NoError(t, err)
+	reply, err := w.s.PostMessage(ctx, scoutActor, room.ID, "draft", ulid.Zero)
+	require.NoError(t, err)
+	_, err = w.s.RemoveRoomAgent(ctx, w.kai, room.ID, w.scout.ID)
+	require.NoError(t, err)
+	humanSub, err := w.s.Subscribe(ctx, w.kai, bus.FromNow)
+	require.NoError(t, err)
+	defer humanSub.Close()
+
+	_, err = w.s.ReportRemark(ctx, scoutActor, m.ID, "still thinking")
+	require.ErrorIs(t, err, bus.ErrNotFound)
+	_, err = w.s.StartTool(ctx, scoutActor, m.ID, "search", "p", "{}")
+	require.ErrorIs(t, err, bus.ErrNotFound)
+	require.ErrorIs(t, w.s.EditMessage(ctx, scoutActor, reply.ID, "sneaky", true), bus.ErrNotFound)
+
+	assert.Empty(t, drain(t, humanSub), "nothing reached the room")
+	assert.Empty(t, readAllAvailable(humanSub.Edits()))
+	got, err := w.s.GetMessage(ctx, w.kai, room.ID, reply.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "draft", got.Text)
+}

@@ -225,6 +225,12 @@ func TestStopAndSteer(t *testing.T) {
 	assert.Equal(t, "also check trains", steer["text"])
 	assert.Equal(t, room.ID.String(), steer["room_id"])
 
+	// a steer as long as a message may be is read whole, not cut at the small-body limit
+	big := strings.Repeat("x", 8192)
+	w = c.call(c.kai, "POST", base+"/steer", `{"text":"`+big+`"}`)
+	require.Equal(t, 201, w.Code, w.Body.String())
+	assert.Equal(t, big, obj(t, w)["text"])
+
 	// finishing the turn leaves no turn to steer
 	require.NoError(t, c.svc.TurnDone(ctx, scout, m.ID))
 	w = c.call(c.kai, "POST", base+"/steer", `{"text":"again"}`)

@@ -387,7 +387,9 @@ func TestHub_BroadcastEditReachesHumansAndDropsWhenFull(t *testing.T) {
 
 	msgID := ulid.Make()
 	for i := range editsBuffer + 8 {
-		w.s.(interface{ BroadcastEdit(bus.LiveEdit) }).BroadcastEdit(bus.LiveEdit{MessageID: msgID, Text: fmt.Sprint(i)})
+		w.s.(interface {
+			BroadcastEdit(bus.LiveEdit, ...ulid.ULID)
+		}).BroadcastEdit(bus.LiveEdit{MessageID: msgID, Text: fmt.Sprint(i)}, w.kai.ID)
 	}
 	got := len(readAllAvailable(human.Edits()))
 	assert.Equal(t, editsBuffer, got, "buffered, then dropped; never blocked")
@@ -515,3 +517,40 @@ func readAllAvailable(edits <-chan bus.LiveEdit) (out []bus.LiveEdit) {
 // drop-when-full test can target it. Reaching the public constant would couple
 // the black-box test to an internal; the value is pinned by the prod code.
 const editsBuffer = 32
+
+// A delivery released to a stream that died before reading it must not wedge
+// the pair: an agent that comes back with no cursor is handed its unacknowledged
+// deliveries again, and nothing it already finished.
+func TestSubscribe_NoCursorHandsOverUnacknowledgedDeliveriesAgain(t *testing.T) {
+	w := newWorld(t)
+	dm, _, err := w.s.OpenDM(ctx, w.kai, w.scout.ID)
+	require.NoError(t, err)
+	scout := bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}
+
+	sub, err := w.s.Subscribe(ctx, scout, bus.FromNow)
+	require.NoError(t, err)
+	m0, err := w.s.PostMessage(ctx, w.kai, dm.ID, "zero", ulid.Zero)
+	require.NoError(t, err)
+	require.NoError(t, w.s.TurnDone(ctx, scout, m0.ID)) // finished: never handed over again
+	m1, err := w.s.PostMessage(ctx, w.kai, dm.ID, "one", ulid.Zero)
+	require.NoError(t, err) // released to the stream, which dies before reading it
+	sub.Close()
+	require.NoError(t, w.s.AgentGone(ctx, scout))
+
+	again, err := w.s.Subscribe(ctx, scout, bus.FromNow)
+	require.NoError(t, err)
+	defer again.Close()
+	start := again.Cursor()
+	got := drain(t, again)
+	require.Len(t, got, 1, "only the unacknowledged delivery")
+	assert.Equal(t, bus.EventDelivery, got[0].Kind)
+	assert.Equal(t, m1.ID, got[0].Message.ID)
+	assert.Equal(t, start, got[0].ID, "the frame does not move the plugin's cursor backwards")
+	assert.Empty(t, drain(t, again), "handed over once per stream")
+
+	// a stream that names a cursor replays the log as before, nothing extra
+	withCursor, err := w.s.Subscribe(ctx, scout, again.Cursor())
+	require.NoError(t, err)
+	defer withCursor.Close()
+	assert.Empty(t, drain(t, withCursor))
+}
