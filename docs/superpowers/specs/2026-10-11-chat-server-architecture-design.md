@@ -78,7 +78,7 @@ cmd/hermes-chat/
             migrations/   goose SQL files, embedded
             queries/      sqlc query files
             sqlcgen/      sqlc output, committed
-web/                 Preact app; web/embed.go exposes the built files
+web/                 Svelte app; web/embed.go exposes the built files
 plugin/              Hermes platform plugin (Python)
 docs/
 ```

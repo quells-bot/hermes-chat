@@ -85,7 +85,7 @@ Three pieces:
 
 1. **Chat server** (Go). Owns all state. Serves the web UI, the human API, and
    the agent API. Also provides the admin CLI as subcommands of the same binary.
-2. **Web UI** (Preact). Built to static files and embedded in the Go binary.
+2. **Web UI** (Svelte). Built to static files and embedded in the Go binary.
 3. **Hermes platform plugin** (Python). A `kind: platform` plugin dropped into
    `~/.hermes/plugins/`. It subclasses Hermes's `BasePlatformAdapter` and
    translates between Hermes and the chat server's agent API. It requires no
@@ -392,7 +392,8 @@ Decided by Kai:
 Claude's calls (Kai delegated the frontend choice and has not objected to the
 rest; change freely if there is a reason):
 
-- **Preact with TypeScript and a normal build step** (Vite or similar). Built
+- **Svelte with TypeScript and a normal build step** (Vite). Kai chose Svelte
+  over Preact on 2026-10-12; see `2026-10-12-web-ui-design.md`. Built
   output is embedded in the Go binary with `embed`.
 - **Strict Content-Security-Policy**, `default-src 'self'` with no inline
   script, made possible by vendoring everything.
