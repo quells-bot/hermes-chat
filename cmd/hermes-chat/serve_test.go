@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/cookiejar"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/cli"
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/sse"
 )
 
@@ -55,6 +57,18 @@ func startServeWithEnv(t *testing.T) (api, debug string, cancel func(), done <-c
 		http.DefaultClient.CloseIdleConnections()
 	})
 	return "http://" + apiLn.Addr().String(), "http://" + debugLn.Addr().String(), cancelCtx, result
+}
+
+const pw = "correct horse battery"
+
+var tokenLine = regexp.MustCompile(`(?m)^token: (hca_[A-Za-z0-9_-]{43})$`)
+
+// migrated points HERMES_CHAT_DB_PATH at a fresh temp file and applies the migrations.
+func migrated(t *testing.T) string {
+	t.Helper()
+	p := setDB(t)
+	require.NoError(t, cli.Migrate(context.Background(), p, io.Discard))
+	return p
 }
 
 func TestServe_EndToEnd(t *testing.T) {

@@ -71,6 +71,7 @@ cmd/hermes-chat/
     wires.go         builds storage → bus → app; collects clean-up funcs
     routes.go        every route and its middleware, in one place
     internal/
+        cli/          admin subcommands: migrate, user, agent
         app/         gin handlers, middleware, request/response JSON
         bus/         business logic, validation, transactions, live fan-out
         storage/     repository over SQLite

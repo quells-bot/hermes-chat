@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"context"
@@ -20,17 +20,17 @@ subcommands:
   list                          list agents
 `
 
-// agent dispatches the agent subcommands.
-func agent(ctx context.Context, cfg Config, args []string, _ io.Reader, stdout, stderr io.Writer) int {
+// Agent runs the agent subcommands and returns the process exit code.
+func Agent(ctx context.Context, dbPath string, args []string, stdout, stderr io.Writer) int {
 	switch {
 	case len(args) == 3 && args[0] == "add":
-		return report(stderr, agentAdd(ctx, cfg, args[1], args[2], stdout))
+		return report(stderr, agentAdd(ctx, dbPath, args[1], args[2], stdout))
 	case len(args) == 2 && args[0] == "revoke":
-		return report(stderr, agentRevoke(ctx, cfg, args[1], stdout))
+		return report(stderr, agentRevoke(ctx, dbPath, args[1], stdout))
 	case len(args) == 2 && args[0] == "rotate":
-		return report(stderr, agentRotate(ctx, cfg, args[1], stdout))
+		return report(stderr, agentRotate(ctx, dbPath, args[1], stdout))
 	case len(args) == 1 && args[0] == "list":
-		return report(stderr, agentList(ctx, cfg, stdout))
+		return report(stderr, agentList(ctx, dbPath, stdout))
 	}
 	fmt.Fprint(stderr, agentUsage)
 	return 2
@@ -41,13 +41,13 @@ func displayHandle(handle string) string {
 	return "@" + strings.ToLower(strings.TrimPrefix(strings.TrimSpace(handle), "@"))
 }
 
-func agentAdd(ctx context.Context, cfg Config, handle, displayName string, stdout io.Writer) error {
-	w, err := checkedWires(ctx, cfg)
-	defer w.cleanUp()
+func agentAdd(ctx context.Context, dbPath, handle, displayName string, stdout io.Writer) error {
+	svc, cleanup, err := openSvc(ctx, dbPath)
+	defer cleanup()
 	if err != nil {
 		return err
 	}
-	a, token, err := w.Svc.CreateAgent(ctx, handle, displayName)
+	a, token, err := svc.CreateAgent(ctx, handle, displayName)
 	if errors.Is(err, bus.ErrConflict) {
 		return fmt.Errorf("agent %q already exists", displayHandle(handle))
 	}
@@ -58,13 +58,13 @@ func agentAdd(ctx context.Context, cfg Config, handle, displayName string, stdou
 	return nil
 }
 
-func agentRevoke(ctx context.Context, cfg Config, handle string, stdout io.Writer) error {
-	w, err := checkedWires(ctx, cfg)
-	defer w.cleanUp()
+func agentRevoke(ctx context.Context, dbPath, handle string, stdout io.Writer) error {
+	svc, cleanup, err := openSvc(ctx, dbPath)
+	defer cleanup()
 	if err != nil {
 		return err
 	}
-	err = w.Svc.RevokeAgent(ctx, handle)
+	err = svc.RevokeAgent(ctx, handle)
 	if errors.Is(err, bus.ErrNotFound) {
 		return fmt.Errorf("agent %q not found", displayHandle(handle))
 	}
@@ -75,13 +75,13 @@ func agentRevoke(ctx context.Context, cfg Config, handle string, stdout io.Write
 	return nil
 }
 
-func agentRotate(ctx context.Context, cfg Config, handle string, stdout io.Writer) error {
-	w, err := checkedWires(ctx, cfg)
-	defer w.cleanUp()
+func agentRotate(ctx context.Context, dbPath, handle string, stdout io.Writer) error {
+	svc, cleanup, err := openSvc(ctx, dbPath)
+	defer cleanup()
 	if err != nil {
 		return err
 	}
-	token, err := w.Svc.RotateAgentToken(ctx, handle)
+	token, err := svc.RotateAgentToken(ctx, handle)
 	if errors.Is(err, bus.ErrNotFound) {
 		return fmt.Errorf("agent %q not found", displayHandle(handle))
 	}
@@ -92,13 +92,13 @@ func agentRotate(ctx context.Context, cfg Config, handle string, stdout io.Write
 	return nil
 }
 
-func agentList(ctx context.Context, cfg Config, stdout io.Writer) error {
-	w, err := checkedWires(ctx, cfg)
-	defer w.cleanUp()
+func agentList(ctx context.Context, dbPath string, stdout io.Writer) error {
+	svc, cleanup, err := openSvc(ctx, dbPath)
+	defer cleanup()
 	if err != nil {
 		return err
 	}
-	agents, err := w.Svc.ListAgents(ctx)
+	agents, err := svc.ListAgents(ctx)
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/cli"
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/storage"
 )
 
@@ -78,26 +80,16 @@ func TestRun_Migrate(t *testing.T) {
 	assert.NoError(t, db.CheckSchema(context.Background()))
 }
 
-func TestWireUp_CheckModeOnFreshDatabase(t *testing.T) {
-	setDB(t)
-	cfg, err := loadConfig()
-	require.NoError(t, err)
-	w, err := wireUp(context.Background(), cfg, wireCheck)
-	defer w.cleanUp()
-	assert.ErrorIs(t, err, storage.ErrSchemaBehind)
-	assert.NotEmpty(t, w.CleanUp) // the clean-ups collected so far come back on failure
-}
-
-func TestWireUp_UnknownMode(t *testing.T) {
-	setDB(t)
-	cfg, err := loadConfig()
-	require.NoError(t, err)
-	w, err := wireUp(context.Background(), cfg, wireMode(99))
-	defer w.cleanUp()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unknown")
-	assert.NotEmpty(t, w.CleanUp)
-	assert.Nil(t, w.Svc)
+// The user and agent entries dispatch into the cli package with the loaded
+// config; user also threads stdin through.
+func TestRun_AdminCommandsDispatch(t *testing.T) {
+	path := setDB(t)
+	require.NoError(t, cli.Migrate(context.Background(), path, io.Discard))
+	code, out, errOut := runCmdIn(t, "long enough pw\n", "user", "add", "kai")
+	assert.Equal(t, 0, code, errOut)
+	assert.Contains(t, out, "created user kai")
+	code, _, _ = runCmd(t, "agent", "list")
+	assert.Equal(t, 0, code)
 }
 
 func TestRun_ExtraArgumentsAreUsageErrors(t *testing.T) {

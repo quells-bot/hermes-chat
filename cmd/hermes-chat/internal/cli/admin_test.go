@@ -1,9 +1,12 @@
-package main
+package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -19,21 +22,30 @@ import (
 
 const pw = "correct horse battery"
 
+// migrated returns a fresh database path with the migrations applied.
 func migrated(t *testing.T) string {
-	p := setDB(t)
-	c, _, _ := runCmd(t, "migrate")
-	require.Equal(t, 0, c)
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "test.db")
+	require.NoError(t, Migrate(context.Background(), p, io.Discard))
 	return p
 }
 
+// runUser runs User with a stdin string and returns its exit code and output.
+func runUser(t *testing.T, dbPath, stdin string, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	code = User(context.Background(), dbPath, args, strings.NewReader(stdin), &out, &errOut)
+	return code, out.String(), errOut.String()
+}
+
 func TestUserAddAndList(t *testing.T) {
-	migrated(t)
-	code, out, _ := runCmdIn(t, pw+"\n", "user", "add", "Kai")
+	p := migrated(t)
+	code, out, _ := runUser(t, p, pw+"\n", "add", "Kai")
 	require.Equal(t, 0, code)
 	require.Regexp(t, `^created user kai \([0-9A-HJKMNP-TV-Z]{26}\)\n$`, out)
-	runCmdIn(t, pw+"\n", "user", "add", "ada")
+	runUser(t, p, pw+"\n", "add", "ada")
 
-	code, out, _ = runCmd(t, "user", "list")
+	code, out, _ = runUser(t, p, "", "list")
 	require.Equal(t, 0, code)
 	rows := strings.Split(strings.TrimSpace(out), "\n")
 	require.Len(t, rows, 2)
@@ -49,32 +61,30 @@ func TestUserAddAndList(t *testing.T) {
 }
 
 func TestUserList_Empty(t *testing.T) {
-	migrated(t)
-	code, out, _ := runCmd(t, "user", "list")
+	code, out, _ := runUser(t, migrated(t), "", "list")
 	assert.Equal(t, 0, code)
 	assert.Empty(t, out)
 }
 
 func TestUserAdd_Duplicate(t *testing.T) {
-	migrated(t)
-	runCmdIn(t, pw+"\n", "user", "add", "kai")
-	code, out, errOut := runCmdIn(t, pw+"\n", "user", "add", "KAI")
+	p := migrated(t)
+	runUser(t, p, pw+"\n", "add", "kai")
+	code, out, errOut := runUser(t, p, pw+"\n", "add", "KAI")
 	assert.Equal(t, 1, code)
 	assert.Empty(t, out)
 	assert.Contains(t, errOut, `user "kai" already exists`)
 }
 
 func TestUserAdd_Invalid(t *testing.T) {
-	migrated(t)
-	code, _, errOut := runCmdIn(t, pw+"\n", "user", "add", "kai wells")
+	code, _, errOut := runUser(t, migrated(t), pw+"\n", "add", "kai wells")
 	assert.Equal(t, 1, code)
 	assert.Equal(t, "hermes-chat: "+bus.ValidationError{Message: "username must be 1-32 characters: lowercase letters, digits, '_' or '-', starting with a letter or digit"}.Message+"\n", errOut)
 }
 
 // Review Focus 4.
 func TestUserAdd_UnmigratedDatabase(t *testing.T) {
-	path := setDB(t)
-	code, _, errOut := runCmdIn(t, pw+"\n", "user", "add", "kai")
+	path := filepath.Join(t.TempDir(), "test.db")
+	code, _, errOut := runUser(t, path, pw+"\n", "add", "kai")
 	assert.Equal(t, 1, code)
 	assert.Contains(t, errOut, `run "hermes-chat migrate"`)
 	db, err := storage.Open(context.Background(), path)
@@ -84,10 +94,10 @@ func TestUserAdd_UnmigratedDatabase(t *testing.T) {
 }
 
 func TestUser_UsageErrors(t *testing.T) {
-	migrated(t)
-	for _, args := range [][]string{{"user"}, {"user", "add"}, {"user", "add", "a", "b"}, {"user", "frob"},
-		{"user", "passwd"}, {"user", "passwd", "a", "b"}, {"user", "remove"}, {"user", "remove", "a", "b"}} {
-		code, _, errOut := runCmd(t, args...)
+	p := migrated(t)
+	for _, args := range [][]string{{}, {"add"}, {"add", "a", "b"}, {"frob"},
+		{"passwd"}, {"passwd", "a", "b"}, {"remove"}, {"remove", "a", "b"}} {
+		code, _, errOut := runUser(t, p, "", args...)
 		assert.Equal(t, 2, code, args)
 		assert.NotEmpty(t, errOut, args)
 	}
@@ -117,43 +127,43 @@ func storedPasswordMatches(t *testing.T, path, username, password string) bool {
 
 func TestUserAdd_ReadsPasswordFromStdin(t *testing.T) {
 	path := migrated(t)
-	code, out, errOut := runCmdIn(t, pw+"\r\n", "user", "add", "kai")
+	code, out, errOut := runUser(t, path, pw+"\r\n", "add", "kai")
 	require.Equal(t, 0, code, errOut)
 	assert.NotContains(t, out+errOut, pw)
 	assert.True(t, storedPasswordMatches(t, path, "kai", pw))
 }
 
 func TestUserAdd_NoOrShortPassword(t *testing.T) {
-	migrated(t)
+	p := migrated(t)
 	for _, in := range []string{"", "\n", "short\n"} {
-		code, out, errOut := runCmdIn(t, in, "user", "add", "kai")
+		code, out, errOut := runUser(t, p, in, "add", "kai")
 		assert.Equal(t, 1, code)
 		assert.Empty(t, out)
 		assert.Equal(t, "hermes-chat: password must be at least 10 characters and at most 256 bytes\n", errOut)
 	}
-	_, out, _ := runCmd(t, "user", "list")
+	_, out, _ := runUser(t, p, "", "list")
 	assert.Empty(t, out) // nobody was created
 }
 
 func TestUserPasswd(t *testing.T) {
 	path := migrated(t)
-	runCmdIn(t, pw+"\n", "user", "add", "kai")
-	code, out, _ := runCmdIn(t, "another long password\n", "user", "passwd", "KAI")
+	runUser(t, path, pw+"\n", "add", "kai")
+	code, out, _ := runUser(t, path, "another long password\n", "passwd", "KAI")
 	assert.Equal(t, 0, code)
 	assert.Equal(t, "password updated for kai\n", out)
 	assert.True(t, storedPasswordMatches(t, path, "kai", "another long password"))
-	code, _, errOut := runCmdIn(t, pw+"\n", "user", "passwd", "nobody")
+	code, _, errOut := runUser(t, path, pw+"\n", "passwd", "nobody")
 	assert.Equal(t, 1, code)
 	assert.Equal(t, "hermes-chat: user \"nobody\" not found\n", errOut)
 }
 
 func TestUserRemove(t *testing.T) {
-	migrated(t)
-	runCmdIn(t, pw+"\n", "user", "add", "kai")
-	code, out, _ := runCmd(t, "user", "remove", "kai")
+	p := migrated(t)
+	runUser(t, p, pw+"\n", "add", "kai")
+	code, out, _ := runUser(t, p, "", "remove", "kai")
 	assert.Equal(t, 0, code)
 	assert.Equal(t, "removed user kai\n", out)
-	code, _, errOut := runCmd(t, "user", "remove", "kai")
+	code, _, errOut := runUser(t, p, "", "remove", "kai")
 	assert.Equal(t, 1, code)
 	assert.Contains(t, errOut, `user "kai" not found`)
 }

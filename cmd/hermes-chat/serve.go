@@ -17,7 +17,7 @@ type listeners struct{ api, debug net.Listener }
 func serve(ctx context.Context, cfg Config, log *slog.Logger, ln listeners) error {
 	slog.SetDefault(log)
 
-	w, err := wireUp(ctx, cfg, wireMigrate)
+	w, err := wireUp(ctx, cfg)
 	defer w.cleanUp()
 	if err != nil {
 		return err

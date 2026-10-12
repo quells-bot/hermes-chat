@@ -28,6 +28,7 @@ func TestCheckLayering_Violations(t *testing.T) {
 		{I + "/reqid", []string{I + "/bus"}},
 		{I + "/sse", []string{I + "/bus"}},
 		{I + "/bus", []string{I + "/storage/storagetest"}},
+		{I + "/cli", []string{I + "/storage/storagetest"}},
 		{"github.com/quells-bot/hermes-chat/cmd/hermes-chat", []string{I + "/storage/storagetest"}},
 		{"github.com/quells-bot/hermes-chat/cmd/hermes-chat", []string{I + "/storage/sqlcgen"}},
 	}
@@ -41,6 +42,7 @@ func TestCheckLayering_Allowed(t *testing.T) {
 		{I + "/app", []string{I + "/bus", I + "/reqid", "github.com/gin-gonic/gin", "net/http", I + "/sse"}},
 		{I + "/bus", []string{I + "/storage", I + "/reqid"}},
 		{I + "/storage", []string{I + "/storage/sqlcgen", I + "/reqid"}},
+		{I + "/cli", []string{I + "/bus", I + "/storage"}},
 		{"github.com/quells-bot/hermes-chat/cmd/hermes-chat", []string{I + "/app", I + "/bus", I + "/storage"}},
 	}
 	assert.Empty(t, checkLayering(ok))

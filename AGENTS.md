@@ -8,7 +8,8 @@ Hermes Chat is a chat server: a single Go binary exposing a JSON/HTTP API with a
 
 Module `github.com/quells-bot/hermes-chat`; all code lives under `cmd/hermes-chat`:
 
-- **`cmd/hermes-chat` (package main)** — CLI entry (`main.go`), wiring (`wires.go`), HTTP bootstrap (`serve.go`, `routes.go`), config (`config.go`), admin subcommands (`admin.go`, `admin_agent.go`), layering check (`layering.go`).
+- **`cmd/hermes-chat` (package main)** — server: dispatch (`main.go`), config (`config.go`), wiring (`wires.go`), HTTP bootstrap (`serve.go`, `routes.go`), logging (`logging.go`), layering check (`layering.go`).
+- **`internal/cli`** — admin subcommands (`migrate`, `user`, `agent`) in `admin.go`/`admin_agent.go`, terminal password input (`password_input.go`); wires bus+storage itself (`openSvc`), builds no hub and no HTTP controller.
 - **`internal/app`** — gin HTTP layer: handlers (`room.go`, `message.go`, `auth.go`, `stream.go`), middleware (`middleware.go`), JSON bodies (`json.go`), bus-error→HTTP mapping (`errors.go`). Knows HTTP, nothing about SQL.
 - **`internal/bus`** — business logic. `Service` interface (`bus.go`), sentinel errors (`ErrNotFound`, `ErrConflict`, …), auth/rate limiting (`session.go`, `throttle.go`, `password.go`), event fan-out `Hub` (`hub.go`). Knows no HTTP or SQL.
 - **`internal/storage`** — `Repository` interface over sqlc queries; two SQLite pools (`db.go`: 1 write connection with `_txlock=immediate`, ≥4 read connections, WAL); error translation (`mapErr`); migrations (`migrate.go`, goose as a library, embedded via `go:embed`).
@@ -16,13 +17,14 @@ Module `github.com/quells-bot/hermes-chat`; all code lives under `cmd/hermes-cha
 
 Request flow: gin route → app handler → `bus.Service` method → `storage.Repository` → sqlcgen → SQLite. Writes happen inside one transaction; `bus` writes the event row and rings the Hub in the same tx (`bus/event.go`). SSE handlers (`app/stream.go`) wake on the ring, then poll events after the subscription cursor (`storage.ListEventsForHuman`), so a stream never depends on in-memory state.
 
-**Layering is enforced by a test, not convention** (`TestLayering_ThisRepository`): app may import bus but not storage; bus may import neither app, sqlcgen, gin, nor `net/http`; storage may import neither bus nor app nor gin; `reqid`/`sse` import none of the three. Only `storage` may import `sqlcgen`. The map lives in `cmd/hermes-chat/layering.go`; the test parses the real import graph via `go list -json`.
+**Layering is enforced by a test, not convention** (`TestLayering_ThisRepository`): app may import bus but not storage; bus may import neither app, sqlcgen, gin, nor `net/http`; storage may import neither bus nor app nor gin; `reqid`/`sse` import none of the three; `cli`, like `main`, sits above the layers and imports bus and storage. Only `storage` may import `sqlcgen`. The map lives in `cmd/hermes-chat/layering.go`; the test parses the real import graph via `go list -json`.
 
 ## Key Directories
 
 | Path | Purpose |
 |---|---|
-| `cmd/hermes-chat/` | main, wiring, config, CLI, admin, layering test |
+| `cmd/hermes-chat/` | server: dispatch, config, wiring, serve/routes, layering test |
+| `cmd/hermes-chat/internal/cli/` | admin subcommands (migrate, user, agent) with their own wiring |
 | `cmd/hermes-chat/internal/app/` | HTTP handlers, middleware, SSE endpoint, error mapping |
 | `cmd/hermes-chat/internal/bus/` | Service, domain types, sessions, tokens, throttling, hub |
 | `cmd/hermes-chat/internal/storage/` | Repository impl, DB pools, migrations |
@@ -62,6 +64,7 @@ Locally: `go run ./cmd/hermes-chat serve` (requires `HERMES_CHAT_DB_PATH`; migra
 
 - `cmd/hermes-chat/main.go` — CLI dispatch; exit 2 on usage without config
 - `cmd/hermes-chat/wires.go` — `wireUp()`: storage → bus → app composition
+- `cmd/hermes-chat/internal/cli/admin.go` — `Migrate`/`User`/`Agent` and the cli-owned `openSvc` wiring
 - `cmd/hermes-chat/layering.go` — layering rules; `cmd/hermes-chat/layering_test.go` enforces them
 - `cmd/hermes-chat/internal/app/errors.go` — error code ↔ HTTP status table
 - `cmd/hermes-chat/internal/bus/bus.go` — Service interface, sentinel errors, Service impl
@@ -82,6 +85,6 @@ Locally: `go run ./cmd/hermes-chat serve` (requires `HERMES_CHAT_DB_PATH`; migra
 
 - **Unit** — `internal/bus`, `internal/storage`, `internal/sse`, `internal/reqid`: storage tests get a migrated SQLite via `storage/storagetest.NewRepo`; `bus` takes a fixed `Clock` and `export_test.go` exposes internals (throttle state, argon limiter) for testing.
 - **HTTP** — `internal/app` (package `app_test`): httptest against a real bus; helpers `newEngine`, `authEngine`, `newChat`.
-- **E2E** — `cmd/hermes-chat/serve_test.go` spawns the real server (CLI + HTTP + SSE); `admin_test.go`/`admin_agent_test.go` drive the CLI subcommands through `main.run` with a temp DB.
+- **E2E** — `cmd/hermes-chat/serve_test.go` spawns the real server (CLI + HTTP + SSE); `internal/cli` tests drive `Migrate`/`User`/`Agent` with a temp DB, and `cmd/hermes-chat/main_test.go` pins the dispatch entries.
 
 Conventions: testify assert/require; table tests for validation/error mapping; tests may import `export_test.go` aliases but never production code from another layer. Layering and route tests double as architecture checks (`TestLayering_ThisRepository`, route ordering). No coverage target is enforced; `just check` is the gate.

@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/cli"
 )
 
 func main() {
@@ -42,10 +44,14 @@ func commandList() []subcommand {
 				fmt.Fprint(stderr, usage())
 				return 2
 			}
-			return report(stderr, migrate(ctx, cfg, stdout))
+			return report(stderr, cli.Migrate(ctx, cfg.DBPath, stdout))
 		}},
-		{"user", "manage users (add, passwd, remove, list)", user},
-		{"agent", "manage agents (add, revoke, rotate, list)", agent},
+		{"user", "manage users (add, passwd, remove, list)", func(ctx context.Context, cfg Config, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+			return cli.User(ctx, cfg.DBPath, args, stdin, stdout, stderr)
+		}},
+		{"agent", "manage agents (add, revoke, rotate, list)", func(ctx context.Context, cfg Config, args []string, _ io.Reader, stdout, stderr io.Writer) int {
+			return cli.Agent(ctx, cfg.DBPath, args, stdout, stderr)
+		}},
 	}
 }
 
