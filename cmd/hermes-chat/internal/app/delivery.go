@@ -115,7 +115,7 @@ func (h *controller) AgentRemark(c *gin.Context) {
 	var body struct {
 		Text string `json:"text"`
 	}
-	if !readJSON(c, maxBody, &body) {
+	if !readJSON(c, maxMessageBody, &body) {
 		return
 	}
 	act, err := h.svc.ReportRemark(c.Request.Context(), actorFrom(c), messageID, body.Text)
@@ -138,7 +138,7 @@ func (h *controller) AgentStartTool(c *gin.Context) {
 		Preview   string `json:"preview"`
 		Arguments string `json:"arguments"`
 	}
-	if !readJSON(c, maxBody, &body) {
+	if !readJSON(c, maxMessageBody, &body) {
 		return
 	}
 	act, err := h.svc.StartTool(c.Request.Context(), actorFrom(c), messageID, body.Tool, body.Preview, body.Arguments)

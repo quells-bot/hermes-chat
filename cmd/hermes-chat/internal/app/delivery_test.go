@@ -288,6 +288,34 @@ func TestAgentActivity(t *testing.T) {
 	assert.JSONEq(t, `{"error":{"code":"validation","message":"duration_ms must not be negative"}}`, w.Body.String())
 }
 
+// Agent bodies that carry long text (messages, remarks, tool arguments) are read
+// with the message-size limit, not maxBody, so their bus-valid lengths are reachable.
+func TestAgentLargeBodies(t *testing.T) {
+	r := newAgentRig(t)
+	big := strings.Repeat("x", 8192)
+
+	r.connect(t, r.scout.ID)
+	m := r.kaiPost(t, r.room, "big job", ulid.Zero)
+
+	// a tool start whose arguments are far larger than maxBody → 201
+	w := agentReq(r.e, r.scoutT, "POST", "/agent/deliveries/"+m.ID.String()+"/tools",
+		`{"tool":"write_file","preview":"writing","arguments":"`+big+`"}`)
+	require.Equal(t, 201, w.Code)
+	assert.Equal(t, big, obj(t, w)["arguments"])
+
+	// a remark over maxBody → 201
+	w = agentReq(r.e, r.scoutT, "POST", "/agent/deliveries/"+m.ID.String()+"/remarks", `{"text":"`+big+`"}`)
+	require.Equal(t, 201, w.Code)
+	assert.Equal(t, big, obj(t, w)["text"])
+
+	// an edit whose text exceeds maxBody → 204
+	e := agentReq(r.e, r.scoutT, "POST", "/agent/rooms/"+r.room.ID.String()+"/messages", `{"text":"draft","reply_to_id":null}`)
+	require.Equal(t, 201, e.Code)
+	id := obj(t, e)["id"].(string)
+	w = agentReq(r.e, r.scoutT, "PUT", "/agent/messages/"+id, `{"text":"`+big+`","final":true}`)
+	require.Equal(t, 204, w.Code)
+}
+
 func TestAgentRoutes_RequireTheToken(t *testing.T) {
 	r := newAgentRig(t)
 	id := ulid.Make().String()
