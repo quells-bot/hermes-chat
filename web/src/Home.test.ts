@@ -81,6 +81,18 @@ test('an error shows with Retry, which loads', async () => {
   expect(load).toHaveBeenCalledTimes(1);
 });
 
+test('an error shows on #/new too', async () => {
+  store.error = 'could not load';
+  route.path = '/new';
+  render(Home);
+  expect(screen.getByRole('alert')).toHaveTextContent('could not load');
+  expect(screen.getByRole('heading', { name: 'New room' })).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+  expect(load).toHaveBeenCalledTimes(1);
+});
+
 test('reconnecting shows when loaded and not live, and not before the first load', () => {
   store.link = 'waiting';
   store.loaded = false;

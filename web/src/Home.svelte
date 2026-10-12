@@ -20,10 +20,20 @@
   });
 </script>
 
+{#snippet problem()}
+  {#if store.error}
+    <div class="problem">
+      <p role="alert">{store.error}</p>
+      <button type="button" onclick={load}>Retry</button>
+    </div>
+  {/if}
+{/snippet}
+
 {#if route.path === '/new'}
   <Header title="New room" back="#/">
     <HaltControl />
   </Header>
+  {@render problem()}
   <NewRoom />
 {:else}
   <Header>
@@ -35,12 +45,7 @@
   </Header>
 
   <main>
-    {#if store.error}
-      <div class="problem">
-        <p role="alert">{store.error}</p>
-        <button type="button" onclick={load}>Retry</button>
-      </div>
-    {/if}
+    {@render problem()}
 
     {#if store.loaded}
       <RoomList />

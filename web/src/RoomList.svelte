@@ -20,7 +20,7 @@
       <span class="caret" aria-hidden="true">{collapsed[key] ? '▸' : '▾'}</span>
       {label}
       {#if collapsed[key] && list.some(isUnread)}
-        <i class="dot" aria-label="unread"></i>
+        <i class="dot" role="img" aria-label="unread"></i>
       {/if}
     </button>
     {#if !collapsed[key]}

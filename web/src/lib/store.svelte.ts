@@ -130,14 +130,20 @@ export async function load(): Promise<void> {
     }
     failed(err);
   }
-  // The newest load has settled, well or badly. The held events carry the
-  // state as it was when each was sent, so applying them over a snapshot that
-  // already includes them changes nothing.
+  // The newest load has settled, well or badly. The held events are applied
+  // in order and each carries the state as it was when it was sent, so the
+  // last one for a room wins. A held one can be older than the snapshot and
+  // briefly put back that older state, until the next event or load.
   loading = false;
   const events = held;
   held = [];
   for (const [name, data] of events) {
-    apply(name, data);
+    // One that throws must not take the ones behind it, or the load, with it.
+    try {
+      apply(name, data);
+    } catch (err) {
+      console.error('a held event could not be applied', name, err);
+    }
   }
 }
 
@@ -256,8 +262,8 @@ export function apply(name: string, data: unknown): void {
           continue; // waiting, delivered and cancelled say nothing about working
         }
         for (const a of room.agents) {
-          if (a.id !== id) {
-            continue;
+          if (!isObject(a) || a.id !== id) {
+            continue; // a room off the wire may hold anything in agents
           }
           const set = workingOn.get(room.id)?.get(a.id);
           if (state === 'working') {
@@ -290,7 +296,7 @@ export function apply(name: string, data: unknown): void {
       store.agents[agent.id] = agent as Agent;
       for (const room of Object.values(store.rooms)) {
         for (const a of room.agents) {
-          if (a.id === agent.id) {
+          if (isObject(a) && a.id === agent.id) {
             a.connected = connected;
           }
         }

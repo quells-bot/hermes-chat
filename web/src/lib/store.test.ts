@@ -601,6 +601,54 @@ test('events held behind a superseded load wait for the newest one', async () =>
   expect(store.rooms['01C']).toBeDefined();
 });
 
+test('a held event that throws does not drop the ones behind it', async () => {
+  const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const slow = deferred<Room[]>();
+  vi.mocked(api.listRooms).mockReturnValueOnce(slow.promise);
+  connect();
+  const pending = load();
+  const boom = new Error('boom');
+
+  handlers.event('room.changed', { room: room({ id: '01R', topic: 'Before' }) });
+  handlers.event('room.changed', {
+    get room(): never {
+      throw boom;
+    },
+  });
+  handlers.event('room.changed', { room: room({ id: '01R', topic: 'After' }) });
+  handlers.event('room.changed', { room: room({ id: '01S' }) });
+  slow.resolve([]);
+
+  await expect(pending).resolves.toBeUndefined();
+  expect(store.rooms['01R'].topic).toBe('After');
+  expect(store.rooms['01S']).toBeDefined();
+  expect(logged).toHaveBeenCalledTimes(1);
+  expect(logged.mock.calls[0]).toContain(boom);
+
+  // The queue is empty again: nothing is applied twice by the next load.
+  await load();
+  expect(logged).toHaveBeenCalledTimes(1);
+});
+
+test('an entry among a room\'s agents that is not an object is skipped', () => {
+  const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+  connect();
+  const slow = deferred<Room[]>();
+  vi.mocked(api.listRooms).mockReturnValueOnce(slow.promise);
+  const pending = load();
+
+  handlers.event('room.changed', { room: { ...room({ id: '01R' }), agents: [null, agent({ id: '01A' })] } });
+  handlers.event('delivery.changed', {
+    message: { id: '01M1', room_id: '01R', deliveries: [{ agent: { id: '01A' }, state: 'working' }] },
+  });
+  handlers.event('agent.presence', { agent: agent({ id: '01A' }), connected: true });
+  slow.resolve([]);
+  return pending.then(() => {
+    expect(store.rooms['01R'].agents[1]).toMatchObject({ working: true, connected: true });
+    expect(logged).not.toHaveBeenCalled();
+  });
+});
+
 test('disconnect drops held events', async () => {
   const slow = deferred<Room[]>();
   vi.mocked(api.listRooms).mockReturnValueOnce(slow.promise);

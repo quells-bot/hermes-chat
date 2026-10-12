@@ -16,6 +16,7 @@
       <i
         class="presence"
         class:on={agent?.connected}
+        role="img"
         aria-label={agent?.connected ? 'connected' : 'offline'}
       ></i>
     </span>
@@ -33,7 +34,7 @@
     <span class="tag pause">paused</span>
   {/if}
   {#if unread}
-    <i class="dot" aria-label="unread"></i>
+    <i class="dot" role="img" aria-label="unread"></i>
   {/if}
 </li>
 
