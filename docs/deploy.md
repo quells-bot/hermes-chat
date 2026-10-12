@@ -12,7 +12,7 @@ The files are in `deploy/`: `hermes-chat.service`, `hermes-chat.env.example`, `h
 
 ## 2. Before the first start, check DNS and IPv6
 
-Do this before step 5. The first start asks Let's Encrypt for a certificate, and Let's Encrypt allows five failed validations per name per hour. Starting before DNS resolves spends them.
+Do this before section 5. The first start asks Let's Encrypt for a certificate, and Let's Encrypt allows five failed validations per name per hour. Starting before DNS resolves spends them.
 
 1. On the build machine, check the A record.
 
@@ -36,7 +36,7 @@ Do this before step 5. The first start asks Let's Encrypt for a certificate, and
    ssh -6 root@chat.example.com
    ```
 
-   Worked: you get a shell on the host. Type `exit`. If it hangs or is refused, fix or remove the AAAA record and wait for DNS to catch up before going on.
+   Worked: you get a shell on the host. Type `exit`. If it hangs or is refused, fix or remove the AAAA record and wait for DNS to catch up before going on. This proves the address and port 22 only; port 443 over IPv6 is checked in section 6, once something listens there.
 
 ## 3. Prepare the host
 
@@ -45,10 +45,11 @@ Once, on the host, in this order. Allowing 22 before enabling ufw keeps your ssh
 1. Install the tools the scripts use and the firewall.
 
    ```
+   apt-get update
    apt-get install -y curl ufw
    ```
 
-   Worked: it ends without an error.
+   Worked: both end without an error. Without the `update`, a fresh host answers `Package 'ufw' has no installation candidate`.
 
 2. Open ssh and HTTPS, then turn the firewall on.
 
@@ -60,7 +61,7 @@ Once, on the host, in this order. Allowing 22 before enabling ufw keeps your ssh
 
    Worked: the first two print `Rules updated` (and `Rules updated (v6)`); the last prints `Firewall is active and enabled on system startup`.
 
-3. Create the service user. This does not create its home directory, `/var/lib/hermes-chat`; systemd creates it, owned by this user, the first time the service starts (step 5).
+3. Create the service user. This does not create its home directory, `/var/lib/hermes-chat`; systemd creates it, owned by this user, the first time the service starts (section 5).
 
    ```
    useradd --system --home-dir /var/lib/hermes-chat --shell /usr/sbin/nologin hermes-chat
@@ -97,14 +98,14 @@ Once, on the host, in this order. Allowing 22 before enabling ufw keeps your ssh
 
    Worked: no output.
 
-3. Set your domain in the environment file. Use an editor, or:
+3. Set your domain in the environment file. The file arrives with the placeholder `chat.example.com`, which must not reach the first start. Use an editor, or run this with your own name in place of `chat.example.com`:
 
    ```
    sed -i 's/^HERMES_CHAT_TLS_DOMAIN=.*/HERMES_CHAT_TLS_DOMAIN=chat.example.com/' /etc/hermes-chat/env
-   grep -v '^#' /etc/hermes-chat/env
+   grep '^HERMES_CHAT_' /etc/hermes-chat/env
    ```
 
-   Worked: the grep prints the four settings, with `HERMES_CHAT_TLS_DOMAIN=` followed by your name. The name must be lower case with no quotes, scheme, or port. Values in this file are never quoted, because `hermes-chat-upgrade` and `hermes-chat-admin` read it without a shell and would keep the quotes.
+   Worked: the grep prints the four settings, with `HERMES_CHAT_TLS_DOMAIN=` followed by your name and not `chat.example.com`. The name must be lower case with no quotes, scheme, or port. Values in this file are never quoted, because `hermes-chat-upgrade` and `hermes-chat-admin` read it without a shell and would keep the quotes.
 
 4. Load the unit and have it start at boot.
 
@@ -140,9 +141,16 @@ Once, on the host, in this order. Allowing 22 before enabling ufw keeps your ssh
    hermes-chat-upgrade /root/hermes-chat-linux-amd64
    ```
 
-   Worked: the last line is `installed`. This step creates `/var/lib/hermes-chat`, applies the database migrations, and starts the service. The script's health check is the first TLS handshake, which is what makes Let's Encrypt issue the certificate, so allow up to a minute.
+   Worked: the last line is `installed`. This step creates `/var/lib/hermes-chat`, applies the database migrations, and starts the service. The script's health check is the first TLS handshake, which is what makes Let's Encrypt issue the certificate, so allow up to a minute; it usually takes a few seconds.
 
-   If it prints `new version failed its health check; nothing to roll back to`, the service is left stopped. Read the log (section 10), fix the cause (usually DNS, IPv6, or port 443 not reachable), and run the same command again. `candidate does not run on this host` means the wrong architecture or a damaged copy; nothing was stopped.
+   If it prints `new version failed its health check; nothing to roll back to`, the service is left stopped and the binary that failed is left at `/usr/local/bin/hermes-chat`. Read the log (section 10) and fix the cause (usually DNS, IPv6, or port 443 not reachable). Then remove that binary and run the same command again:
+
+   ```
+   rm -f /usr/local/bin/hermes-chat
+   hermes-chat-upgrade /root/hermes-chat-linux-amd64
+   ```
+
+   Without the `rm`, the script takes the failed binary for a working previous version: a successful retry prints `upgraded; previous binary kept at ...` instead of `installed`, and a failed one starts the failed binary again and reports `rolled back to the previous version`. `candidate does not run on this host` means the wrong architecture or a damaged copy; nothing was stopped.
 
 ## 6. Check it
 
@@ -152,7 +160,15 @@ Once, on the host, in this order. Allowing 22 before enabling ufw keeps your ssh
    curl -s -o /dev/null -w '%{http_version} %{http_code}\n' --http2 https://chat.example.com/healthz
    ```
 
-   Worked: it prints `2 200` (HTTP/2, status 200) with no certificate warning.
+   Worked: it prints `2 200` (HTTP/2, status 200) with no certificate warning. Use this GET; `curl -I` sends HEAD, which the server answers with 404.
+
+   If you published an AAAA record, check IPv6 as well:
+
+   ```
+   curl -6 -s -o /dev/null -w '%{http_version} %{http_code}\n' --http2 https://chat.example.com/healthz
+   ```
+
+   Worked: `2 200` again.
 
 2. On the host:
 
@@ -180,7 +196,7 @@ Once, on the host, in this order. Allowing 22 before enabling ufw keeps your ssh
 
 ## 7. Create people and agents
 
-Do this after step 5: the state directory and the database do not exist until the service has started once. `hermes-chat-admin` runs the `hermes-chat` command as the `hermes-chat` user with the settings from `/etc/hermes-chat/env`, so every file it touches is owned by the service. Run it as root, in a terminal, so the password prompt works.
+Do this after section 5: the state directory and the database do not exist until the service has started once. `hermes-chat-admin` runs the `hermes-chat` command as the `hermes-chat` user with the settings from `/etc/hermes-chat/env`, so every file it touches is owned by the service. Run it as root, in a terminal, so the password prompt works.
 
 1. Create a person. It asks for the password twice.
 
