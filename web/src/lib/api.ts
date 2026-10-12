@@ -1,7 +1,9 @@
 // The human API, as the browser calls it. Paths are relative, so the session
 // cookie and the Origin header the server checks go with every request.
 
-export type Me = { id: string; username: string };
+import type { Agent, Human, Room } from './types';
+
+export type Me = Human;
 
 export class ApiError extends Error {
   readonly status: number; // 0 when no response arrived
@@ -26,6 +28,12 @@ let unauthenticated: () => void = () => {};
 // There is one handler; a later call replaces it.
 export function onUnauthenticated(handler: () => void): void {
   unauthenticated = handler;
+}
+
+// sessionLost runs that handler for callers that do not go through request(),
+// such as the event stream.
+export function sessionLost(): void {
+  unauthenticated();
 }
 
 function retryAfter(res: Response): number | null {
@@ -101,4 +109,37 @@ export function logout(): Promise<void> {
 
 export function me(): Promise<Me> {
   return request<Me>('GET', '/api/me');
+}
+
+export function listRooms(): Promise<Room[]> {
+  return request<{ rooms: Room[] }>('GET', '/api/rooms').then((r) => r.rooms);
+}
+
+export function getRoom(id: string): Promise<Room> {
+  return request<Room>('GET', `/api/rooms/${encodeURIComponent(id)}`);
+}
+
+export function listAgents(): Promise<Agent[]> {
+  return request<{ agents: Agent[] }>('GET', '/api/agents').then((r) => r.agents);
+}
+
+export function getHalt(): Promise<boolean> {
+  return request<{ halted: boolean }>('GET', '/api/halt').then((r) => r.halted);
+}
+
+export function stopEverything(): Promise<boolean> {
+  return request<{ halted: boolean }>('POST', '/api/halt').then((r) => r.halted);
+}
+
+export function resumeEverything(): Promise<boolean> {
+  return request<{ halted: boolean }>('DELETE', '/api/halt').then((r) => r.halted);
+}
+
+export function createRoom(topic: string, agentIds: string[]): Promise<Room> {
+  return request<Room>('POST', '/api/rooms', { topic, agent_ids: agentIds });
+}
+
+// openDM answers 201 when it created the room and 200 when it was there.
+export function openDM(agentId: string): Promise<Room> {
+  return request<Room>('POST', '/api/dms', { agent_id: agentId });
 }

@@ -13,8 +13,15 @@
   --paper: #fdfbfd;
   --paper2: #f4eef5;
   --line: #e2d8e4;
+  --edge: #8a7c8e;
+  --btn: #3b1b42;
+  --on-btn: #f3e9f5;
   --accent: #7a2f8a;
   --err: #d2473c;
+  --unread: #ff8fb8;
+  --ask: #f0b34a;
+  --on-ask: #3b2600;
+  --ok: #3fbf85;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -29,6 +36,9 @@
     --paper: #1b131e;
     --paper2: #241a28;
     --line: #382a3d;
+    --edge: #8d7b92;
+    --btn: #c98ad6;
+    --on-btn: #1b131e;
     --accent: #c98ad6;
   }
 }
@@ -54,9 +64,23 @@ textarea {
   color: inherit;
 }
 
-/* Below 16px, iOS zooms the page when a field takes focus. */
+/* Below 16px, iOS zooms the page when a field takes focus; the viewport's
+   maximum-scale=1 stops that zoom whatever the size. */
 input,
 select,
 textarea {
   font-size: max(1rem, 16px);
+}
+
+/* --edge is a control's outline: 3:1 or better against --paper, where --line
+   only separates. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+#app {
+  max-width: 32rem;
+  margin-inline: auto;
+  min-height: 100dvh;
 }
