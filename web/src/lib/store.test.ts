@@ -8,6 +8,7 @@ import type { Agent, Room } from './types';
 vi.mock('./api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./api')>()),
   listRooms: vi.fn(),
+  getRoom: vi.fn(),
   listAgents: vi.fn(),
   getHalt: vi.fn(),
   stopEverything: vi.fn(),
@@ -30,6 +31,23 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   return { promise, resolve };
 }
 
+// delivered applies a delivery.changed for one message in room 01R: every
+// agent's copy of it, as [agent id, state].
+function delivered(message: string, ...copies: [agent: string, state: string][]): void {
+  apply('delivery.changed', {
+    message: {
+      id: message,
+      room_id: '01R',
+      deliveries: copies.map(([id, state]) => ({ agent: { id }, state })),
+    },
+  });
+}
+
+// workingIn says which of room 01R's agents the store holds as working.
+function workingIn(): Record<string, boolean> {
+  return Object.fromEntries(store.rooms['01R'].agents.map((a) => [a.id, a.working]));
+}
+
 function becomeVisible(): void {
   vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
   document.dispatchEvent(new Event('visibilitychange'));
@@ -47,6 +65,7 @@ beforeEach(() => {
     });
   vi.mocked(api.listRooms).mockReset().mockResolvedValue([]);
   vi.mocked(api.listAgents).mockReset().mockResolvedValue([]);
+  vi.mocked(api.getRoom).mockReset();
   vi.mocked(api.getHalt).mockReset().mockResolvedValue(false);
   vi.mocked(api.stopEverything).mockReset();
   vi.mocked(api.resumeEverything).mockReset();
@@ -132,6 +151,134 @@ test('delivery.changed sets and clears working', () => {
   report('working');
   report('failed');
   expect(working('01A')).toBe(false);
+});
+
+test('a finished copy of an older message does not clear an agent working on a later one', () => {
+  putRoom(room({ id: '01R', agents: [agent({ id: '01A' }), agent({ id: '01B' })] }));
+
+  // M1 wakes both agents, M2 only A. A finishes M1 and starts M2.
+  delivered('01M1', ['01A', 'working'], ['01B', 'working']);
+  delivered('01M1', ['01A', 'done'], ['01B', 'working']);
+  delivered('01M2', ['01A', 'working']);
+  expect(workingIn()).toEqual({ '01A': true, '01B': true });
+
+  // B finishes M1; the event carries A's finished copy of M1 too.
+  delivered('01M1', ['01A', 'done'], ['01B', 'done']);
+  expect(workingIn()).toEqual({ '01A': true, '01B': false });
+
+  delivered('01M2', ['01A', 'failed']);
+  expect(workingIn()).toEqual({ '01A': false, '01B': false });
+  expect(api.getRoom).not.toHaveBeenCalled();
+});
+
+test('done for the message that set working clears it', () => {
+  putRoom(room({ id: '01R', agents: [agent({ id: '01A' })] }));
+
+  delivered('01M1', ['01A', 'working']);
+  delivered('01M1', ['01A', 'done']);
+  expect(workingIn()).toEqual({ '01A': false });
+
+  // Nothing is recorded and nothing is set, so there is nothing to ask.
+  delivered('01M1', ['01A', 'done']);
+  expect(workingIn()).toEqual({ '01A': false });
+  expect(api.getRoom).not.toHaveBeenCalled();
+});
+
+test('done for a message after a snapshot said working refetches the room', async () => {
+  vi.mocked(api.listRooms).mockResolvedValue([
+    room({ id: '01R', agents: [agent({ id: '01A', working: true })] }),
+  ]);
+  await load();
+  // The agent is on M2; this is its finished copy of M1.
+  const now = room({ id: '01R', topic: 'Now', agents: [agent({ id: '01A', working: true })] });
+  vi.mocked(api.getRoom).mockResolvedValue(now);
+
+  delivered('01M1', ['01A', 'done']);
+
+  expect(workingIn()).toEqual({ '01A': true }); // not guessed
+  expect(api.getRoom).toHaveBeenCalledTimes(1);
+  expect(api.getRoom).toHaveBeenCalledWith('01R');
+  await vi.waitFor(() => expect(store.rooms['01R']).toEqual(now));
+});
+
+test('two such events for one room make one refetch while it is in flight', async () => {
+  const working = agent({ id: '01A', working: true });
+  putRoom(room({ id: '01R', agents: [working] }));
+  putRoom(room({ id: '01S', agents: [working] }));
+  const first = deferred<Room>();
+  vi.mocked(api.getRoom).mockReturnValueOnce(first.promise);
+
+  delivered('01M1', ['01A', 'done']);
+  delivered('01M2', ['01A', 'failed']);
+  expect(api.getRoom).toHaveBeenCalledTimes(1);
+
+  first.resolve(room({ id: '01R', agents: [working] }));
+  await vi.waitFor(() => expect(store.rooms['01R'].topic).toBe('Topic'));
+  await Promise.resolve();
+
+  // The first has settled, so the next one asks again; another room never waited.
+  vi.mocked(api.getRoom).mockResolvedValue(room({ id: '01R', agents: [agent({ id: '01A' })] }));
+  delivered('01M3', ['01A', 'done']);
+  expect(api.getRoom).toHaveBeenCalledTimes(2);
+  await vi.waitFor(() => expect(workingIn()).toEqual({ '01A': false }));
+});
+
+test('a refetch that settles after disconnect writes nothing', async () => {
+  putRoom(room({ id: '01R', agents: [agent({ id: '01A', working: true })] }));
+  const slow = deferred<Room>();
+  vi.mocked(api.getRoom).mockReturnValueOnce(slow.promise);
+  delivered('01M1', ['01A', 'done']);
+
+  disconnect();
+  slow.resolve(room({ id: '01R' }));
+  await slow.promise;
+  await Promise.resolve();
+
+  expect(store.rooms).toEqual({});
+});
+
+test('a refetch that settles after a newer load started writes nothing', async () => {
+  putRoom(room({ id: '01R', agents: [agent({ id: '01A', working: true })] }));
+  const slow = deferred<Room>();
+  vi.mocked(api.getRoom).mockReturnValueOnce(slow.promise);
+  delivered('01M1', ['01A', 'done']);
+
+  vi.mocked(api.listRooms).mockResolvedValue([room({ id: '01R', topic: 'Loaded' })]);
+  await load();
+  slow.resolve(room({ id: '01R', topic: 'Stale' }));
+  await slow.promise;
+  await Promise.resolve();
+
+  expect(store.rooms['01R'].topic).toBe('Loaded');
+});
+
+test('a failed refetch changes nothing and sets no error', async () => {
+  const held = room({ id: '01R', agents: [agent({ id: '01A', working: true })] });
+  putRoom(held);
+  let reject!: (err: Error) => void;
+  const failing = new Promise<Room>((_, r) => (reject = r));
+  vi.mocked(api.getRoom).mockReturnValueOnce(failing);
+
+  delivered('01M1', ['01A', 'done']);
+  reject(unreachable());
+  await failing.catch(() => {});
+  await Promise.resolve();
+
+  expect(store.rooms).toEqual({ '01R': held });
+  expect(store.error).toBe('');
+});
+
+test('a room.changed forgets which message set working in that room', () => {
+  putRoom(room({ id: '01R', agents: [agent({ id: '01A' })] }));
+  delivered('01M2', ['01A', 'working']);
+
+  // The room's agents are replaced, working as the server has it now.
+  apply('room.changed', { room: room({ id: '01R', agents: [agent({ id: '01A', working: true })] }) });
+  vi.mocked(api.getRoom).mockReturnValue(new Promise(() => {}));
+  delivered('01M3', ['01A', 'done']);
+
+  expect(workingIn()).toEqual({ '01A': true });
+  expect(api.getRoom).toHaveBeenCalledTimes(1);
 });
 
 test('agent.presence reaches the agent in every room it is in, and the directory', () => {

@@ -115,6 +115,10 @@ export function listRooms(): Promise<Room[]> {
   return request<{ rooms: Room[] }>('GET', '/api/rooms').then((r) => r.rooms);
 }
 
+export function getRoom(id: string): Promise<Room> {
+  return request<Room>('GET', `/api/rooms/${encodeURIComponent(id)}`);
+}
+
 export function listAgents(): Promise<Agent[]> {
   return request<{ agents: Agent[] }>('GET', '/api/agents').then((r) => r.agents);
 }

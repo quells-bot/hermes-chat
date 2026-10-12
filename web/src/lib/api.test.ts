@@ -3,6 +3,7 @@ import {
   ApiError,
   createRoom,
   getHalt,
+  getRoom,
   listAgents,
   listRooms,
   login,
@@ -200,6 +201,17 @@ test('listRooms unwraps the rooms', async () => {
   const [path, init] = fetchMock.mock.calls[0];
   expect(path).toBe('/api/rooms');
   expect(init.method).toBe('GET');
+});
+
+test('getRoom gets one room, which is the body itself', async () => {
+  fetchMock.mockResolvedValue(json(200, { id: '01R', topic: 'Trip' }));
+
+  await expect(getRoom('01R')).resolves.toEqual({ id: '01R', topic: 'Trip' });
+
+  const [path, init] = fetchMock.mock.calls[0];
+  expect(path).toBe('/api/rooms/01R');
+  expect(init.method).toBe('GET');
+  expect(init.body).toBeUndefined();
 });
 
 test('listAgents unwraps the agents', async () => {

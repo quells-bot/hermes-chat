@@ -2,7 +2,7 @@
 // it is loaded each time the event stream reaches `ready` and kept current by
 // the events after it. Nothing else holds this state.
 
-import { ApiError, getHalt, listAgents, listRooms, resumeEverything, stopEverything } from './api';
+import { ApiError, getHalt, getRoom, listAgents, listRooms, resumeEverything, stopEverything } from './api';
 import { openStream, type Stream, type StreamState } from './stream';
 import type { Agent, Room } from './types';
 
@@ -35,6 +35,17 @@ let held: [name: string, data: unknown][] = [];
 // resets counts the calls to disconnect(), so that a stop or resume that
 // settles after one does not write into the emptied store.
 let resets = 0;
+
+// workingOn holds, by room id and then agent id, the message whose
+// delivery.changed last set working for that agent in that room. A room's
+// queue is per agent, so a finished copy of an earlier message says nothing
+// about an agent that has since started a later one.
+let workingOn = new Map<string, Map<string, string>>();
+
+// refetching holds the rooms being fetched again, each with the value of
+// loads it started under. Once loads has moved on, that fetch will write
+// nothing and no longer counts as in flight.
+const refetching = new Map<string, number>();
 
 // A hidden page may have missed a read marker moving, which no event
 // announces, and its stream may be waiting out a long reconnect delay.
@@ -70,9 +81,10 @@ export function disconnect(): void {
   document.removeEventListener('visibilitychange', visibilityChanged);
   stream?.close();
   stream = null;
-  loads += 1; // a load still in flight must not write into the empty store
+  loads += 1; // a load or refetch still in flight must not write into the empty store
   loading = false;
   held = [];
+  workingOn = new Map();
   resets += 1;
   Object.assign(store, initial());
 }
@@ -107,6 +119,7 @@ export async function load(): Promise<void> {
       return;
     }
     store.rooms = byId(rooms);
+    workingOn = new Map();
     store.agents = byId(agents);
     store.halted = halted;
     store.error = '';
@@ -138,9 +151,36 @@ function receive(name: string, data: unknown): void {
   apply(name, data);
 }
 
-// putRoom inserts the room, or replaces the one held under its id.
+// putRoom inserts the room, or replaces the one held under its id. Its agents
+// come with it, so what set working for the old ones is forgotten.
 export function putRoom(room: Room): void {
   store.rooms[room.id] = room;
+  workingOn.delete(room.id);
+}
+
+// refetch replaces one room with the server's, for when an event cannot say
+// whether an agent is still working. One fetch per room at a time; a second
+// request meanwhile is dropped. A failure is ignored, since the next load
+// heals it, and an answer that arrives after disconnect() or after a newer
+// load() started is dropped.
+async function refetch(id: string): Promise<void> {
+  const seq = loads;
+  if (refetching.get(id) === seq) {
+    return;
+  }
+  refetching.set(id, seq);
+  try {
+    const room = await getRoom(id);
+    if (seq === loads) {
+      putRoom(room);
+    }
+  } catch {
+    // ignored
+  } finally {
+    if (refetching.get(id) === seq) {
+      refetching.delete(id);
+    }
+  }
 }
 
 // Event data comes off the wire as unknown. The checks below cover what apply
@@ -203,9 +243,12 @@ export function apply(name: string, data: unknown): void {
     case 'delivery.changed': {
       const message = field(data, 'message');
       const room = heldRoom(message);
-      if (room === null || !Array.isArray(message?.deliveries)) {
+      const mid = message?.id;
+      if (room === null || typeof mid !== 'string' || !Array.isArray(message?.deliveries)) {
         return;
       }
+      // The event carries every agent's copy of this one message, as it is
+      // now. An agent may be on a later message, which this event does not show.
       for (const delivery of message.deliveries as unknown[]) {
         const id = field(delivery, 'agent')?.id;
         const state = isObject(delivery) ? delivery.state : undefined;
@@ -213,8 +256,26 @@ export function apply(name: string, data: unknown): void {
           continue; // waiting, delivered and cancelled say nothing about working
         }
         for (const a of room.agents) {
-          if (a.id === id) {
-            a.working = state === 'working';
+          if (a.id !== id) {
+            continue;
+          }
+          const set = workingOn.get(room.id)?.get(a.id);
+          if (state === 'working') {
+            a.working = true;
+            if (!workingOn.has(room.id)) {
+              workingOn.set(room.id, new Map());
+            }
+            workingOn.get(room.id)?.set(a.id, mid);
+          } else if (set !== undefined) {
+            // ULIDs sort by time: a copy of an earlier message changes nothing.
+            if (mid >= set) {
+              a.working = false;
+              workingOn.get(room.id)?.delete(a.id);
+            }
+          } else if (a.working) {
+            // The flag came from a snapshot or a room.changed, which do not
+            // say for which message. Ask rather than guess.
+            void refetch(room.id);
           }
         }
       }
