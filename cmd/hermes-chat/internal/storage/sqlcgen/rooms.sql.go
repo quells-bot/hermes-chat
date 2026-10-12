@@ -28,7 +28,7 @@ func (q *Queries) DeleteRoomAgent(ctx context.Context, arg DeleteRoomAgentParams
 }
 
 const getDMRoom = `-- name: GetDMRoom :one
-SELECT id, topic, dm_human_id, dm_agent_id, created_at, archived_at FROM rooms WHERE dm_human_id = ? AND dm_agent_id = ?
+SELECT id, topic, dm_human_id, dm_agent_id, created_at, archived_at, paused_at, pause_reason, turn_cap, agent_turns FROM rooms WHERE dm_human_id = ? AND dm_agent_id = ?
 `
 
 type GetDMRoomParams struct {
@@ -46,12 +46,16 @@ func (q *Queries) GetDMRoom(ctx context.Context, arg GetDMRoomParams) (Room, err
 		&i.DmAgentID,
 		&i.CreatedAt,
 		&i.ArchivedAt,
+		&i.PausedAt,
+		&i.PauseReason,
+		&i.TurnCap,
+		&i.AgentTurns,
 	)
 	return i, err
 }
 
 const getRoom = `-- name: GetRoom :one
-SELECT id, topic, dm_human_id, dm_agent_id, created_at, archived_at FROM rooms WHERE id = ?
+SELECT id, topic, dm_human_id, dm_agent_id, created_at, archived_at, paused_at, pause_reason, turn_cap, agent_turns FROM rooms WHERE id = ?
 `
 
 func (q *Queries) GetRoom(ctx context.Context, id string) (Room, error) {
@@ -64,6 +68,10 @@ func (q *Queries) GetRoom(ctx context.Context, id string) (Room, error) {
 		&i.DmAgentID,
 		&i.CreatedAt,
 		&i.ArchivedAt,
+		&i.PausedAt,
+		&i.PauseReason,
+		&i.TurnCap,
+		&i.AgentTurns,
 	)
 	return i, err
 }
@@ -150,6 +158,33 @@ func (q *Queries) InsertRoomHuman(ctx context.Context, arg InsertRoomHumanParams
 	return err
 }
 
+const listAllRoomAgents = `-- name: ListAllRoomAgents :many
+SELECT room_id, agent_id, joined_at FROM room_agents ORDER BY room_id, agent_id
+`
+
+func (q *Queries) ListAllRoomAgents(ctx context.Context) ([]RoomAgent, error) {
+	rows, err := q.db.QueryContext(ctx, listAllRoomAgents)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RoomAgent
+	for rows.Next() {
+		var i RoomAgent
+		if err := rows.Scan(&i.RoomID, &i.AgentID, &i.JoinedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRoomAgents = `-- name: ListRoomAgents :many
 SELECT a.id, a.handle, a.display_name, a.token_hash, a.revoked_at, a.created_at
 FROM agents a JOIN room_agents ra ON ra.agent_id = a.id
@@ -224,7 +259,7 @@ func (q *Queries) ListRoomHumans(ctx context.Context, roomID string) ([]ListRoom
 }
 
 const listRoomsByHuman = `-- name: ListRoomsByHuman :many
-SELECT r.id, r.topic, r.dm_human_id, r.dm_agent_id, r.created_at, r.archived_at
+SELECT r.id, r.topic, r.dm_human_id, r.dm_agent_id, r.created_at, r.archived_at, r.paused_at, r.pause_reason, r.turn_cap, r.agent_turns
 FROM rooms r JOIN room_humans rh ON rh.room_id = r.id
 WHERE rh.human_id = ?
 ORDER BY r.id
@@ -246,6 +281,10 @@ func (q *Queries) ListRoomsByHuman(ctx context.Context, humanID string) ([]Room,
 			&i.DmAgentID,
 			&i.CreatedAt,
 			&i.ArchivedAt,
+			&i.PausedAt,
+			&i.PauseReason,
+			&i.TurnCap,
+			&i.AgentTurns,
 		); err != nil {
 			return nil, err
 		}
@@ -258,6 +297,23 @@ func (q *Queries) ListRoomsByHuman(ctx context.Context, humanID string) ([]Room,
 		return nil, err
 	}
 	return items, nil
+}
+
+const setRoomAgentTurns = `-- name: SetRoomAgentTurns :execrows
+UPDATE rooms SET agent_turns = ? WHERE id = ?
+`
+
+type SetRoomAgentTurnsParams struct {
+	AgentTurns int64
+	ID         string
+}
+
+func (q *Queries) SetRoomAgentTurns(ctx context.Context, arg SetRoomAgentTurnsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setRoomAgentTurns, arg.AgentTurns, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const setRoomArchivedAt = `-- name: SetRoomArchivedAt :execrows
@@ -295,6 +351,24 @@ func (q *Queries) SetRoomHumanLastRead(ctx context.Context, arg SetRoomHumanLast
 	return result.RowsAffected()
 }
 
+const setRoomPause = `-- name: SetRoomPause :execrows
+UPDATE rooms SET paused_at = ?, pause_reason = ? WHERE id = ?
+`
+
+type SetRoomPauseParams struct {
+	PausedAt    sql.NullInt64
+	PauseReason string
+	ID          string
+}
+
+func (q *Queries) SetRoomPause(ctx context.Context, arg SetRoomPauseParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setRoomPause, arg.PausedAt, arg.PauseReason, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setRoomTopic = `-- name: SetRoomTopic :execrows
 UPDATE rooms SET topic = ? WHERE id = ?
 `
@@ -306,6 +380,23 @@ type SetRoomTopicParams struct {
 
 func (q *Queries) SetRoomTopic(ctx context.Context, arg SetRoomTopicParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, setRoomTopic, arg.Topic, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setRoomTurnCap = `-- name: SetRoomTurnCap :execrows
+UPDATE rooms SET turn_cap = ? WHERE id = ?
+`
+
+type SetRoomTurnCapParams struct {
+	TurnCap int64
+	ID      string
+}
+
+func (q *Queries) SetRoomTurnCap(ctx context.Context, arg SetRoomTurnCapParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setRoomTurnCap, arg.TurnCap, arg.ID)
 	if err != nil {
 		return 0, err
 	}

@@ -48,3 +48,7 @@ SELECT room_id FROM room_agents WHERE agent_id = ? ORDER BY room_id;
 SELECT room_id, agent_id, message_id, state FROM deliveries
 WHERE room_id = ? AND agent_id = ? AND state = 'working'
 ORDER BY message_id LIMIT 1;
+-- name: GetDeliveredDelivery :one
+SELECT room_id, agent_id, message_id, state FROM deliveries
+WHERE room_id = ? AND agent_id = ? AND state = 'delivered'
+ORDER BY message_id LIMIT 1;
