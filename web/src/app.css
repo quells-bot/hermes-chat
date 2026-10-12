@@ -1,0 +1,62 @@
+/* Colours are from the approved mockup and are not final. Aubergine is for
+   navigation surfaces; anything read at length sits on a neutral. */
+:root {
+  --page: #efeaf0;
+  --ink: #221a24;
+  --ink2: #6f6373;
+  --aub: #3b1b42;
+  --aub-hi: #4c2555;
+  --aub-lo: #2c1232;
+  --aub-line: #5a3463;
+  --on-aub: #f3e9f5;
+  --on-aub2: #bfa6c5;
+  --paper: #fdfbfd;
+  --paper2: #f4eef5;
+  --line: #e2d8e4;
+  --accent: #7a2f8a;
+  --err: #d2473c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #120c14;
+    --ink: #efe6f1;
+    --ink2: #a493a8;
+    --aub: #2a1230;
+    --aub-hi: #3a1b42;
+    --aub-lo: #1f0c24;
+    --aub-line: #47294f;
+    --paper: #1b131e;
+    --paper2: #241a28;
+    --line: #382a3d;
+    --accent: #c98ad6;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  background: var(--page);
+  color: var(--ink);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* Below 16px, iOS zooms the page when a field takes focus. */
+input,
+select,
+textarea {
+  font-size: max(1rem, 16px);
+}

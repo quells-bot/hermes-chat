@@ -8,8 +8,8 @@ import (
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/app"
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/bus"
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/storage"
+	"github.com/quells-bot/hermes-chat/web"
 )
-
 
 type wires struct {
 	Hub     *bus.Hub
@@ -37,7 +37,7 @@ func wireUp(ctx context.Context, cfg Config) (wires, error) {
 	}
 	svc := bus.NewService(storage.NewRepo(db), time.Now, bus.WithFiles(files))
 	w.Hub = svc.Hub()
-	w.App = app.NewController(svc, app.Options{CookieSecure: cfg.CookieSecure})
+	w.App = app.NewController(svc, app.Options{CookieSecure: cfg.CookieSecure, UI: web.Dist()})
 	return w, nil
 }
 

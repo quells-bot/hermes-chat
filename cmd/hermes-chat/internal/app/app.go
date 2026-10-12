@@ -2,6 +2,7 @@
 package app
 
 import (
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"time"
@@ -17,6 +18,8 @@ const RequestIDHeader = "X-Request-ID"
 // Controller is the set of HTTP handlers.
 type Controller interface {
 	Healthz(c *gin.Context)
+	Index(c *gin.Context)
+	Asset(c *gin.Context)
 	HumanAuth(c *gin.Context)
 	AgentAuth(c *gin.Context)
 	Login(c *gin.Context)
@@ -75,6 +78,7 @@ type Options struct {
 	HeartbeatInterval  time.Duration // between a stream's heartbeats; zero means DefaultHeartbeatInterval
 	StreamWriteTimeout time.Duration // for one write to a stream; zero means DefaultStreamWriteTimeout
 	TransferTimeout    time.Duration // for an upload or download; zero means DefaultTransferTimeout
+	UI                 fs.FS         // the built web UI; nil serves none
 }
 
 // DefaultTransferTimeout is how long one file transfer may take: the server's

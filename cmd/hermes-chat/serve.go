@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io/fs"
 	"log/slog"
 	"net"
 	"time"
@@ -9,6 +10,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/quells/grace"
 	"github.com/quells/grace/pkg/httpserver"
+
+	"github.com/quells-bot/hermes-chat/web"
 )
 
 // listeners optionally supplies pre-bound listeners; nil listens on the configured address.
@@ -21,6 +24,10 @@ func serve(ctx context.Context, cfg Config, log *slog.Logger, ln listeners) erro
 	defer w.cleanUp()
 	if err != nil {
 		return err
+	}
+
+	if _, err := fs.Stat(web.Dist(), "index.html"); err != nil {
+		log.Warn("web UI not built; / will answer 404", "fix", "just build")
 	}
 
 	gin.SetMode(cfg.GinMode)

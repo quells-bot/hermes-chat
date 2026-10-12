@@ -25,10 +25,16 @@ not needed.
 - `just check-generated`: run `sqlc diff`; fails if generated code is stale.
 - `just vet`: run `go vet ./...`.
 - `just test`: run `go test ./...`.
-- `just build [goos] [goarch]`: build `bin/hermes-chat-<goos>-<goarch>` with
-  `CGO_ENABLED=0`. Defaults to linux amd64.
+- `just build [goos] [goarch]`: build the web UI, then
+  `bin/hermes-chat-<goos>-<goarch>` with `CGO_ENABLED=0`. Defaults to linux
+  amd64.
+- `just web-install`: `npm ci` in `web/`.
+- `just web-build`: install, then build the web UI into `web/dist`.
+- `just web-check`: install, then type-check and test the web UI.
+- `just web-dev`: run the Vite dev server (see "Web UI").
 - `just lint-scripts`: run `shellcheck` on `deploy/hermes-chat-upgrade` and `deploy/hermes-chat-admin`.
-- `just check`: `check-generated`, `vet`, `lint-scripts`, and `test`.
+- `just check`: `check-generated`, `vet`, `lint-scripts`, `web-check`, and
+  `test`. It needs Node; `go test ./...` on its own does not.
 
 ## Configuration
 
@@ -84,6 +90,40 @@ A human created before passwords existed needs `user passwd` before logging in.
 - `hermes-chat.env.example`: the environment file, installed as `/etc/hermes-chat/env`.
 - `hermes-chat-upgrade`: installs a new binary on the host, with a database copy and automatic rollback.
 - `hermes-chat-admin`: runs `hermes-chat user ...` and `agent ...` as the service user with the service's environment.
+
+## Web UI
+
+The server serves the browser app that is embedded in the binary. Both routes
+are public:
+
+- `GET /` is the entry page, sent with `Cache-Control: no-cache` because it
+  names the current hashed assets.
+- `GET /assets/<file>` is one built file, sent with
+  `Cache-Control: public, max-age=31536000, immutable`. Anything under
+  `/assets/` that is not a file is 404.
+
+Every one of these responses carries
+`Content-Security-Policy: default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
+`X-Content-Type-Options: nosniff`, and `Referrer-Policy: no-referrer`. The page
+runs no inline script and loads nothing from another origin.
+
+A binary built with plain `go build`, without building the UI first, answers
+404 on `/` and logs a warning when it starts. `just build` builds the UI first.
+
+The source is a Svelte 5 and TypeScript project in `web/src`, built by Vite
+into `web/dist`, which `web/embed.go` embeds. `web/dist` is never committed
+apart from a `.gitkeep` that lets `go build` and `go test ./...` work on a
+clone that has no Node and has never built the UI. Dependencies are pinned to
+exact versions and installed from `web/package-lock.json`. TypeScript stays on
+6.x: `svelte-check` does not start under TypeScript 7.
+
+To work on the UI, run the server without TLS and the dev server beside it:
+
+    HERMES_CHAT_DB_PATH=dev.db HERMES_CHAT_TLS_MODE=off HERMES_CHAT_COOKIE_SECURE=false go run ./cmd/hermes-chat serve
+    just web-dev        # http://localhost:5173, /api proxied to :8080
+
+The dev server does not send the content security policy; check a change
+against the built binary before handing it over.
 
 ## HTTP API
 
