@@ -204,3 +204,64 @@ func TestPauseRoom_AConnectingAgentIsHandedNothingFromIt(t *testing.T) {
 	require.Len(t, got, 1, "the sweep on connect skips the paused room")
 	assert.Equal(t, free.ID, got[0].Message.ID)
 }
+
+// A delivery released to a stream that died unread, in a room that was then paused.
+func unreadDeliveryInPausedRoom(t *testing.T, w world) (bus.Room, bus.Message) {
+	t.Helper()
+	room := dmRoom(t, w)
+	sub, err := w.s.Subscribe(ctx, agentActor(w.scout), bus.FromNow)
+	require.NoError(t, err)
+	m, err := w.s.PostMessage(ctx, w.kai, room.ID, "one", ulid.Zero)
+	require.NoError(t, err)
+	require.Equal(t, bus.DeliveryDelivered, m.Deliveries[0].State)
+	sub.Close() // gone before it read the delivery
+	_, err = w.s.PauseRoom(ctx, w.kai, room.ID)
+	require.NoError(t, err)
+	return room, m
+}
+
+func TestPause_ReconnectingIsHandedNothing(t *testing.T) {
+	w := newWorld(t)
+	_, _ = unreadDeliveryInPausedRoom(t, w)
+
+	noCursor, err := w.s.Subscribe(ctx, agentActor(w.scout), bus.FromNow)
+	require.NoError(t, err)
+	assert.Empty(t, of(drain(t, noCursor), bus.EventDelivery))
+	noCursor.Close()
+
+	replay, err := w.s.Subscribe(ctx, agentActor(w.scout), 0) // everything since the start of the log
+	require.NoError(t, err)
+	defer replay.Close()
+	evs := drain(t, replay)
+	assert.Empty(t, of(evs, bus.EventDelivery))
+	assert.Len(t, of(evs, bus.EventControlPause), 1, "the replay still carries the pause")
+}
+
+func TestResume_HandsOverAgainWhatWasHeldBack(t *testing.T) {
+	w := newWorld(t)
+	room, m := unreadDeliveryInPausedRoom(t, w)
+	sub := agentSub(t, w, w.scout)
+	drain(t, sub)
+	human, err := w.s.Subscribe(ctx, w.kai, bus.FromNow)
+	require.NoError(t, err)
+	defer human.Close()
+
+	_, err = w.s.ResumeRoom(ctx, w.kai, room.ID)
+	require.NoError(t, err)
+	got := of(drain(t, sub), bus.EventDelivery)
+	require.Len(t, got, 1)
+	assert.Equal(t, m.ID, got[0].Message.ID)
+	assert.Equal(t, bus.DeliveryDelivered, stateOf(t, w, room, m.ID, w.scout))
+	assert.Empty(t, of(drain(t, human), bus.EventDeliveryChanged), "handing over again is not a state change")
+	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), m.ID)) // and the queue moves on
+}
+
+func TestResume_AnOfflineAgentIsHandedItWhenItReturns(t *testing.T) {
+	w := newWorld(t)
+	room, m := unreadDeliveryInPausedRoom(t, w)
+	_, err := w.s.ResumeRoom(ctx, w.kai, room.ID)
+	require.NoError(t, err)
+	got := of(drain(t, agentSub(t, w, w.scout)), bus.EventDelivery)
+	require.Len(t, got, 1, "exactly once: resume wrote no second row for an agent that was away")
+	assert.Equal(t, m.ID, got[0].Message.ID)
+}

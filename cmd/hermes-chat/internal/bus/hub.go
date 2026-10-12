@@ -450,6 +450,11 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 		if err != nil {
 			return Event{}, false, fmt.Errorf("get room: %w", err)
 		}
+		// A closed room hands nothing over, not even a delivery already in the
+		// log; resuming the room hands it over again.
+		if closed, err := paused(ctx, r, roomRow); err != nil || closed {
+			return Event{}, false, err
+		}
 		room, err := s.svc.loadRoomForAgent(ctx, r, roomRow)
 		if err != nil {
 			return Event{}, false, err

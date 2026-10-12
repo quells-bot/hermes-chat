@@ -61,8 +61,22 @@ func (s *service) pauseRoom(ctx context.Context, r storage.Repository, row stora
 	return nil
 }
 
-// resumeDeliveries hands each agent in the room its next message, if the room is open.
+// resumeDeliveries hands each connected agent in the room what it is owed, if
+// the room is open: a delivery still 'delivered' (its event was skipped while
+// the room was closed) is handed over again with no state change, otherwise
+// the agent's next waiting message is released. An agent with no stream is
+// handed its delivery when it returns, by Subscribe.
 func (s *service) resumeDeliveries(ctx context.Context, r storage.Repository, roomID string, at time.Time) error {
+	row, err := r.GetRoom(ctx, roomID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get room: %w", err)
+	}
+	if closed, err := paused(ctx, r, row); err != nil || closed {
+		return err
+	}
 	agentRows, err := r.ListRoomAgents(ctx, roomID)
 	if err != nil {
 		return fmt.Errorf("list room agents: %w", err)
@@ -71,6 +85,19 @@ func (s *service) resumeDeliveries(ctx context.Context, r storage.Repository, ro
 		a, err := agentFromRow(ar)
 		if err != nil {
 			return err
+		}
+		if !s.hub.agentConnected(a.ID) {
+			continue
+		}
+		d, err := r.GetDeliveredDelivery(ctx, roomID, a.ID.String())
+		if err == nil {
+			if err := putAgentEvent(ctx, r, EventDelivery, roomID, d.MessageID, a.ID, at); err != nil {
+				return err
+			}
+			continue
+		}
+		if !errors.Is(err, storage.ErrNotFound) {
+			return fmt.Errorf("get delivered: %w", err)
 		}
 		if err := s.releaseHead(ctx, r, roomID, a, at, true); err != nil {
 			return err
