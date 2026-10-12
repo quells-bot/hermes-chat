@@ -419,20 +419,33 @@ func (s *service) StopTurn(ctx context.Context, actor Actor, roomID, agentID uli
 
 // Steer sends the agent a control message during its running turn. It requires
 // the pair's delivery to be working, and it creates no delivery row: steer is
-// applied at the next tool boundary without ending the turn.
-func (s *service) Steer(ctx context.Context, actor Actor, roomID, agentID ulid.ULID, text string) (Message, error) {
+// applied at the next tool boundary without ending the turn. A steer that
+// repeats the client id of an earlier post or steer by the same human in the
+// room returns that message, with created false, and steers nobody.
+func (s *service) Steer(ctx context.Context, actor Actor, roomID, agentID ulid.ULID, clientID, text string) (Message, bool, error) {
 	if actor.Kind != ActorHuman {
-		return Message{}, ErrForbidden
+		return Message{}, false, ErrForbidden
+	}
+	if !validClientID(clientID) {
+		return Message{}, false, errClientID
 	}
 	if !validMessageText(text) {
-		return Message{}, errMessageText
+		return Message{}, false, errMessageText
 	}
 	at := s.now()
 	var posted Message
+	created := true
 	err := s.record(ctx, func(r storage.Repository) error {
 		row, err := roomForMember(ctx, r, actor, roomID)
 		if err != nil {
 			return err
+		}
+		// before every other check: a retry gets its message back even after the turn ended
+		if first, found, err := repeatedPost(ctx, r, row.ID, actor.ID, clientID); err != nil {
+			return err
+		} else if found {
+			posted, created = first, false
+			return nil
 		}
 		if row.ArchivedAtMs != nil {
 			return ErrRoomArchived
@@ -463,6 +476,9 @@ func (s *service) Steer(ctx context.Context, actor Actor, roomID, agentID ulid.U
 		msg := storage.Message{ID: id.String(), RoomID: row.ID, Body: text, CreatedAtMs: at.UnixMilli()}
 		human := actor.ID.String()
 		msg.AuthorHumanID = &human
+		if clientID != "" {
+			msg.ClientID = &clientID
+		}
 		if err := r.PutMessage(ctx, msg); err != nil {
 			return fmt.Errorf("put message: %w", err)
 		}
@@ -484,7 +500,7 @@ func (s *service) Steer(ctx context.Context, actor Actor, roomID, agentID ulid.U
 		return nil
 	})
 	if err != nil {
-		return Message{}, wrapOp("steer", err)
+		return Message{}, false, wrapOp("steer", err)
 	}
-	return posted, nil
+	return posted, created, nil
 }

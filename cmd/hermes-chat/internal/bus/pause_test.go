@@ -100,7 +100,7 @@ func TestPauseRoom_RefusesAgentWrites(t *testing.T) {
 	assert.ErrorIs(t, err, bus.ErrPaused)
 	_, err = w.s.StartTool(ctx, scout, m1, "web_search", "", "")
 	assert.ErrorIs(t, err, bus.ErrPaused)
-	_, err = w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "faster")
+	_, _, err = w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "", "faster")
 	assert.ErrorIs(t, err, bus.ErrPaused)
 	got, _ := w.s.GetMessage(ctx, w.kai, room.ID, reply.ID)
 	assert.Equal(t, "partial", got.Text)
@@ -300,7 +300,7 @@ func TestPause_AStreamThatDroppedIsNotHandedASteerWrittenBeforeThePause(t *testi
 	cursor := sub.Cursor()
 	sub.Close() // the stream drops mid-turn
 
-	_, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "faster")
+	_, _, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "", "faster")
 	require.NoError(t, err)
 	_, err = w.s.PauseRoom(ctx, w.kai, room.ID)
 	require.NoError(t, err)

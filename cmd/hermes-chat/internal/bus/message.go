@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	MaxMessageBytes = 262144
-	DefaultPageSize = 50
-	MaxPageSize     = 200
+	MaxMessageBytes  = 262144
+	MaxClientIDBytes = 64
+	DefaultPageSize  = 50
+	MaxPageSize      = 200
 )
 
 // Author is who wrote a message.
@@ -38,13 +39,53 @@ type Message struct {
 	Deliveries []Delivery   // each agent's copy, in handle order; never nil after a load from storage
 	Prompt     *Prompt      // the question this message asks, when any; nil for an ordinary message
 	Attachments []Attachment // the files riding the message, in upload order; never nil after a load from storage
+	ClientID    string       // the key its human posted it with; "" when there was none
 }
 
 var (
 	errMessageText   = ValidationError{Message: "message text must be 1 to 262144 bytes, not blank, with no NUL character"}
 	errReplyTo       = ValidationError{Message: "reply_to must be a message in this room"}
 	errReadMessageID = ValidationError{Message: "message_id must be a message in this room"}
+	errClientID      = ValidationError{Message: `client_id must be at most 64 characters: letters, digits, "-" or "_"`}
 )
+
+// validClientID reports whether s can key a post: "" (no key) is valid.
+func validClientID(s string) bool {
+	if len(s) > MaxClientIDBytes {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// repeatedPost returns the message the human already posted in the room with
+// this client id, when there is one. A caller checks membership first and
+// everything else after, so a retry gets the first message back even when the
+// room has since closed.
+func repeatedPost(ctx context.Context, r storage.Repository, roomID string, humanID ulid.ULID, clientID string) (Message, bool, error) {
+	if clientID == "" {
+		return Message{}, false, nil
+	}
+	row, err := r.GetMessageByClientID(ctx, roomID, humanID.String(), clientID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return Message{}, false, nil
+	}
+	if err != nil {
+		return Message{}, false, fmt.Errorf("get message by client id: %w", err)
+	}
+	built, err := messagesFromRows(ctx, r, []storage.Message{row})
+	if err != nil {
+		return Message{}, false, err
+	}
+	return built[0], true, nil
+}
 
 func validMessageText(text string) bool {
 	return len(text) <= MaxMessageBytes && strings.TrimSpace(text) != "" && !strings.ContainsRune(text, 0)
@@ -109,6 +150,9 @@ func messagesFromRows(ctx context.Context, r storage.Repository, rows []storage.
 			return nil, fmt.Errorf("stored message %s has an invalid room id %q: %w", row.ID, row.RoomID, err)
 		}
 		m := Message{ID: id, RoomID: roomID, Text: row.Body, CreatedAt: time.UnixMilli(row.CreatedAtMs).UTC()}
+		if row.ClientID != nil {
+			m.ClientID = *row.ClientID
+		}
 		if row.ReplyToID != nil {
 			if m.ReplyToID, err = parseOptionalID(*row.ReplyToID); err != nil {
 				return nil, err
@@ -210,28 +254,45 @@ func roomForPoster(ctx context.Context, r storage.Repository, actor Actor, roomI
 // room they are a member of. The id and time are taken inside the transaction,
 // so id order is commit order.
 func (s *service) PostMessage(ctx context.Context, actor Actor, roomID ulid.ULID, text string, replyTo ulid.ULID) (Message, error) {
-	return s.postMessage(ctx, actor, roomID, text, replyTo, nil)
+	m, _, err := s.postMessage(ctx, actor, roomID, "", text, replyTo, nil)
+	return m, err
+}
+
+// PostMessageOnce is PostMessage for a human whose request may be a retry: a
+// post that repeats the client id of an earlier one by the same human in the
+// room returns that message and changes nothing. created is false for such a
+// repeat. An empty client id posts every time.
+func (s *service) PostMessageOnce(ctx context.Context, actor Actor, roomID ulid.ULID, clientID, text string, replyTo ulid.ULID) (Message, bool, error) {
+	if actor.Kind != ActorHuman {
+		return Message{}, false, ErrForbidden
+	}
+	if !validClientID(clientID) {
+		return Message{}, false, errClientID
+	}
+	return s.postMessage(ctx, actor, roomID, clientID, text, replyTo, nil)
 }
 
 // PostMessageWithAttachments is PostMessage carrying files the actor uploaded
 // to this room; the text may be blank when there is at least one.
 func (s *service) PostMessageWithAttachments(ctx context.Context, actor Actor, roomID ulid.ULID, text string, replyTo ulid.ULID, attachmentIDs []ulid.ULID) (Message, error) {
-	return s.postMessage(ctx, actor, roomID, text, replyTo, attachmentIDs)
+	m, _, err := s.postMessage(ctx, actor, roomID, "", text, replyTo, attachmentIDs)
+	return m, err
 }
 
 // postMessage adds a message, attaching the actor's own fresh uploads to this
 // room when any are named. A refused attachment rolls the whole message back.
-func (s *service) postMessage(ctx context.Context, actor Actor, roomID ulid.ULID, text string, replyTo ulid.ULID, attachmentIDs []ulid.ULID) (Message, error) {
+// A non-empty clientID makes the post repeatable (see PostMessageOnce).
+func (s *service) postMessage(ctx context.Context, actor Actor, roomID ulid.ULID, clientID, text string, replyTo ulid.ULID, attachmentIDs []ulid.ULID) (Message, bool, error) {
 	if attachmentIDs == nil {
 		attachmentIDs = []ulid.ULID{}
 	}
 	if len(attachmentIDs) > MaxAttachmentsPerMessage {
-		return Message{}, errAttachmentIDs
+		return Message{}, false, errAttachmentIDs
 	}
 	repeats := map[ulid.ULID]bool{}
 	for _, id := range attachmentIDs {
 		if repeats[id] {
-			return Message{}, errAttachmentIDs
+			return Message{}, false, errAttachmentIDs
 		}
 		repeats[id] = true
 	}
@@ -239,16 +300,23 @@ func (s *service) postMessage(ctx context.Context, actor Actor, roomID ulid.ULID
 		if strings.TrimSpace(text) == "" {
 			text = "" // a message with a file needs no text
 		} else if !validMessageText(text) {
-			return Message{}, errMessageText
+			return Message{}, false, errMessageText
 		}
 	} else if !validMessageText(text) {
-		return Message{}, errMessageText
+		return Message{}, false, errMessageText
 	}
 	var posted Message
+	created := true
 	err := s.record(ctx, func(r storage.Repository) error {
 		row, members, err := roomForPoster(ctx, r, actor, roomID)
 		if err != nil {
 			return err
+		}
+		if first, found, err := repeatedPost(ctx, r, row.ID, actor.ID, clientID); err != nil {
+			return err
+		} else if found {
+			posted, created = first, false
+			return nil
 		}
 		if row.ArchivedAtMs != nil {
 			return ErrRoomArchived
@@ -287,6 +355,9 @@ func (s *service) postMessage(ctx context.Context, actor Actor, roomID ulid.ULID
 		} else {
 			human := actor.ID.String()
 			msg.AuthorHumanID = &human
+			if clientID != "" {
+				msg.ClientID = &clientID
+			}
 		}
 		if err := r.PutMessage(ctx, msg); err != nil {
 			return fmt.Errorf("put message: %w", err)
@@ -340,9 +411,9 @@ func (s *service) postMessage(ctx context.Context, actor Actor, roomID ulid.ULID
 		return nil
 	})
 	if err != nil {
-		return Message{}, wrapOp("post message", err)
+		return Message{}, false, wrapOp("post message", err)
 	}
-	return posted, nil
+	return posted, created, nil
 }
 
 // GetMessage returns a message in a room the actor belongs to.

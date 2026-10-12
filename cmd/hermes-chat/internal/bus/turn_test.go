@@ -308,7 +308,7 @@ func TestStopTurnAndSteer(t *testing.T) {
 	assert.Empty(t, drain(t, sub))
 
 	// steer applies to the running turn and creates no delivery
-	steerMsg, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "also check trains")
+	steerMsg, _, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "", "also check trains")
 	require.NoError(t, err)
 	assert.Equal(t, room.ID, steerMsg.RoomID)
 	assert.Equal(t, "also check trains", steerMsg.Text)
@@ -337,20 +337,20 @@ func TestStopTurnAndSteer(t *testing.T) {
 	// no working delivery for the pair is no turn
 	require.NoError(t, w.s.TurnDone(ctx, scoutActor, mID))
 	drain(t, humanSub) // delivery.changed
-	_, err = w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "again")
+	_, _, err = w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "", "again")
 	require.ErrorIs(t, err, bus.ErrNoTurn)
 
 	// an archived room refuses steer
 	conv, _ := w.s.CreateRoom(ctx, w.kai, "Conv", ids(w.scout))
 	_, err = w.s.UpdateRoom(ctx, w.kai, conv.ID, bus.RoomUpdate{Archived: ptr(true)})
 	require.NoError(t, err)
-	_, err = w.s.Steer(ctx, w.kai, conv.ID, w.scout.ID, "x")
+	_, _, err = w.s.Steer(ctx, w.kai, conv.ID, w.scout.ID, "", "x")
 	require.ErrorIs(t, err, bus.ErrRoomArchived)
 	// an agent cannot steer
-	_, err = w.s.Steer(ctx, scoutActor, room.ID, w.scout.ID, "x")
+	_, _, err = w.s.Steer(ctx, scoutActor, room.ID, w.scout.ID, "", "x")
 	require.ErrorIs(t, err, bus.ErrForbidden)
 	// a non-member agent is not found
-	_, err = w.s.Steer(ctx, w.kai, room.ID, w.atlas.ID, "x")
+	_, _, err = w.s.Steer(ctx, w.kai, room.ID, w.atlas.ID, "", "x")
 	require.ErrorIs(t, err, bus.ErrNotFound)
 
 	// stop is idempotent and needs no running turn
@@ -467,4 +467,64 @@ func TestRemovedAgent_WritesNothingMore(t *testing.T) {
 	got, err := w.s.GetMessage(ctx, w.kai, room.ID, reply.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "draft", got.Text)
+}
+
+func TestSteer_RepeatReturnsTheFirst(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	_, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	first, created, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "s1", "also check trains")
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.Equal(t, "s1", first.ClientID)
+	require.Len(t, of(drain(t, sub), bus.EventControlSteer), 1)
+
+	again, created, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "s1", "something else")
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, first.ID, again.ID)
+	assert.Equal(t, "also check trains", again.Text)
+	assert.Empty(t, of(drain(t, sub), bus.EventControlSteer)) // the agent is not steered twice
+}
+
+func TestSteer_RepeatAfterTheTurnEnded(t *testing.T) { // Review Focus 1
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	mID, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	first, _, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "s1", "also check trains")
+	require.NoError(t, err)
+	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), mID))
+
+	again, created, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "s1", "also check trains")
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, first.ID, again.ID)
+	_, _, err = w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "s2", "also check trains")
+	assert.ErrorIs(t, err, bus.ErrNoTurn)
+}
+
+func TestSteerAndPostShareAKeySpace(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	_, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	posted, _, err := w.s.PostMessageOnce(ctx, w.kai, room.ID, "k1", "second", ulid.Zero)
+	require.NoError(t, err)
+	got, created, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "k1", "faster")
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, posted.ID, got.ID)
+}
+
+func TestSteer_ClientIDValidation(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	_, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	_, _, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "a b", "faster")
+	var ve bus.ValidationError
+	require.ErrorAs(t, err, &ve)
+	assert.Equal(t, `client_id must be at most 64 characters: letters, digits, "-" or "_"`, ve.Message)
 }

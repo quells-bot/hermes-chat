@@ -217,7 +217,7 @@ func (h *controller) Steer(c *gin.Context) {
 	if !readJSON(c, maxMessageBody, &body) {
 		return
 	}
-	msg, err := h.svc.Steer(c.Request.Context(), actorFrom(c), roomID, agentID, body.Text)
+	msg, _, err := h.svc.Steer(c.Request.Context(), actorFrom(c), roomID, agentID, "", body.Text)
 	if err != nil {
 		writeError(c, err)
 		return

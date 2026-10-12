@@ -735,7 +735,7 @@ func TestAgentEvents_ReadyThenDelivery(t *testing.T) {
 
 	// Steer names the room and carries the steer message; it needs a working turn.
 	require.NoError(t, r.svc.TurnWorking(ctx, r.scoutActor(), rep.ID))
-	steer, err := r.svc.Steer(ctx, r.kai, r.room.ID, r.scout.ID, "keep going")
+	steer, _, err := r.svc.Steer(ctx, r.kai, r.room.ID, r.scout.ID, "", "keep going")
 	require.NoError(t, err)
 	f = next(t, d)
 	assert.Equal(t, "steer", f.Event)
