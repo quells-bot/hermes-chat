@@ -486,7 +486,7 @@ func (s *service) EditMessage(ctx context.Context, actor Actor, messageID ulid.U
 				return fmt.Errorf("finalize message: %w", err)
 			}
 		} else if write {
-			if err := r.SetMessageBody(ctx, messageID.String(), text); err != nil {
+			if err := r.SetMessageBody(ctx, messageID.String(), text, at.UnixMilli()); err != nil {
 				return fmt.Errorf("set message body: %w", err)
 			}
 			s.editWrites.mu.Lock()

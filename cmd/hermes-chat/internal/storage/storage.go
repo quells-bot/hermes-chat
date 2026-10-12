@@ -76,12 +76,14 @@ type Repository interface {
 	ListRoomAgents(ctx context.Context, roomID string) ([]Agent, error) // ordered by handle; empty, not nil
 	ListAllRoomAgents(ctx context.Context) ([]RoomAgent, error)         // ordered by room id, then agent id; empty, not nil
 
-	PutMessage(ctx context.Context, m Message) error                                           // ErrConflict on duplicate id
+	PutMessage(ctx context.Context, m Message) error                                           // ErrConflict on duplicate id, or on a client id its human already used in the room
+	GetMessageByClientID(ctx context.Context, roomID, humanID, clientID string) (Message, error) // ErrNotFound
+	ListStreamingMessages(ctx context.Context, roomID, agentID, afterID string) ([]Message, error) // ascending id; the agent's messages after afterID with a stored non-final edit and no final one; empty, not nil
 	GetMessage(ctx context.Context, id string) (Message, error)                                // ErrNotFound
 	ListMessages(ctx context.Context, roomID, beforeID string, limit int64) ([]Message, error) // newest first; beforeID "" starts at the newest; empty, not nil
 	GetLastMessageID(ctx context.Context, roomID string) (string, error)                       // ErrNotFound when the room has no messages
 
-	SetMessageBody(ctx context.Context, id, body string) error                       // ErrNotFound
+	SetMessageBody(ctx context.Context, id, body string, editedAtMs int64) error     // ErrNotFound; a non-final edit: sets the body and when it was edited
 	FinalizeMessage(ctx context.Context, id, body string, finalizedAtMs int64) error // ErrNotFound; sets the body and marks the message finalized
 
 	PutEvent(ctx context.Context, e Event) (int64, error)                                                   // e.ID is ignored; returns the id the log assigned
@@ -98,6 +100,7 @@ type Repository interface {
 	ListDeliveriesInRange(ctx context.Context, roomID, firstID, lastID string) ([]Delivery, error) // by message id, then handle; empty, not nil
 	HeadWaiting(ctx context.Context, roomID, agentID string) (Delivery, bool, error)               // the pair's releasable head; false when none
 	ReleasableDeliveries(ctx context.Context, agentID string) ([]Delivery, error)                  // each pair's head, by room id; empty, not nil
+	ListWorkingAgentIDs(ctx context.Context, roomID string) ([]string, error)                      // the agents with a delivery in 'working' in the room; empty, not nil
 	SetDeliveryState(ctx context.Context, roomID, agentID, messageID, state string) error          // ErrNotFound
 	CancelDeliveries(ctx context.Context, roomID, agentID string) (int64, error)                   // waiting → cancelled; rows touched
 	ListAgentRoomIDs(ctx context.Context, agentID string) ([]string, error)                        // ordered by id; empty, not nil

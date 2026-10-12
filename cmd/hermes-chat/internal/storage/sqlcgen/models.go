@@ -81,6 +81,8 @@ type Message struct {
 	Body          string
 	CreatedAt     int64
 	FinalizedAt   sql.NullInt64
+	ClientID      sql.NullString
+	EditedAt      sql.NullInt64
 }
 
 type Note struct {
