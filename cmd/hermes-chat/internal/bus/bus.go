@@ -18,6 +18,7 @@ var (
 
 	ErrUnauthenticated = errors.New("unauthenticated")
 	ErrForbidden       = errors.New("forbidden")
+	ErrNothingWaiting  = errors.New("no waiting delivery for this message")
 
 	// ErrUnavailable reports that the server is shutting down.
 	ErrUnavailable = errors.New("unavailable")
@@ -65,6 +66,7 @@ type Service interface {
 	RemoveRoomAgent(ctx context.Context, actor Actor, roomID, agentID ulid.ULID) (Room, error)       // the same three
 
 	PostMessage(ctx context.Context, actor Actor, roomID ulid.ULID, text string, replyTo ulid.ULID) (Message, error) // ErrNotFound, ErrValidation, ErrRoomArchived
+	CancelMessage(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) error                              // ErrNotFound, ErrForbidden, ErrNothingWaiting
 	GetMessage(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) (Message, error)                       // ErrNotFound, also for a message in another room
 	// ListMessages returns up to limit messages older than before (zero: the newest), oldest first.
 	// A limit under 1 means DefaultPageSize; one over MaxPageSize means MaxPageSize.

@@ -76,8 +76,8 @@ func roomJSON(r bus.Room) any {
 	for _, h := range r.Humans {
 		out.Humans = append(out.Humans, humanJSON(h))
 	}
-	for _, a := range r.Agents {
-		out.Agents = append(out.Agents, agentJSON(a))
+	for _, ra := range r.Agents {
+		out.Agents = append(out.Agents, agentJSON(ra.Agent))
 	}
 	return out
 }

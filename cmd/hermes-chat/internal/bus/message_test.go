@@ -90,8 +90,8 @@ func TestPostMessage_Refused(t *testing.T) {
 	assert.ErrorIs(t, err, bus.ErrNotFound)
 	_, err = w.s.PostMessage(ctx, w.kai, ulid.Make(), "hi", ulid.Zero)
 	assert.ErrorIs(t, err, bus.ErrNotFound)
-	_, err = w.s.PostMessage(ctx, bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}, private.ID, "hi", ulid.Zero)
-	assert.ErrorIs(t, err, bus.ErrForbidden)
+	_, err = w.s.PostMessage(ctx, bus.Actor{Kind: bus.ActorAgent, ID: w.atlas.ID}, private.ID, "hi", ulid.Zero)
+	assert.ErrorIs(t, err, bus.ErrNotFound) // an agent outside the room is refused like a non-member human
 	_, _ = w.s.UpdateRoom(ctx, w.kai, private.ID, bus.RoomUpdate{Archived: ptr(true)})
 	_, err = w.s.PostMessage(ctx, w.kai, private.ID, "hi", ulid.Zero)
 	assert.ErrorIs(t, err, bus.ErrRoomArchived)

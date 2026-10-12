@@ -2,8 +2,11 @@ package bus
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/oklog/ulid/v2"
+
+	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/storage"
 )
 
 var HashPassword, VerifyPassword = hashPassword, verifyPassword
@@ -25,6 +28,48 @@ func (s *service) AgentConnected(id ulid.ULID) bool { return s.hub.agentConnecte
 
 // BroadcastEdit offers e to every human subscription, dropping when full.
 func (s *service) BroadcastEdit(e LiveEdit) { s.hub.broadcastEdit(e) }
+
+// MentionedAgents and WakeAgents export the addressing rules, which black-box
+// tests reach through type assertions on the Service value.
+func (s *service) MentionedAgents(text string, agents []Agent) []Agent { return mentionedAgents(text, agents) }
+func (s *service) WakeAgents(author Actor, flavor RoomFlavor, text string, replyToRow *storage.Message, members []Agent) []Agent {
+	return wakeAgents(author, flavor, text, replyToRow, members)
+}
+
+// ReleaseSweepForTest releases every releasable head for an agent — the loop
+// Task 6 wires into Subscribe. It is exported now so the cancel test is honest
+// and Task 6 is a wiring change.
+func (s *service) ReleaseSweepForTest(ctx context.Context, agentID ulid.ULID) error {
+	at := s.now()
+	err := s.record(ctx, func(r storage.Repository) error {
+		rows, err := r.ReleasableDeliveries(ctx, agentID.String())
+		if err != nil {
+			return fmt.Errorf("list releasable: %w", err)
+		}
+		for _, d := range rows {
+			roomRow, err := r.GetRoom(ctx, d.RoomID)
+			if err != nil {
+				return fmt.Errorf("get room: %w", err)
+			}
+			ar, err := r.GetAgentByID(ctx, d.AgentID)
+			if err != nil {
+				return fmt.Errorf("get agent: %w", err)
+			}
+			agent, err := agentFromRow(ar)
+			if err != nil {
+				return err
+			}
+			if err := s.releaseHead(ctx, r, roomRow, agent, at, true); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("release sweep: %w", err)
+	}
+	return nil
+}
 
 // HoldArgonSlot takes one slot until the returned function is called.
 func (s *service) HoldArgonSlot(ctx context.Context) (func(), error) { return s.argon.acquire(ctx) }

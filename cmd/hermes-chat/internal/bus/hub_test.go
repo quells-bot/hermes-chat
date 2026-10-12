@@ -15,6 +15,35 @@ import (
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/storage/storagetest"
 )
 
+func TestPoll_AgentSeesOnlyItsOwn(t *testing.T) {
+	w := newWorld(t)
+	ch, err := w.s.CreateRoom(ctx, w.kai, "Both", ids(w.atlas, w.scout))
+	require.NoError(t, err)
+	scout, err := w.s.Subscribe(ctx, bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}, bus.FromNow)
+	require.NoError(t, err)
+	defer scout.Close()
+	atlas, err := w.s.Subscribe(ctx, bus.Actor{Kind: bus.ActorAgent, ID: w.atlas.ID}, bus.FromNow)
+	require.NoError(t, err)
+	defer atlas.Close()
+	m, err := w.s.PostMessage(ctx, w.kai, ch.ID, "@atlas @scout hi", ulid.Zero)
+	require.NoError(t, err)
+	require.Len(t, m.Deliveries, 2)
+	seen := []struct {
+		sub  *bus.Subscription
+		agent ulid.ULID
+	}{
+		{scout, w.scout.ID},
+		{atlas, w.atlas.ID},
+	}
+	for _, c := range seen {
+		events := drain(t, c.sub)
+		require.Len(t, events, 1, "each agent sees only its own delivery event")
+		assert.Equal(t, bus.EventDelivery, events[0].Kind)
+		require.NotNil(t, events[0].Message)
+		assert.Equal(t, m.ID, events[0].Message.ID)
+	}
+}
+
 // drain polls until the log is drained and returns everything read.
 func drain(t *testing.T, sub *bus.Subscription) (out []bus.Event) {
 	t.Helper()

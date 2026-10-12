@@ -28,12 +28,13 @@ type Author struct {
 
 // Message is a message posted in a room.
 type Message struct {
-	ID        ulid.ULID
-	RoomID    ulid.ULID
-	Author    *Author // nil when the human who wrote it has been removed
-	Text      string
-	ReplyToID ulid.ULID // zero when not a reply
-	CreatedAt time.Time
+	ID         ulid.ULID
+	RoomID     ulid.ULID
+	Author     *Author // nil when the human who wrote it has been removed
+	Text       string
+	ReplyToID  ulid.ULID // zero when not a reply
+	CreatedAt  time.Time
+	Deliveries []Delivery // each agent's copy, in handle order; never nil after a load from storage
 }
 
 var (
@@ -121,34 +122,93 @@ func messagesFromRows(ctx context.Context, r storage.Repository, rows []storage.
 		}
 		out = append(out, m)
 	}
+	deliveries, err := loadDeliveries(ctx, r, rows)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if ds, ok := deliveries[out[i].ID.String()]; ok {
+			out[i].Deliveries = ds
+		} else {
+			out[i].Deliveries = []Delivery{}
+		}
+	}
 	return out, nil
 }
 
-// PostMessage adds a message to a room the actor belongs to. The id and time
-// are taken inside the transaction, so id order is commit order.
-func (s *service) PostMessage(ctx context.Context, actor Actor, roomID ulid.ULID, text string, replyTo ulid.ULID) (Message, error) {
-	if actor.Kind != ActorHuman {
-		return Message{}, ErrForbidden
+// roomForPoster returns the room if actor is a member of it, plus its agents
+// in handle order. A human must be a room member; an agent must appear in the
+// room's agent list. Either way a non-member is ErrNotFound, the same as a
+// room that does not exist.
+func roomForPoster(ctx context.Context, r storage.Repository, actor Actor, roomID ulid.ULID) (storage.Room, []Agent, error) {
+	row, err := r.GetRoom(ctx, roomID.String())
+	if errors.Is(err, storage.ErrNotFound) {
+		return storage.Room{}, nil, fmt.Errorf("room %s: %w", roomID, ErrNotFound)
 	}
+	if err != nil {
+		return storage.Room{}, nil, fmt.Errorf("get room: %w", err)
+	}
+	agentRows, err := r.ListRoomAgents(ctx, row.ID)
+	if err != nil {
+		return storage.Room{}, nil, fmt.Errorf("list room agents: %w", err)
+	}
+	members := make([]Agent, 0, len(agentRows))
+	for _, ar := range agentRows {
+		a, err := agentFromRow(ar)
+		if err != nil {
+			return storage.Room{}, nil, err
+		}
+		members = append(members, a)
+	}
+	switch actor.Kind {
+	case ActorHuman:
+		if _, err := r.GetRoomHuman(ctx, row.ID, actor.ID.String()); errors.Is(err, storage.ErrNotFound) {
+			return storage.Room{}, nil, fmt.Errorf("room %s: %w", roomID, ErrNotFound)
+		} else if err != nil {
+			return storage.Room{}, nil, fmt.Errorf("get room member: %w", err)
+		}
+	case ActorAgent:
+		found := false
+		for _, a := range members {
+			found = found || a.ID == actor.ID
+		}
+		if !found {
+			return storage.Room{}, nil, fmt.Errorf("room %s: %w", roomID, ErrNotFound)
+		}
+	default:
+		return storage.Room{}, nil, ErrForbidden
+	}
+	return row, members, nil
+}
+
+// PostMessage adds a message to a room the actor belongs to, and queues a
+// delivery for every agent it wakes. Both a human and an agent may post into a
+// room they are a member of. The id and time are taken inside the transaction,
+// so id order is commit order.
+func (s *service) PostMessage(ctx context.Context, actor Actor, roomID ulid.ULID, text string, replyTo ulid.ULID) (Message, error) {
 	if !validMessageText(text) {
 		return Message{}, errMessageText
 	}
 	var posted Message
 	err := s.record(ctx, func(r storage.Repository) error {
-		row, err := roomForMember(ctx, r, actor, roomID)
+		row, members, err := roomForPoster(ctx, r, actor, roomID)
 		if err != nil {
 			return err
 		}
 		if row.ArchivedAtMs != nil {
 			return ErrRoomArchived
 		}
+		var replyRow *storage.Message
 		var replyToID *string
 		if !replyTo.IsZero() {
-			if _, found, err := messageInRoom(ctx, r, roomID, replyTo); err != nil {
+			rr, found, err := messageInRoom(ctx, r, roomID, replyTo)
+			if err != nil {
 				return err
 			} else if !found {
 				return errReplyTo
 			}
+			copy := rr
+			replyRow = &copy
 			v := replyTo.String()
 			replyToID = &v
 		}
@@ -157,16 +217,35 @@ func (s *service) PostMessage(ctx context.Context, actor Actor, roomID ulid.ULID
 		if err != nil {
 			return fmt.Errorf("generate id: %w", err)
 		}
-		human := actor.ID.String()
-		msg := storage.Message{ID: id.String(), RoomID: row.ID, AuthorHumanID: &human, ReplyToID: replyToID, Body: text, CreatedAtMs: at.UnixMilli()}
+		msg := storage.Message{ID: id.String(), RoomID: row.ID, ReplyToID: replyToID, Body: text, CreatedAtMs: at.UnixMilli()}
+		if actor.Kind == ActorAgent {
+			agent := actor.ID.String()
+			msg.AuthorAgentID = &agent
+		} else {
+			human := actor.ID.String()
+			msg.AuthorHumanID = &human
+		}
 		if err := r.PutMessage(ctx, msg); err != nil {
 			return fmt.Errorf("put message: %w", err)
 		}
-		if err := r.SetRoomHumanLastRead(ctx, row.ID, human, msg.ID); err != nil {
-			return fmt.Errorf("set last read: %w", err)
+		if actor.Kind == ActorHuman {
+			if err := r.SetRoomHumanLastRead(ctx, row.ID, actor.ID.String(), msg.ID); err != nil {
+				return fmt.Errorf("set last read: %w", err)
+			}
+		}
+		wake := wakeAgents(actor, roomFlavor(row, len(members)), text, replyRow, members)
+		for _, a := range wake {
+			if err := r.PutDelivery(ctx, storage.Delivery{RoomID: row.ID, AgentID: a.ID.String(), MessageID: id.String(), State: string(DeliveryWaiting)}); err != nil {
+				return fmt.Errorf("put delivery: %w", err)
+			}
 		}
 		if err := putEvent(ctx, r, EventMessagePosted, row.ID, msg.ID, at); err != nil {
 			return err
+		}
+		for _, a := range wake {
+			if err := s.releaseHead(ctx, r, row, a, at, false); err != nil {
+				return err
+			}
 		}
 		built, err := messagesFromRows(ctx, r, []storage.Message{msg})
 		if err != nil {

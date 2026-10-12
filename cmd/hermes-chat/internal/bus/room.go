@@ -33,10 +33,10 @@ type Room struct {
 	Topic             string    // "" for a DM
 	CreatedAt         time.Time // UTC, millisecond precision
 	ArchivedAt        time.Time // zero while live
-	Humans            []Human   // ordered by username
-	Agents            []Agent   // ordered by handle
-	LastMessageID     ulid.ULID // zero when the room has no messages
-	LastReadMessageID ulid.ULID // the viewer's read marker; zero when nothing is read
+	Humans            []Human     // ordered by username
+	Agents            []RoomAgent // ordered by handle
+	LastMessageID     ulid.ULID   // zero when the room has no messages
+	LastReadMessageID ulid.ULID   // the viewer's read marker; zero when nothing is read
 }
 
 // Archived reports whether the room is archived.
@@ -119,9 +119,10 @@ func roomForMember(ctx context.Context, r storage.Repository, actor Actor, roomI
 	return row, nil
 }
 
-// loadRoom builds the Room viewer sees: members, flavor, the newest message,
-// viewer's read marker.
-func loadRoom(ctx context.Context, r storage.Repository, row storage.Room, viewer ulid.ULID) (Room, error) {
+// buildRoomLayout fills the room's members, flavor, and newest message. The
+// viewer, when it is a human in the room, fills the read marker; loadRoomForAgent
+// leaves it zero.
+func (s *service) buildRoomLayout(ctx context.Context, r storage.Repository, row storage.Room) (Room, error) {
 	id, err := ulid.ParseStrict(row.ID)
 	if err != nil {
 		return Room{}, fmt.Errorf("stored room has an invalid id %q: %w", row.ID, err)
@@ -137,7 +138,7 @@ func loadRoom(ctx context.Context, r storage.Repository, row storage.Room, viewe
 	room := Room{
 		ID: id, Flavor: roomFlavor(row, len(agentRows)), Topic: row.Topic,
 		CreatedAt: time.UnixMilli(row.CreatedAtMs).UTC(),
-		Humans:    make([]Human, 0, len(humanRows)), Agents: make([]Agent, 0, len(agentRows)),
+		Humans:    make([]Human, 0, len(humanRows)), Agents: make([]RoomAgent, 0, len(agentRows)),
 	}
 	if row.ArchivedAtMs != nil {
 		room.ArchivedAt = time.UnixMilli(*row.ArchivedAtMs).UTC()
@@ -154,13 +155,23 @@ func loadRoom(ctx context.Context, r storage.Repository, row storage.Room, viewe
 		if err != nil {
 			return Room{}, err
 		}
-		room.Agents = append(room.Agents, a)
+		room.Agents = append(room.Agents, RoomAgent{Agent: a, Connected: s.hub.agentConnected(a.ID)})
 	}
 	last, err := r.GetLastMessageID(ctx, row.ID)
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return Room{}, fmt.Errorf("get last message: %w", err)
 	}
 	if room.LastMessageID, err = parseOptionalID(last); err != nil {
+		return Room{}, err
+	}
+	return room, nil
+}
+
+// loadRoom builds the Room the human viewer sees: members, flavor, the newest
+// message, the viewer's read marker.
+func (s *service) loadRoom(ctx context.Context, r storage.Repository, row storage.Room, viewer ulid.ULID) (Room, error) {
+	room, err := s.buildRoomLayout(ctx, r, row)
+	if err != nil {
 		return Room{}, err
 	}
 	member, err := r.GetRoomHuman(ctx, row.ID, viewer.String())
@@ -174,6 +185,13 @@ func loadRoom(ctx context.Context, r storage.Repository, row storage.Room, viewe
 		return Room{}, err
 	}
 	return room, nil
+}
+
+// loadRoomForAgent builds the Room as an agent sees it: the same members and
+// flavor, connection flags filled, and no read marker. It does not require a
+// human viewer.
+func (s *service) loadRoomForAgent(ctx context.Context, r storage.Repository, row storage.Room) (Room, error) {
+	return s.buildRoomLayout(ctx, r, row)
 }
 
 // record runs fn in one write transaction and, once it has committed, rings
@@ -312,7 +330,7 @@ func (s *service) ListRooms(ctx context.Context, actor Actor) ([]Room, error) {
 	}
 	out := make([]Room, 0, len(rows))
 	for _, row := range rows {
-		room, err := loadRoom(ctx, s.repo, row, actor.ID)
+		room, err := s.loadRoom(ctx, s.repo, row, actor.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -327,7 +345,7 @@ func (s *service) GetRoom(ctx context.Context, actor Actor, roomID ulid.ULID) (R
 	if err != nil {
 		return Room{}, err
 	}
-	return loadRoom(ctx, s.repo, row, actor.ID)
+	return s.loadRoom(ctx, s.repo, row, actor.ID)
 }
 
 // mutateRoom runs a change to a topic room: membership, then DM, then
@@ -375,6 +393,12 @@ func (s *service) UpdateRoom(ctx context.Context, actor Actor, roomID ulid.ULID,
 			}
 			archived = *u.Archived
 			changed = true
+			if !*u.Archived {
+				// the room is live again, so the queue thaws to connected agents
+				if err := s.thawQueue(ctx, r, row, at); err != nil {
+					return false, err
+				}
+			}
 		}
 		if u.Topic == nil {
 			return changed, nil
@@ -453,6 +477,32 @@ func (s *service) RemoveRoomAgent(ctx context.Context, actor Actor, roomID, agen
 		if err := r.DeleteRoomAgent(ctx, row.ID, agentID.String()); err != nil {
 			return false, fmt.Errorf("delete room agent: %w", err)
 		}
+		// membership changes ride mutateRoom; the removed agent's waiting
+		// deliveries are cancelled so they can never reach it.
+		if _, err := r.CancelDeliveries(ctx, row.ID, agentID.String()); err != nil {
+			return false, fmt.Errorf("cancel deliveries: %w", err)
+		}
 		return true, nil
 	})
+}
+
+// thawQueue releases the current head to every room agent after the room is
+// live again: an unarchived room's queue thaws to its connected agents.
+func (s *service) thawQueue(ctx context.Context, r storage.Repository, row storage.Room, at time.Time) error {
+	live := row
+	live.ArchivedAtMs = nil
+	agentRows, err := r.ListRoomAgents(ctx, row.ID)
+	if err != nil {
+		return fmt.Errorf("list room agents: %w", err)
+	}
+	for _, ar := range agentRows {
+		a, err := agentFromRow(ar)
+		if err != nil {
+			return err
+		}
+		if err := s.releaseHead(ctx, r, live, a, at, true); err != nil {
+			return err
+		}
+	}
+	return nil
 }

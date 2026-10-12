@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -249,7 +250,7 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 		if err != nil {
 			return Event{}, false, fmt.Errorf("get room: %w", err)
 		}
-		room, err := loadRoom(ctx, r, roomRow, s.actor.ID)
+		room, err := s.svc.loadRoom(ctx, r, roomRow, s.actor.ID)
 		if errors.Is(err, ErrNotFound) { // the subscriber left the room since the row was listed
 			return Event{}, false, nil
 		}
@@ -257,7 +258,7 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 			return Event{}, false, err
 		}
 		e.Room = &room
-	case EventMessagePosted:
+	case EventMessagePosted, EventDeliveryChanged:
 		msgRow, err := r.GetMessage(ctx, row.SubjectID)
 		if errors.Is(err, storage.ErrNotFound) {
 			return Event{}, false, nil
@@ -270,8 +271,66 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 			return Event{}, false, err
 		}
 		e.Message = &msgs[0]
+	case EventDelivery:
+		// Only an agent sees these (they are agent-addressed), so the room is
+		// the delivered message's, shown as the agent sees it.
+		msgRow, err := r.GetMessage(ctx, row.SubjectID)
+		if errors.Is(err, storage.ErrNotFound) {
+			return Event{}, false, nil
+		}
+		if err != nil {
+			return Event{}, false, fmt.Errorf("get message: %w", err)
+		}
+		msgs, err := messagesFromRows(ctx, r, []storage.Message{msgRow})
+		if err != nil {
+			return Event{}, false, err
+		}
+		e.Message = &msgs[0]
+		roomRow, err := r.GetRoom(ctx, row.RoomID)
+		if errors.Is(err, storage.ErrNotFound) {
+			return Event{}, false, nil
+		}
+		if err != nil {
+			return Event{}, false, fmt.Errorf("get room: %w", err)
+		}
+		room, err := s.svc.loadRoomForAgent(ctx, r, roomRow)
+		if err != nil {
+			return Event{}, false, err
+		}
+		e.Room = &room
+		if room.Flavor == FlavorChannel {
+			// the delivered message's predecessors, bounded in count and text
+			ctxRows, err := r.ListMessages(ctx, row.RoomID, row.SubjectID, contextMessages)
+			if err != nil {
+				return Event{}, false, fmt.Errorf("list context: %w", err)
+			}
+			cmsgs, err := messagesFromRows(ctx, r, ctxRows)
+			if err != nil {
+				return Event{}, false, err
+			}
+			e.Context = trimContext(cmsgs, contextTextBytes)
+		}
 	default:
 		return Event{}, false, fmt.Errorf("unknown kind %q", row.Kind)
 	}
 	return e, true, nil
+}
+
+// trimContext keeps the newest messages whose text fits within textBytes,
+// dropped from the oldest end, and returns them oldest-first. msgs is
+// newest-first.
+func trimContext(msgs []Message, textBytes int) []Message {
+	total := 0
+	for i := range msgs {
+		total += len(msgs[i].Text)
+	}
+	end := len(msgs)
+	for end > 0 && total > textBytes {
+		end--
+		total -= len(msgs[end].Text)
+	}
+	kept := make([]Message, 0, end)
+	kept = append(kept, msgs[:end]...)
+	slices.Reverse(kept)
+	return kept
 }
