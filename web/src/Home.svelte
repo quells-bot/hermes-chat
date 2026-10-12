@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import HaltControl from './HaltControl.svelte';
   import Header from './Header.svelte';
+  import NewRoom from './NewRoom.svelte';
   import RoomList from './RoomList.svelte';
   import { route, startRouting } from './lib/route.svelte';
   import { session, signOut } from './lib/session.svelte';
@@ -23,7 +24,7 @@
   <Header title="New room" back="#/">
     <HaltControl />
   </Header>
-  <main></main>
+  <NewRoom />
 {:else}
   <Header>
     {#if store.loaded && store.link !== 'live'}

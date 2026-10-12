@@ -17,6 +17,7 @@ vi.mock('./lib/store.svelte', () => ({
   connect: vi.fn(),
   disconnect: vi.fn(),
   load: vi.fn(),
+  putRoom: vi.fn(),
   stopAll: vi.fn(),
   resumeAll: vi.fn(),
 }));
@@ -24,6 +25,11 @@ vi.mock('./lib/route.svelte', () => ({
   route: { path: '/' },
   startRouting: vi.fn(),
   navigate: vi.fn(),
+}));
+vi.mock('./lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./lib/api')>()),
+  createRoom: vi.fn(),
+  openDM: vi.fn(),
 }));
 vi.mock('./lib/collapsed', () => ({
   loadCollapsed: () => ({ dms: false, rooms: false }),
@@ -116,4 +122,13 @@ test('the halt control is in the header on the list and on #/new', () => {
   route.path = '/new';
   render(Home);
   expect(screen.getByRole('button', { name: 'Stop all' })).toBeInTheDocument();
+});
+
+test('#/new shows the form under a header with a back link to #/', () => {
+  route.path = '/new';
+  render(Home);
+  expect(screen.getByRole('heading', { name: 'New room' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Back' })).toHaveAttribute('href', '#/');
+  expect(screen.getByLabelText('Topic')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Create' })).toBeInTheDocument();
 });
