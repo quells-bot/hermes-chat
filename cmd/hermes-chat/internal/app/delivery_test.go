@@ -30,6 +30,7 @@ func agentEngine(t *testing.T, svc bus.Service) *gin.Engine {
 	agent.POST("/rooms/:room/messages", ctrl.AgentPostMessage)
 	agent.PUT("/messages/:message", ctrl.AgentEditMessage)
 	agent.POST("/deliveries/:message/working", ctrl.AgentTurnWorking)
+	agent.POST("/deliveries/:message/note-entries", ctrl.AgentSuggestNoteEntry)
 	agent.POST("/deliveries/:message/done", ctrl.AgentTurnDone)
 	agent.POST("/deliveries/:message/failed", ctrl.AgentTurnFailed)
 	agent.POST("/deliveries/:message/remarks", ctrl.AgentRemark)

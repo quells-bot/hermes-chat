@@ -60,6 +60,11 @@ type Controller interface {
 	AgentPostPrompt(c *gin.Context)
 	AgentExpirePrompt(c *gin.Context)
 	AnswerPrompt(c *gin.Context)
+	GetNote(c *gin.Context)
+	SetNoteText(c *gin.Context)
+	UpdateNoteEntry(c *gin.Context)
+	DeleteNoteEntry(c *gin.Context)
+	AgentSuggestNoteEntry(c *gin.Context)
 }
 
 // Options are the settings the handlers need.

@@ -122,6 +122,19 @@ type activityBody struct {
 	CreatedAt  time.Time        `json:"created_at"`
 }
 
+type noteBody struct {
+	Text    string          `json:"text"`
+	Entries []noteEntryBody `json:"entries"` // never null
+}
+
+type noteEntryBody struct {
+	ID        ulid.ULID `json:"id"`
+	Agent     agentBody `json:"agent"`
+	Text      string    `json:"text"`
+	Approved  bool      `json:"approved"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // optionalID is nil for a zero ID, which JSON writes as null.
 func optionalID(id ulid.ULID) *ulid.ULID {
 	if id.IsZero() {
@@ -239,6 +252,19 @@ func (h *controller) activityJSON(ctx context.Context, a bus.Activity) (any, err
 		Text: a.Text, Tool: a.Tool, Preview: a.Preview, Arguments: a.Arguments,
 		DurationMs: a.DurationMs, Succeeded: a.Succeeded, CreatedAt: a.CreatedAt,
 	}, nil
+}
+
+// noteJSON builds the note object; its entries array is never null.
+func noteJSON(n bus.Note) any {
+	out := noteBody{Text: n.Text, Entries: make([]noteEntryBody, 0, len(n.Entries))}
+	for _, e := range n.Entries {
+		out.Entries = append(out.Entries, noteEntryJSON(e))
+	}
+	return out
+}
+
+func noteEntryJSON(e bus.NoteEntry) noteEntryBody {
+	return noteEntryBody{ID: e.ID, Agent: agentJSON(e.Agent), Text: e.Text, Approved: e.Approved, CreatedAt: e.CreatedAt}
 }
 
 // jsonString quotes s as a JSON string literal, for building a frame's data by hand.

@@ -616,6 +616,7 @@ type delivery struct {
 	}
 	Room    map[string]any `json:"room"`
 	Context []any          `json:"context"`
+	Note    *string        `json:"note"` // the author's composed note, null when there is none
 }
 
 func TestAgentEvents_ReadyThenDelivery(t *testing.T) {
@@ -630,6 +631,7 @@ func TestAgentEvents_ReadyThenDelivery(t *testing.T) {
 	m := r.post(t, "after")
 	f := next(t, d)
 	assert.Equal(t, "delivery", f.Event)
+	assert.Contains(t, f.Data, `"note":null`, "no note on an empty one")
 	var first delivery
 	require.NoError(t, json.Unmarshal([]byte(f.Data), &first))
 	assert.Equal(t, m.ID, first.Message.ID)
@@ -681,6 +683,22 @@ func TestAgentEvents_ReadyThenDelivery(t *testing.T) {
 	assert.Equal(t, steer.ID.String(), str.Message["id"])
 
 	assert.True(t, nothingElse(d, 150 * time.Millisecond), "nothing follows the steer")
+}
+
+func TestAgentEvents_DeliveryCarriesTheAuthorsNote(t *testing.T) {
+	r := newRig(t, app.Options{}, nil)
+	_, err := r.svc.SetNoteText(ctx, r.kai, "I live in Lisbon.")
+	require.NoError(t, err)
+	_, d := r.openAgent(t, r.scoutToken, "")
+	next(t, d) // ready
+	m := r.post(t, "where is home?")
+	f := next(t, d)
+	assert.Equal(t, "delivery", f.Event)
+	var first delivery
+	require.NoError(t, json.Unmarshal([]byte(f.Data), &first))
+	require.NotNil(t, first.Note)
+	assert.Equal(t, "I live in Lisbon.", *first.Note)
+	assert.Equal(t, m.ID, first.Message.ID)
 }
 
 func TestAgentEvents_RevokedWithinAHeartbeat(t *testing.T) {

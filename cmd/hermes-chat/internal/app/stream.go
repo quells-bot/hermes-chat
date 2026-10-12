@@ -93,10 +93,15 @@ func agentEventFrame(e bus.Event) (sse.Frame, error) {
 		for _, cm := range e.Context {
 			context = append(context, agentMessageJSON(cm))
 		}
+		var note *string
+		if e.Note != "" {
+			note = &e.Note
+		}
 		body = map[string]any{
 			"message": agentMessageJSON(*e.Message),
 			"room":    agentRoomJSON(*e.Room),
 			"context": context,
+			"note":    note,
 		}
 	case e.Kind == bus.EventControlStop, e.Kind == bus.EventControlPause:
 		body = map[string]any{"room_id": e.RoomID.String()}

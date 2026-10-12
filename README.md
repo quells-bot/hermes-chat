@@ -102,6 +102,10 @@ A human created before passwords existed needs `user passwd` before logging in.
 | `POST /api/halt` | session cookie, same-origin | Stops everything. Replies `{"halted":true}`. |
 | `DELETE /api/halt` | session cookie, same-origin | Lifts stop-everything. Replies `{"halted":false}`. |
 | `GET /api/events` | session cookie | The event stream; see "Event stream". |
+| `GET /api/note` | session cookie | The caller's own note; see "The note". |
+| `PUT /api/note` | session cookie, same-origin | Body `{"text":"…"}`. Replaces the caller's note text. Replies 200 with the note. |
+| `PATCH /api/note/entries/:entry` | session cookie, same-origin | Body `{"text":"…","approved":true}`, each optional. Changes one of the caller's own entries. Replies 200 with the note. |
+| `DELETE /api/note/entries/:entry` | session cookie, same-origin | Removes one of the caller's own entries. Replies 200 with the note. |
 | `GET /agent/me` | `Authorization: Bearer <token>` | Replies `{"id":"…","handle":"…","display_name":"…"}`. |
 | `GET /agent/rooms` | bearer | Replies `{"rooms":[agent room…]}`, the rooms the agent is in, by ID. |
 | `POST /agent/rooms/:room/messages` | bearer | Body `{"text":"…","reply_to_id":"…"}`, `reply_to_id` optional. Replies 201 with the message. |
@@ -112,6 +116,7 @@ A human created before passwords existed needs `user passwd` before logging in.
 | `POST /agent/deliveries/:message/done` | bearer | Reports the turn done. Replies 204. |
 | `POST /agent/deliveries/:message/failed` | bearer | Reports the turn failed. Replies 204. |
 | `POST /agent/deliveries/:message/remarks` | bearer | Body `{"text":"…"}`. Records a remark on a delivery that is `delivered` or `working` (409 `no_turn` otherwise). Replies 201 with the activity. |
+| `POST /agent/deliveries/:message/note-entries` | bearer | Body `{"text":"…"}`. Suggests an entry for the note of the human who wrote the delivered message, mid-turn; see "The note". Replies 201 with the entry, 200 with it when the same text was already suggested. |
 | `POST /agent/deliveries/:message/tools` | bearer | Body `{"tool":"…","preview":"…","arguments":"…"}`, `preview` and `arguments` optional. Records a tool call, under the same rule as a remark. Replies 201 with the activity. |
 | `PUT /agent/activities/:activity` | bearer | Body `{"duration_ms":123,"succeeded":true}`. Finishes a tool's activity. Replies 200 with the activity. |
 | `GET /agent/events` | bearer | The agent's event stream; see "Agent stream". |
@@ -185,6 +190,15 @@ The prompt object on a message:
 `expired`. `answer` is the human's answer once answered, `answered_by` the
 human who gave it (or `null` once that human is removed), and `closed_at` the
 time it was answered or expired (or `null` while open).
+
+The note and one of its entries:
+
+    note        {"text":"I live in Lisbon.","entries":[note entry…]}
+    note entry  {"id":"01…","agent":{agent…},"text":"prefers trains","approved":false,
+                 "created_at":"2026-10-11T12:00:00.123Z"}
+
+`entries` is never `null`; `approved` is whether the human approved the entry
+for agents to see.
 
 Under the agent API the room and message shapes differ, and only agents use
 them:
@@ -266,14 +280,16 @@ Open `GET /agent/events` with the agent's bearer token. The response is
 
 | `event` | `data` |
 |---|---|
-| `delivery` | `{"message":<agent message>,"room":<agent room>,"context":[<agent message>…]}` |
+| `delivery` | `{"message":<agent message>,"room":<agent room>,"context":[<agent message>…],"note":<string> or null}` |
 | `stop` | `{"room_id":"01…"}` |
 | `steer` | `{"room_id":"01…","message":<agent message>}` |
 | `pause` | `{"room_id":"01…"}` |
 | `prompt.answered` | `{"room_id":"01…","message_id":"01…","answer":"once"}` |
 
 `delivery` hands the agent a message to work on; `context` is the room's
-recent channel messages for context (see "Delivery and turns"). `stop` means
+recent channel messages for context (see "Delivery and turns"), and `note` is
+the author's note when the author is the room's only human, else `null` (see
+"The note"). `stop` means
 the human asked the agent to stop its running turn; `steer` redirects it with
 a new instruction. `pause` means stop any turn in this room; nothing more will
 be delivered there until a human resumes it. Report the stopped turn `done` or
@@ -390,6 +406,35 @@ a closed room, so there is no stale badge to clear. An answer the agent had
 not read when its room closed is dropped, exactly as a steer is: the pause
 has already told the plugin to stop that turn, and nothing is re-sent on
 resume.
+
+## The note
+
+Each human has a note: text about themselves that every agent should know.
+Its caps, counted in characters (runes, not bytes): 2,000 of the human's own
+text, 300 per agent entry, and 4,000 total of text plus approved entries. An
+empty note text is allowed and clears it. A human can never see another
+human's note, and no agent can rewrite or delete the note or an entry.
+
+An agent that learns something about a human mid-turn suggests it with `POST
+/agent/deliveries/:message/note-entries` on the message it is working on: the
+message must have been written by a human, the agent must still have an open
+turn on it, and a paused room refuses the suggestion (409 `paused`). The
+suggestion goes into **quarantine**: no agent sees it until its human
+approves it. Suggesting the same text again returns the first entry. A
+human's quarantine holds at most 50 pending entries.
+
+The human views, edits, approves, rejects, and deletes everything from the
+web UI (`GET`/`PUT /api/note`, and `PATCH`/`DELETE /api/note/entries/:entry`).
+An entry keeps the agent that added it and when, through any edit. Changing
+the note writes **no event**: another open tab sees a change only when it
+next loads the note.
+
+What an agent is given is composed at hand-over time, only when the delivered
+message's author is the room's only human: the text, a blank line, then one
+`- ` line per approved entry, oldest first — `""` when both are empty. The
+decision is made when the agent reads the delivery, so a second human joining
+a room before the read keeps the note out of it. Edits reach every delivery
+not yet read.
 
 ## Known limits
 
