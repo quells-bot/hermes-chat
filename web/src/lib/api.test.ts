@@ -1,5 +1,20 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { ApiError, login, logout, me, onUnauthenticated, request } from './api';
+import {
+  ApiError,
+  createRoom,
+  getHalt,
+  listAgents,
+  listRooms,
+  login,
+  logout,
+  me,
+  onUnauthenticated,
+  openDM,
+  request,
+  resumeEverything,
+  sessionLost,
+  stopEverything,
+} from './api';
 
 const fetchMock = vi.fn();
 
@@ -175,4 +190,70 @@ test('an answered request leaves no timer behind', async () => {
   } finally {
     vi.useRealTimers();
   }
+});
+
+test('listRooms unwraps the rooms', async () => {
+  fetchMock.mockResolvedValue(json(200, { rooms: [{ id: '01R' }] }));
+
+  await expect(listRooms()).resolves.toEqual([{ id: '01R' }]);
+
+  const [path, init] = fetchMock.mock.calls[0];
+  expect(path).toBe('/api/rooms');
+  expect(init.method).toBe('GET');
+});
+
+test('listAgents unwraps the agents', async () => {
+  fetchMock.mockResolvedValue(json(200, { agents: [{ id: '01A' }] }));
+
+  await expect(listAgents()).resolves.toEqual([{ id: '01A' }]);
+
+  const [path, init] = fetchMock.mock.calls[0];
+  expect(path).toBe('/api/agents');
+  expect(init.method).toBe('GET');
+});
+
+test.each([
+  ['getHalt', getHalt, 'GET', true],
+  ['stopEverything', stopEverything, 'POST', true],
+  ['resumeEverything', resumeEverything, 'DELETE', false],
+])('%s calls /api/halt and returns halted', async (_name, call, method, halted) => {
+  fetchMock.mockResolvedValue(json(200, { halted }));
+
+  await expect(call()).resolves.toBe(halted);
+
+  const [path, init] = fetchMock.mock.calls[0];
+  expect(path).toBe('/api/halt');
+  expect(init.method).toBe(method);
+  expect(init.body).toBeUndefined();
+});
+
+test('createRoom posts the topic and agent ids', async () => {
+  fetchMock.mockResolvedValue(json(201, { id: '01R', topic: 'Trip' }));
+
+  await expect(createRoom('Trip', ['01A', '01B'])).resolves.toMatchObject({ id: '01R' });
+
+  const [path, init] = fetchMock.mock.calls[0];
+  expect(path).toBe('/api/rooms');
+  expect(init.method).toBe('POST');
+  expect(init.body).toBe('{"topic":"Trip","agent_ids":["01A","01B"]}');
+});
+
+test.each([200, 201])('openDM posts the agent id and accepts %i', async (status) => {
+  fetchMock.mockResolvedValue(json(status, { id: '01D' }));
+
+  await expect(openDM('01A')).resolves.toMatchObject({ id: '01D' });
+
+  const [path, init] = fetchMock.mock.calls[0];
+  expect(path).toBe('/api/dms');
+  expect(init.method).toBe('POST');
+  expect(init.body).toBe('{"agent_id":"01A"}');
+});
+
+test('sessionLost runs the unauthenticated handler', () => {
+  const handler = vi.fn();
+  onUnauthenticated(handler);
+
+  sessionLost();
+
+  expect(handler).toHaveBeenCalledTimes(1);
 });
