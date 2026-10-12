@@ -172,7 +172,8 @@ stream at once.
   query. That is fine for two humans and a few tabs.
 - The event log is never pruned, and a client that reconnects with a very old
   cursor is sent everything since.
-- Over plain HTTP/1.1 a browser allows six streams per origin.
+- Over plain HTTP/1.1 a browser allows six streams per origin. Stage 7
+  checks HTTP/2.
 
 ## Adding a migration
 
