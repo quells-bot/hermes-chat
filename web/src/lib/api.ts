@@ -17,6 +17,9 @@ export class ApiError extends Error {
   }
 }
 
+// requestTimeoutMs is how long one request may take, headers and body.
+const requestTimeoutMs = 15_000;
+
 let unauthenticated: () => void = () => {};
 
 // onUnauthenticated sets what runs when the server says the session is gone.
@@ -53,6 +56,12 @@ export async function request<T>(method: string, path: string, body?: unknown): 
     init.body = JSON.stringify(body);
   }
 
+  // A stalled connection (a phone leaving wifi) neither answers nor fails, so
+  // a request that takes too long is given up on.
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), requestTimeoutMs);
+  init.signal = abort.signal;
+
   let res: Response;
   let text: string;
   try {
@@ -60,6 +69,8 @@ export async function request<T>(method: string, path: string, body?: unknown): 
     text = await res.text();
   } catch {
     throw new ApiError(0, 'network', 'cannot reach the server');
+  } finally {
+    clearTimeout(timer);
   }
 
   if (!res.ok) {

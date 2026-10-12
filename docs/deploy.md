@@ -233,6 +233,8 @@ The other commands in the README's Commands section work the same way (`user lis
    scp bin/hermes-chat-linux-amd64 root@203.0.113.10:/root/
    ```
 
+   `just build` builds the web UI first and embeds it, so the new binary carries the current UI.
+
 2. On the host:
 
    ```

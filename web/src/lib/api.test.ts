@@ -134,3 +134,45 @@ test('a wrong password does not call the handler', async () => {
 
   expect(handler).not.toHaveBeenCalled();
 });
+
+// A phone leaving wifi stalls a request instead of refusing it.
+test('a request that never answers becomes a network error after 15 seconds', async () => {
+  vi.useFakeTimers();
+  try {
+    fetchMock.mockImplementation(
+      (_path: string, init: RequestInit) =>
+        new Promise((_, reject) => {
+          init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        }),
+    );
+
+    const pending = failure(me());
+    await vi.advanceTimersByTimeAsync(14_999);
+    let settled = false;
+    void pending.then(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    const err = await pending;
+
+    expect(err.status).toBe(0);
+    expect(err.code).toBe('network');
+    expect(err.message).toBe('cannot reach the server');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('an answered request leaves no timer behind', async () => {
+  vi.useFakeTimers();
+  try {
+    fetchMock.mockResolvedValue(json(200, { id: '01J', username: 'kai' }));
+
+    await me();
+
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
+});
