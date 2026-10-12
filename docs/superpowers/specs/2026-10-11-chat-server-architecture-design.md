@@ -261,6 +261,33 @@ stands.
 
 An unauthenticated `GET /healthz` that returns 200 once the database answers.
 
+### 6.7 Deploy
+
+The target is one Debian 13 host, run under systemd. The runbook is
+`docs/deploy.md`.
+
+- **Layout** *(Claude's call, accepted by Kai)*. Binary
+  `/usr/local/bin/hermes-chat`, the previous one beside it as
+  `hermes-chat.previous`, environment file `/etc/hermes-chat/env`, state in
+  `/var/lib/hermes-chat` (`chat.db`, `attachments/`, `certs/`, `backups/`),
+  system user and group `hermes-chat`, unit `hermes-chat.service`, and the
+  scripts `/usr/local/sbin/hermes-chat-upgrade` and
+  `/usr/local/sbin/hermes-chat-admin`.
+- **No deploy command** *(Kai)*. There is no `just deploy`. The operator builds,
+  copies the binary with `scp`, and runs `hermes-chat-upgrade` on the host.
+- **The repository names no instance** *(Kai)*. Committed files use
+  `chat.example.com` and `203.0.113.10`.
+- **Upgrade.** `serve` applies migrations at start, so an upgrade is: check the
+  candidate, stop the unit, copy the database aside, swap the binary, start,
+  and wait for `/healthz`. A failed health check restores the old binary and
+  the database as it was. The newest five database copies are kept.
+- **TLS.** autocert answers the TLS-ALPN challenge on 443. There is no port-80
+  listener and no redirect (section 6.4).
+- **Host firewall.** ufw allows 22 and 443 and nothing else; turning it on is a
+  step in the runbook.
+- **Backups.** Scheduled off-host backups are out of scope for stage 7. The
+  runbook says what to copy by hand.
+
 ## 7. Storage
 
 ### 7.1 SQLite settings *(Kai, except the cache size)*

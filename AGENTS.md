@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Hermes Chat is a chat server: a single Go binary exposing a JSON/HTTP API with an SSE event stream, backed by SQLite. Humans authenticate with sessions (argon2id passwords); agents authenticate with bearer tokens. The product is documented in `README.md` (API contract, env vars, limits) and the specs under `docs/superpowers/specs/`; stages 1–6 of the architecture plan are implemented.
+Hermes Chat is a chat server: a single Go binary exposing a JSON/HTTP API with an SSE event stream, backed by SQLite. Humans authenticate with sessions (argon2id passwords); agents authenticate with bearer tokens. The product is documented in `README.md` (API contract, env vars, limits) and the specs under `docs/superpowers/specs/`; stages 1–7 of the architecture plan are implemented.
 
 ## Architecture & Data Flow
 
@@ -32,6 +32,8 @@ Request flow: gin route → app handler → `bus.Service` method → `storage.Re
 | `cmd/hermes-chat/internal/storage/migrations/` | goose SQL migrations `NNNNN_name.sql` |
 | `cmd/hermes-chat/internal/storage/sqlcgen/` | generated — never edit |
 | `cmd/hermes-chat/internal/storage/storagetest/` | test-only helper; production code must not import it (layering test enforces) |
+| `deploy/` | systemd unit, environment example, `hermes-chat-upgrade` and `hermes-chat-admin` scripts, upgrade test |
+| `docs/deploy.md` | operator runbook: host setup, first start, upgrade, rollback |
 | `docs/superpowers/` | architecture/product specs and stage plans — read before changing design |
 
 ## Development Commands
@@ -50,7 +52,7 @@ Locally: `go run ./cmd/hermes-chat serve` (requires `HERMES_CHAT_DB_PATH`; migra
 
 ## Code Conventions & Common Patterns
 
-- **Configuration**: envconfig struct in `config.go`, env prefix `HERMES_CHAT_` only; validation of debug addr/gin mode/proxies happens in `ValidateForServe`, not at load. `serve` opens the attachments directory (`wireUp` in `wires.go`).
+- **Configuration**: envconfig struct in `config.go`, env prefix `HERMES_CHAT_` only; validation of debug addr/gin mode/proxies happens in `ValidateForServe`, not at load. `serve` opens the attachments directory (`wireUp` in `wires.go`). TLS is `HERMES_CHAT_TLS_MODE` (`autocert` by default, or `off`), `HERMES_CHAT_TLS_DOMAIN` (required for autocert), and `HERMES_CHAT_TLS_CACHE_DIR`; `cmd/hermes-chat/tls.go` builds the certificate manager and wraps the API listener.
 - **Errors**: bus defines sentinels + `ValidationError` in `bus/bus.go`; never build HTTP responses in bus. `app/errors.go` has the single errorTable mapping them to status + `{"error":{"code","message"}}`. New error kinds go in both places, plus `README.md`'s table.
 - **Validation** happens in bus, not handlers: trim, then reject with `ValidationError` carrying the user-visible message.
 - **Transactions**: bus methods that must be atomic call `storage.Repository.InTx`; the event row is written in the same tx as the change, then the Hub is rung (`bus/event.go`).
@@ -66,6 +68,8 @@ Locally: `go run ./cmd/hermes-chat serve` (requires `HERMES_CHAT_DB_PATH`; migra
 - `cmd/hermes-chat/main.go` — CLI dispatch; exit 2 on usage without config
 - `cmd/hermes-chat/wires.go` — `wireUp()`: storage → bus → app composition
 - `cmd/hermes-chat/internal/cli/admin.go` — `Migrate`/`User`/`Agent` and the cli-owned `openSvc` wiring
+- `cmd/hermes-chat/tls.go` — `certManager` and `apiListener`: autocert on the API listener, TLS-ALPN challenge on 443
+- `deploy/hermes-chat-upgrade` — on-box upgrade: database copy, binary swap, health check, rollback; scripts read the env file without sourcing it, so values are unquoted
 - `cmd/hermes-chat/layering.go` — layering rules; `cmd/hermes-chat/layering_test.go` enforces them
 - `cmd/hermes-chat/internal/app/errors.go` — error code ↔ HTTP status table
 - `cmd/hermes-chat/internal/bus/bus.go` — Service interface, sentinel errors, Service impl
@@ -82,10 +86,11 @@ Locally: `go run ./cmd/hermes-chat serve` (requires `HERMES_CHAT_DB_PATH`; migra
 
 ## Testing & QA
 
-`go test ./...` (~5s, no flags needed). Three tiers:
+`go test ./...` (~5s, no flags needed). Three tiers, plus the deploy script:
 
 - **Unit** — `internal/bus`, `internal/storage`, `internal/sse`, `internal/reqid`: storage tests get a migrated SQLite via `storage/storagetest.NewRepo`; `bus` takes a fixed `Clock` and `export_test.go` exposes internals (throttle state, argon limiter) for testing.
 - **HTTP** — `internal/app` (package `app_test`): httptest against a real bus; helpers `newEngine`, `authEngine`, `newChat`.
 - **E2E** — `cmd/hermes-chat/serve_test.go` spawns the real server (CLI + HTTP + SSE); `internal/cli` tests drive `Migrate`/`User`/`Agent` with a temp DB, and `cmd/hermes-chat/main_test.go` pins the dispatch entries.
+- **Deploy script** — `go test ./deploy` runs `deploy/hermes-chat-upgrade` against stubbed `systemctl` and `curl`; `just lint-scripts` runs `shellcheck` on both scripts.
 
 Conventions: testify assert/require; table tests for validation/error mapping; tests may import `export_test.go` aliases but never production code from another layer. Layering and route tests double as architecture checks (`TestLayering_ThisRepository`, route ordering). No coverage target is enforced; `just check` is the gate.

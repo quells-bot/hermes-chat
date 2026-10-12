@@ -27,7 +27,7 @@ not needed.
 - `just test`: run `go test ./...`.
 - `just build [goos] [goarch]`: build `bin/hermes-chat-<goos>-<goarch>` with
   `CGO_ENABLED=0`. Defaults to linux amd64.
-- `just lint-scripts`: run `shellcheck` on the scripts under `deploy/`.
+- `just lint-scripts`: run `shellcheck` on `deploy/hermes-chat-upgrade` and `deploy/hermes-chat-admin`.
 - `just check`: `check-generated`, `vet`, `lint-scripts`, and `test`.
 
 ## Configuration
@@ -75,6 +75,15 @@ otherwise read one line from standard input. `agent add` and `agent rotate`
 print the token once; it cannot be shown again.
 
 A human created before passwords existed needs `user passwd` before logging in.
+
+## Deploying
+
+`docs/deploy.md` is the runbook for a Debian 13 host: preparing it, the first start with a Let's Encrypt certificate, creating people and agents, upgrading, and rolling back. The files it installs are under `deploy/`:
+
+- `hermes-chat.service`: the systemd unit.
+- `hermes-chat.env.example`: the environment file, installed as `/etc/hermes-chat/env`.
+- `hermes-chat-upgrade`: installs a new binary on the host, with a database copy and automatic rollback.
+- `hermes-chat-admin`: runs `hermes-chat user ...` and `agent ...` as the service user with the service's environment.
 
 ## HTTP API
 
