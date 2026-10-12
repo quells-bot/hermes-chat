@@ -7,7 +7,7 @@ set -euo pipefail
 ENV_FILE="${HERMES_CHAT_ENV_FILE:-/etc/hermes-chat/env}"
 BIN="${HERMES_CHAT_BIN:-/usr/local/bin/hermes-chat}"
 UNIT="${HERMES_CHAT_UNIT:-hermes-chat}"
-TIMEOUT="${HERMES_CHAT_HEALTH_TIMEOUT:-60}"
+TIMEOUT="${HERMES_CHAT_HEALTH_TIMEOUT:-60}" # seconds
 
 die() {
 	echo "$1" >&2
@@ -19,6 +19,11 @@ if [ "$#" -ne 1 ]; then
 	exit 2
 fi
 candidate="$1"
+
+# The tools this script cannot work without.
+for tool in curl systemctl; do
+	command -v "$tool" >/dev/null 2>&1 || die "$tool not found on PATH"
+done
 # A bare name would be looked up on PATH to run but taken from the working
 # directory to copy; make it unambiguous.
 case "$candidate" in
@@ -59,6 +64,11 @@ else
 	health_url="http://127.0.0.1:$port/healthz"
 fi
 
+case "$TIMEOUT" in
+"" | *[!0-9]*) die "HERMES_CHAT_HEALTH_TIMEOUT must be a positive integer" ;;
+esac
+[ "$TIMEOUT" -gt 0 ] || die "HERMES_CHAT_HEALTH_TIMEOUT must be a positive integer"
+
 # phase records how far the upgrade got, so the exit trap can undo exactly that:
 #   none -> stopped -> swapping -> started -> finished
 phase=none
@@ -76,9 +86,10 @@ start_unit() {
 }
 
 # recover puts the host back as it was before the upgrade, as far as it got,
-# and prints one line saying what state it is in. It never fails.
+# and prints one line saying what state it is in. It never fails. If a file
+# could not be put back it says so and starts nothing.
 recover() {
-	local reason="$1" at="$phase" suffix result started=0
+	local reason="$1" at="$phase" suffix result started=0 restore_failed=0
 	# Recovery must run to completion: ignore further signals from here on.
 	trap - EXIT
 	trap '' HUP INT TERM
@@ -90,19 +101,23 @@ recover() {
 	*)
 		systemctl stop "$UNIT" || true
 		if [ "$moved_previous" -eq 1 ]; then
-			mv -f "$BIN.previous" "$BIN"
+			mv -f "$BIN.previous" "$BIN" || restore_failed=1
 		fi
 		if [ "$at" = "started" ] && [ -n "$backup_dir" ]; then
 			for suffix in "" "-wal" "-shm"; do
 				if [ -f "$backup_dir/$db_name$suffix" ]; then
-					cp -p "$backup_dir/$db_name$suffix" "$db_dir/$db_name$suffix"
+					cp -p "$backup_dir/$db_name$suffix" "$db_dir/$db_name$suffix" || restore_failed=1
 				else
-					rm -f "$db_dir/$db_name$suffix"
+					rm -f "$db_dir/$db_name$suffix" || restore_failed=1
 				fi
 			done
 		fi
 		;;
 	esac
+	if [ "$restore_failed" -eq 1 ]; then
+		echo "$reason; could not restore the previous version: check $BIN.previous and ${backup_dir:-$db_dir/backups}" >&2
+		return
+	fi
 	if [ "$had_bin" -eq 1 ]; then
 		if start_unit && systemctl is-active --quiet "$UNIT"; then
 			started=1
@@ -165,31 +180,40 @@ if [ "$had_bin" -eq 1 ]; then
 fi
 mv -f "$BIN.new" "$BIN"
 
-# 7. Start and wait for the health check.
+# check_health asks the new version for /healthz once, keeping curl's complaint.
+check_health() {
+	if [ "$tls_mode" = "autocert" ]; then
+		curl_err="$(curl -fsS -o /dev/null --max-time 5 --resolve "$tls_domain:$port:127.0.0.1" "$health_url" 2>&1)"
+	else
+		curl_err="$(curl -fsS -o /dev/null --max-time 5 "$health_url" 2>&1)"
+	fi
+}
+
+# 7. Start and wait for the health check, for TIMEOUT seconds on the clock or
+# until the unit has given up restarting (its start limit).
 phase=started
 healthy=0
-elapsed=0
+curl_err=""
+began=$SECONDS
 if start_unit; then
 	while :; do
-		if [ "$tls_mode" = "autocert" ]; then
-			if curl -fsS -o /dev/null --max-time 5 --resolve "$tls_domain:$port:127.0.0.1" "$health_url" 2>/dev/null; then
-				healthy=1
-				break
-			fi
-		else
-			if curl -fsS -o /dev/null --max-time 5 "$health_url" 2>/dev/null; then
-				healthy=1
-				break
-			fi
+		if check_health; then
+			healthy=1
+			break
 		fi
-		elapsed=$((elapsed + 1))
-		[ "$elapsed" -lt "$TIMEOUT" ] || break
+		if systemctl is-failed --quiet "$UNIT"; then
+			break
+		fi
+		[ "$((SECONDS - began))" -lt "$TIMEOUT" ] || break
 		sleep 1
 	done
 fi
 
-# 9. Not healthy (or did not start): undo and report.
+# 9. Not healthy (or did not start): say why, undo, and report.
 if [ "$healthy" -ne 1 ]; then
+	if [ -n "$curl_err" ]; then
+		echo "last health check error: $curl_err" >&2
+	fi
 	recover "new version failed its health check"
 	exit 1
 fi
