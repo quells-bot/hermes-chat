@@ -71,6 +71,18 @@ type Message struct {
 	FinalizedAt   sql.NullInt64
 }
 
+type Prompt struct {
+	MessageID  string
+	RoomID     string
+	AgentID    string
+	Kind       string
+	Choices    string
+	State      string
+	Answer     string
+	AnsweredBy sql.NullString
+	ClosedAt   sql.NullInt64
+}
+
 type Room struct {
 	ID          string
 	Topic       string

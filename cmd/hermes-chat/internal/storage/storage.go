@@ -106,6 +106,13 @@ type Repository interface {
 	GetActivity(ctx context.Context, id string) (Activity, error)                             // ErrNotFound
 	SetActivityResult(ctx context.Context, id string, durationMs int64, succeeded bool) error // ErrNotFound, also for a remark
 	ListActivities(ctx context.Context, roomID, messageID string) ([]Activity, error)         // oldest first; empty, not nil
+
+	PutPrompt(ctx context.Context, p Prompt) error                                            // ErrConflict on a second prompt for the message; only the first five fields are written: a new prompt is open
+	GetPrompt(ctx context.Context, messageID string) (Prompt, error)                          // ErrNotFound
+	ListPromptsInRange(ctx context.Context, roomID, firstID, lastID string) ([]Prompt, error) // by message id; empty, not nil
+	ListOpenPrompts(ctx context.Context, roomID string) ([]Prompt, error)                     // roomID "" means every room; by message id; empty, not nil
+	CountOpenPrompts(ctx context.Context, roomID string) (int64, error)
+	ClosePrompt(ctx context.Context, messageID, state, answer string, answeredBy *string, closedAtMs int64) error // ErrNotFound when there is no open prompt for the message
 }
 
 type repo struct {
