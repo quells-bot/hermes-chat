@@ -177,6 +177,11 @@ func (s *service) buildRoomLayout(ctx context.Context, r storage.Repository, row
 		}
 		room.Agents = append(room.Agents, RoomAgent{Agent: a, Connected: s.hub.agentConnected(a.ID)})
 	}
+	halted, err := r.GetHaltedAtMs(ctx)
+	if err != nil {
+		return Room{}, fmt.Errorf("get halt: %w", err)
+	}
+	room.Halted = halted != nil
 	last, err := r.GetLastMessageID(ctx, row.ID)
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return Room{}, fmt.Errorf("get last message: %w", err)

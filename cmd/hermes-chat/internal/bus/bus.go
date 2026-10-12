@@ -69,6 +69,9 @@ type Service interface {
 	RemoveRoomAgent(ctx context.Context, actor Actor, roomID, agentID ulid.ULID) (Room, error)       // the same three
 	PauseRoom(ctx context.Context, actor Actor, roomID ulid.ULID) (Room, error)                      // human member only; ErrForbidden, ErrNotFound; already paused is a no-op
 	ResumeRoom(ctx context.Context, actor Actor, roomID ulid.ULID) (Room, error)                     // the same; not paused is a no-op
+	StopEverything(ctx context.Context, actor Actor) error                                           // human only: ErrForbidden; already stopped is a no-op
+	ResumeEverything(ctx context.Context, actor Actor) error                                         // human only: ErrForbidden; not stopped is a no-op
+	Halted(ctx context.Context) (bool, error)
 
 	PostMessage(ctx context.Context, actor Actor, roomID ulid.ULID, text string, replyTo ulid.ULID) (Message, error) // ErrNotFound, ErrValidation, ErrRoomArchived; ErrPaused for an agent
 	CancelMessage(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) error                               // ErrNotFound, ErrForbidden, ErrNothingWaiting

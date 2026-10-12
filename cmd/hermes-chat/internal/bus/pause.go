@@ -11,9 +11,17 @@ import (
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/storage"
 )
 
-// paused reports whether the room is closed to agents: paused itself, or (Task 4) everything is stopped.
+// paused reports whether the room is closed to agents: paused itself, or
+// everything is stopped.
 func paused(ctx context.Context, r storage.Repository, row storage.Room) (bool, error) {
-	return row.PausedAtMs != nil, nil
+	if row.PausedAtMs != nil {
+		return true, nil
+	}
+	halted, err := r.GetHaltedAtMs(ctx)
+	if err != nil {
+		return false, fmt.Errorf("get halt: %w", err)
+	}
+	return halted != nil, nil
 }
 
 // requireRoomOpen returns ErrPaused when the room is closed to agents, and the
