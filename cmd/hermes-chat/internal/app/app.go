@@ -57,6 +57,9 @@ type Controller interface {
 	AgentRemark(c *gin.Context)
 	AgentStartTool(c *gin.Context)
 	AgentFinishTool(c *gin.Context)
+	AgentPostPrompt(c *gin.Context)
+	AgentExpirePrompt(c *gin.Context)
+	AnswerPrompt(c *gin.Context)
 }
 
 // Options are the settings the handlers need.

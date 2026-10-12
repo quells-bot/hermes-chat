@@ -94,10 +94,11 @@ func TestRoutes_Table(t *testing.T) {
 		"GET /api/rooms/:room", "GET /api/rooms/:room/messages", "GET /api/rooms/:room/messages/:message", "GET /api/rooms/:room/messages/:message/activity", "GET /healthz",
 		"PATCH /api/rooms/:room",
 		"POST /agent/deliveries/:message/done", "POST /agent/deliveries/:message/failed", "POST /agent/deliveries/:message/remarks",
-		"POST /agent/deliveries/:message/tools", "POST /agent/deliveries/:message/working", "POST /agent/rooms/:room/messages",
+		"POST /agent/deliveries/:message/tools", "POST /agent/deliveries/:message/working", "POST /agent/prompts/:message/expire", "POST /agent/rooms/:room/messages",
+		"POST /agent/rooms/:room/prompts",
 		"POST /api/dms", "POST /api/halt", "POST /api/login", "POST /api/logout", "POST /api/rooms", "POST /api/rooms/:room/agents",
 		"POST /api/rooms/:room/agents/:agent/steer", "POST /api/rooms/:room/agents/:agent/stop",
-		"POST /api/rooms/:room/humans", "POST /api/rooms/:room/messages", "POST /api/rooms/:room/messages/:message/cancel",
+		"POST /api/rooms/:room/humans", "POST /api/rooms/:room/messages", "POST /api/rooms/:room/messages/:message/answer", "POST /api/rooms/:room/messages/:message/cancel",
 		"POST /api/rooms/:room/pause", "POST /api/rooms/:room/resume",
 		"PUT /agent/activities/:activity", "PUT /agent/messages/:message", "PUT /api/rooms/:room/read",
 	}, got)

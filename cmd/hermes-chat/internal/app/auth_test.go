@@ -161,6 +161,7 @@ func apiEngine(t *testing.T, secure bool) (e *gin.Engine, buf *bytes.Buffer, svc
 	human.POST("/rooms/:room/agents/:agent/steer", ctrl.Steer)
 	human.POST("/rooms/:room/pause", ctrl.PauseRoom)
 	human.POST("/rooms/:room/resume", ctrl.ResumeRoom)
+	human.POST("/rooms/:room/messages/:message/answer", ctrl.AnswerPrompt)
 	human.GET("/halt", ctrl.GetHalt)
 	human.POST("/halt", ctrl.StopEverything)
 	human.DELETE("/halt", ctrl.ResumeEverything)

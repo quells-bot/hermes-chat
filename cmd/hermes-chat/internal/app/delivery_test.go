@@ -35,6 +35,8 @@ func agentEngine(t *testing.T, svc bus.Service) *gin.Engine {
 	agent.POST("/deliveries/:message/remarks", ctrl.AgentRemark)
 	agent.POST("/deliveries/:message/tools", ctrl.AgentStartTool)
 	agent.PUT("/activities/:activity", ctrl.AgentFinishTool)
+	agent.POST("/rooms/:room/prompts", ctrl.AgentPostPrompt)
+	agent.POST("/prompts/:message/expire", ctrl.AgentExpirePrompt)
 	return e
 }
 

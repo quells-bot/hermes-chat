@@ -46,6 +46,7 @@ type roomBody struct {
 	PauseReason       *string         `json:"pause_reason"` // "human" or "turn_cap" while paused
 	TurnCap           int             `json:"turn_cap"`
 	Halted            bool            `json:"halted"`
+	OpenPrompts       int             `json:"open_prompts"` // prompts still waiting for a human
 }
 
 type authorBody struct {
@@ -68,6 +69,17 @@ type messageBody struct {
 	ReplyToID  *ulid.ULID     `json:"reply_to_id"`
 	Deliveries []deliveryBody `json:"deliveries"` // never null; [] for an agent's own messages
 	CreatedAt  time.Time      `json:"created_at"`
+	Prompt     *promptBody    `json:"prompt"` // the question this message asks, when any
+}
+
+// promptBody is the prompt riding a message, as the UI shows it.
+type promptBody struct {
+	Kind       string     `json:"kind"`
+	Choices    []string   `json:"choices"`
+	State      string     `json:"state"`
+	Answer     *string    `json:"answer"`      // the human's answer once answered
+	AnsweredBy *humanBody `json:"answered_by"` // the human who answered, when any
+	ClosedAt   *time.Time `json:"closed_at"`   // once answered or expired
 }
 
 type agentRoomBody struct {
@@ -132,7 +144,7 @@ func roomJSON(r bus.Room) any {
 		ID: r.ID, Flavor: string(r.Flavor), Topic: r.Topic, Archived: r.Archived(), CreatedAt: r.CreatedAt,
 		Humans: make([]humanBody, 0, len(r.Humans)), Agents: make([]roomAgentBody, 0, len(r.Agents)),
 		LastMessageID: optionalID(r.LastMessageID), LastReadMessageID: optionalID(r.LastReadMessageID),
-		Paused: r.Paused(), TurnCap: r.TurnCap, Halted: r.Halted,
+		Paused: r.Paused(), TurnCap: r.TurnCap, Halted: r.Halted, OpenPrompts: r.OpenPrompts,
 	}
 	if r.Paused() {
 		reason := string(r.PauseReason)
@@ -158,6 +170,27 @@ func messageJSON(m bus.Message) any {
 	}
 	for _, d := range m.Deliveries {
 		out.Deliveries = append(out.Deliveries, deliveryBody{Agent: agentJSON(d.Agent), State: string(d.State)})
+	}
+	if m.Prompt != nil {
+		p := promptJSON(*m.Prompt)
+		out.Prompt = &p
+	}
+	return out
+}
+
+// promptJSON builds the prompt object; answer and closed_at are null until they exist.
+func promptJSON(p bus.Prompt) promptBody {
+	out := promptBody{Kind: string(p.Kind), Choices: p.Choices, State: string(p.State)}
+	if p.Answer != "" {
+		answer := p.Answer
+		out.Answer = &answer
+	}
+	if p.AnsweredBy != nil {
+		out.AnsweredBy = &humanBody{ID: p.AnsweredBy.ID, Username: p.AnsweredBy.Username}
+	}
+	if !p.ClosedAt.IsZero() {
+		at := p.ClosedAt
+		out.ClosedAt = &at
 	}
 	return out
 }

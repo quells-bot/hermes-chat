@@ -35,6 +35,7 @@ func routes(e *gin.Engine, ctrl app.Controller, log *slog.Logger) {
 	human.POST("/rooms/:room/messages", ctrl.PostMessage)
 	human.GET("/rooms/:room/messages/:message", ctrl.GetMessage)
 	human.POST("/rooms/:room/messages/:message/cancel", ctrl.CancelMessage)
+	human.POST("/rooms/:room/messages/:message/answer", ctrl.AnswerPrompt)
 	human.GET("/rooms/:room/messages/:message/activity", ctrl.ListActivity)
 	human.POST("/rooms/:room/agents/:agent/stop", ctrl.StopTurn)
 	human.POST("/rooms/:room/agents/:agent/steer", ctrl.Steer)
@@ -58,4 +59,6 @@ func routes(e *gin.Engine, ctrl app.Controller, log *slog.Logger) {
 	agent.POST("/deliveries/:message/remarks", ctrl.AgentRemark)
 	agent.POST("/deliveries/:message/tools", ctrl.AgentStartTool)
 	agent.PUT("/activities/:activity", ctrl.AgentFinishTool)
+	agent.POST("/rooms/:room/prompts", ctrl.AgentPostPrompt)
+	agent.POST("/prompts/:message/expire", ctrl.AgentExpirePrompt)
 }

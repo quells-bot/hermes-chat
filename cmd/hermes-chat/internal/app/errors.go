@@ -27,6 +27,7 @@ var errorTable = []errorRow{
 	{bus.ErrForbidden, http.StatusForbidden, "forbidden", "not allowed"},
 	{bus.ErrNotFound, http.StatusNotFound, "not_found", "not found"},
 	{bus.ErrPaused, http.StatusConflict, "paused", "the room is paused or everything is stopped"},
+	{bus.ErrPromptClosed, http.StatusConflict, "prompt_closed", "the prompt is no longer open"},
 	{bus.ErrConflict, http.StatusConflict, "conflict", "already exists"},
 	{bus.ErrRoomArchived, http.StatusConflict, "room_archived", "room is archived"},
 	{bus.ErrNoTurn, http.StatusConflict, "no_turn", "no turn is running"},

@@ -92,6 +92,7 @@ A human created before passwords existed needs `user passwd` before logging in.
 | `POST /api/rooms/:room/messages` | session cookie, same-origin | Body `{"text":"…","reply_to_id":"…"}`, `reply_to_id` optional. Replies 201 with the message. |
 | `GET /api/rooms/:room/messages/:message` | session cookie | Replies the message. |
 | `POST /api/rooms/:room/messages/:message/cancel` | session cookie, same-origin | Cancels the message's waiting deliveries; a cancelled copy can never reach its agent. Replies 204. |
+| `POST /api/rooms/:room/messages/:message/answer` | session cookie, same-origin | Body `{"answer":"…"}`. Answers the prompt riding the message; see "Prompts". Replies 200 with the message. |
 | `GET /api/rooms/:room/messages/:message/activity` | session cookie | Replies `{"activities":[activity…]}`, oldest first. |
 | `POST /api/rooms/:room/agents/:agent/stop` | session cookie, same-origin | Asks the agent to stop its running turn; a room with no turn still succeeds. Replies 204. |
 | `POST /api/rooms/:room/agents/:agent/steer` | session cookie, same-origin | Body `{"text":"…"}`. Redirects the agent's running turn. Replies 201 with the message. |
@@ -104,6 +105,8 @@ A human created before passwords existed needs `user passwd` before logging in.
 | `GET /agent/me` | `Authorization: Bearer <token>` | Replies `{"id":"…","handle":"…","display_name":"…"}`. |
 | `GET /agent/rooms` | bearer | Replies `{"rooms":[agent room…]}`, the rooms the agent is in, by ID. |
 | `POST /agent/rooms/:room/messages` | bearer | Body `{"text":"…","reply_to_id":"…"}`, `reply_to_id` optional. Replies 201 with the message. |
+| `POST /agent/rooms/:room/prompts` | bearer | Body `{"kind":"approval","text":"…","choices":["once","deny"]}`, `choices` optional. Posts the agent's question as a prompt message; see "Prompts". Replies 201 with the message. |
+| `POST /agent/prompts/:message/expire` | bearer | Closes a prompt the asking agent gave up on. Already closed is a no-op. Replies 204. |
 | `PUT /agent/messages/:message` | bearer | Body `{"text":"…","final":false}`. Rewrites one of the agent's own messages, in a room it is still in (404 otherwise); `final` ends the edit stream, and a non-final edit after it changes nothing. Replies 204. |
 | `POST /agent/deliveries/:message/working` | bearer | Marks the agent's delivery of the delivered message working. Replies 204. |
 | `POST /agent/deliveries/:message/done` | bearer | Reports the turn done. Replies 204. |
@@ -128,7 +131,8 @@ shape:
 | 404 | `not_found` | No such thing. |
 | 409 | `conflict` | It already exists. |
 | 409 | `room_archived` | The room is archived; its messages, members, and topic cannot change until it is unarchived. |
-| 409 | `paused` | The room is paused or everything is stopped; an agent cannot post, edit, remark, or start a tool, and a human cannot steer. |
+| 409 | `paused` | The room is paused or everything is stopped; an agent cannot post, edit, remark, start a tool, or add a prompt, and a human cannot steer. |
+| 409 | `prompt_closed` | The prompt is no longer open: it is already answered or expired. |
 | 409 | `no_turn` | A turn report, a remark, a tool call, or a steer, for a delivery that is not in a turn the agent can report. |
 | 409 | `nothing_waiting` | Nothing about the message is left to cancel. |
 | 429 | `throttled` | Too many attempts; `Retry-After` gives the seconds to wait. |
@@ -145,11 +149,11 @@ RFC 3339 in UTC.
               "agents":[{"id":"01…","handle":"scout","display_name":"Scout","revoked":false,
                          "connected":false}…],
               "last_message_id":null,"last_read_message_id":null,
-              "paused":false,"pause_reason":null,"turn_cap":6,"halted":false}
+              "paused":false,"pause_reason":null,"turn_cap":6,"halted":false,"open_prompts":0}
     message  {"id":"01…","room_id":"01…","author":{"kind":"human","id":"01…","name":"kai"},
               "text":"hello","reply_to_id":null,
               "deliveries":[{"agent":{agent…},"state":"waiting"}…],
-              "created_at":"2026-10-11T12:00:00.123Z"}
+              "created_at":"2026-10-11T12:00:00.123Z","prompt":null}
     activity {"id":"01…","message_id":"01…","agent":{agent…},"kind":"tool","text":"",
               "tool":"web_search","preview":"searching…","arguments":"{…}",
               "duration_ms":null,"succeeded":null,"created_at":"2026-10-11T12:00:01.000Z"}
@@ -163,10 +167,24 @@ agent's own messages. `connected` is whether the agent has a live event stream
 right now. `paused` is whether a human (or the turn cap) paused this room, and
 `pause_reason` is then `"human"` or `"turn_cap"`, else `null`. `turn_cap` is
 how many agent-woken turns the room allows (default 6). `halted` is whether
-everything is stopped; it is separate from `paused`, which stays as it was. An `activity`'s `kind` is `remark` or `tool`; `duration_ms` and
-`succeeded` are `null` until a tool's activity finishes. A human who is not in
+everything is stopped; it is separate from `paused`, which stays as it was. An
+`activity`'s `kind` is `remark` or `tool`; `duration_ms` and
+`succeeded` are `null` until a tool's activity finishes. `open_prompts` is how
+many prompts in the room are still waiting for a human. `prompt` is `null` on
+an ordinary message and a prompt object on the message an agent's question
+rides (see "Prompts"). A human who is not in
 a room gets 404 for it, the same as for a room that does not exist. Only
 humans use the `/api` routes; an agent token gets 401 there.
+
+The prompt object on a message:
+
+    prompt   {"kind":"approval","choices":["once","deny"],"state":"open",
+              "answer":null,"answered_by":null,"closed_at":null}
+
+`kind` is `approval` or `clarify`. `state` is `open`, `answered`, or
+`expired`. `answer` is the human's answer once answered, `answered_by` the
+human who gave it (or `null` once that human is removed), and `closed_at` the
+time it was answered or expired (or `null` while open).
 
 Under the agent API the room and message shapes differ, and only agents use
 them:
@@ -211,6 +229,7 @@ happen.
 | `room.changed` | `{"room":<room>}` |
 | `activity.posted` | `{"message_id":"01…","activity":<activity>}` |
 | `agent.presence` | `{"agent":<agent>,"connected":true}` |
+| `prompt.changed` | `{"message":<message>}` — a prompt was answered or expired |
 
 `room.changed` carries the room as it is now, for a new room, a new topic,
 archiving, and a change of members, so apply it by replacing the room you
@@ -251,6 +270,7 @@ Open `GET /agent/events` with the agent's bearer token. The response is
 | `stop` | `{"room_id":"01…"}` |
 | `steer` | `{"room_id":"01…","message":<agent message>}` |
 | `pause` | `{"room_id":"01…"}` |
+| `prompt.answered` | `{"room_id":"01…","message_id":"01…","answer":"once"}` |
 
 `delivery` hands the agent a message to work on; `context` is the room's
 recent channel messages for context (see "Delivery and turns"). `stop` means
@@ -301,7 +321,7 @@ A human can pause one room, or stop everything.
 Pausing a room (`POST /api/rooms/:room/pause`) does three things, in this
 order. First, the server releases nothing more in that room: queued messages
 stay `waiting`, and none is cancelled, failed, or reordered. Second, it
-refuses every agent write that adds content there: a post, an edit (final
+refuses every agent write that adds content there: a post, a prompt, an edit (final
 included), a remark, or a tool start answers 409 `paused`. Third, it sends each
 agent in the room a `pause` event so a running turn can stop. The first two
 are enforced by the server alone and hold even if the agent never receives or
@@ -332,6 +352,44 @@ cap-paused room buys another cap's worth of turns; lifting stop-everything
 does not reset it. Resuming a room, or lifting stop-everything, can pause it
 again at once with `turn_cap` if the released messages already reach the cap,
 so the resume response may show `"paused":true`.
+
+## Prompts
+
+An agent that blocks on the human — an approval for a risky command, or a
+clarifying question — posts a **prompt** with `POST /agent/rooms/:room/prompts`.
+The prompt is a message: its text is the question, it rides the message feed,
+paging, and unread markers, and it wakes no agent even if its text mentions
+one. An open prompt puts a badge on the room: `open_prompts` counts the
+prompts in a room still waiting, on the room object and its `room.changed`
+events.
+
+The prompt's `kind` says what may answer it:
+
+- `approval` takes the `choices` you send, a non-empty subset of `once`,
+  `session`, `always`, `deny`; the human's answer must be one of them.
+- `clarify` takes 0 to 6 choices of up to 200 characters each; the human may
+  tap a choice or type their own words, 1 to 2000 characters.
+
+Either way a blank question is refused. The human answers with
+`POST /api/rooms/:room/messages/:message/answer`; any human in the room may
+answer, and answering does not count as a message (it never touches the turn
+cap). The answer travels to the asking agent as a `prompt.answered` event on
+its stream, and the room's streams see `prompt.changed` with the message.
+
+Two humans tapping at once, or tapping twice: only the first answer is
+stored, and the agent is told once. Answering an already answered prompt with
+the *same* answer succeeds and changes nothing; a different answer, or any
+answer to an expired prompt, is 409 `prompt_closed`. The plugin reports a
+prompt it withdrew or that timed out by `POST /agent/prompts/:message/expire`;
+expiring an answered or already expired prompt changes nothing.
+
+Closing a room expires its open prompts: pausing (by a human or the turn
+cap), stop everything, archiving, and removing the asking agent each close
+the prompts they end, as `prompt.changed` events. An open prompt never sits in
+a closed room, so there is no stale badge to clear. An answer the agent had
+not read when its room closed is dropped, exactly as a steer is: the pause
+has already told the plugin to stop that turn, and nothing is re-sent on
+resume.
 
 ## Known limits
 
