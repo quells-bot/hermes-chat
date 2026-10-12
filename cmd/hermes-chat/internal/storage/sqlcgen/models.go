@@ -71,6 +71,21 @@ type Message struct {
 	FinalizedAt   sql.NullInt64
 }
 
+type Note struct {
+	HumanID   string
+	Text      string
+	UpdatedAt int64
+}
+
+type NoteEntry struct {
+	ID         string
+	HumanID    string
+	AgentID    string
+	Text       string
+	ApprovedAt sql.NullInt64
+	CreatedAt  int64
+}
+
 type Prompt struct {
 	MessageID  string
 	RoomID     string

@@ -113,6 +113,15 @@ type Repository interface {
 	ListOpenPrompts(ctx context.Context, roomID string) ([]Prompt, error)                     // roomID "" means every room; by message id; empty, not nil
 	CountOpenPrompts(ctx context.Context, roomID string) (int64, error)
 	ClosePrompt(ctx context.Context, messageID, state, answer string, answeredBy *string, closedAtMs int64) error // ErrNotFound when there is no open prompt for the message
+
+	GetNoteText(ctx context.Context, humanID string) (string, error)                  // "" when the human has written none
+	PutNoteText(ctx context.Context, humanID, text string, updatedAtMs int64) error   // replaces
+	PutNoteEntry(ctx context.Context, e NoteEntry) error                              // ErrConflict on duplicate id
+	GetNoteEntry(ctx context.Context, id string) (NoteEntry, error)                   // ErrNotFound
+	ListNoteEntries(ctx context.Context, humanID string) ([]NoteEntry, error)         // oldest first, pending and approved; empty, not nil
+	SetNoteEntryText(ctx context.Context, id, text string) error                      // ErrNotFound
+	SetNoteEntryApprovedAt(ctx context.Context, id string, approvedAtMs *int64) error // ErrNotFound; nil returns it to quarantine
+	DeleteNoteEntry(ctx context.Context, id string) error                             // ErrNotFound
 }
 
 type repo struct {

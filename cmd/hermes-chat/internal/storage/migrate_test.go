@@ -32,6 +32,7 @@ func TestMigrate_CreatesStrictHumans(t *testing.T) {
 	assert.Contains(t, tables(t, db), "humans")
 	assert.Contains(t, tables(t, db), "halt")
 	assert.Contains(t, tables(t, db), "prompts")
+	assert.Contains(t, tables(t, db), "note_entries")
 	_, write := db.Pools()
 	_, err := write.ExecContext(ctx, `INSERT INTO humans (id, username, created_at) VALUES ('a','b','not a number')`)
 	assert.Error(t, err) // STRICT rejects text in an INTEGER column
