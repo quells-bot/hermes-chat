@@ -48,6 +48,7 @@ type Event struct {
 	Agent     *Agent    // agent.presence: the agent whose connection changed
 	Context   []Message // delivery on a channel: the messages leading up to the delivered one
 	Connected bool      // agent.presence: whether the agent is connected now
+	Note      string    // delivery: the author's note, when the author is the room's only human
 }
 
 // putEvent appends an event to the log. Call it inside the transaction that

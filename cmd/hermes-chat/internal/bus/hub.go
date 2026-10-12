@@ -525,6 +525,27 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 			return Event{}, false, err
 		}
 		e.Room = &room
+		// The delivered message's author's note, when the author is the room's
+		// only human. Decided here, when the agent reads the delivery, so a
+		// human who joins before the read keeps their privacy.
+		if e.Message.Author != nil && e.Message.Author.Kind == ActorHuman &&
+			len(room.Humans) == 1 && room.Humans[0].ID == e.Message.Author.ID {
+			text, err := r.GetNoteText(ctx, e.Message.Author.ID.String())
+			if err != nil {
+				return Event{}, false, fmt.Errorf("get note text: %w", err)
+			}
+			rows, err := r.ListNoteEntries(ctx, e.Message.Author.ID.String())
+			if err != nil {
+				return Event{}, false, fmt.Errorf("list note entries: %w", err)
+			}
+			approved := []string{}
+			for _, row := range rows {
+				if row.ApprovedAtMs != nil {
+					approved = append(approved, row.Text)
+				}
+			}
+			e.Note = composeNote(text, approved)
+		}
 		if room.Flavor == FlavorChannel {
 			// the delivered message's predecessors, bounded in count and text
 			ctxRows, err := r.ListMessages(ctx, row.RoomID, row.SubjectID, contextMessages)

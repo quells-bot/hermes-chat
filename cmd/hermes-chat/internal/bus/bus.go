@@ -97,6 +97,12 @@ type Service interface {
 	AnswerPrompt(ctx context.Context, actor Actor, roomID, messageID ulid.ULID, answer string) (Message, error)                     // human member; ErrNotFound, ErrValidation, ErrRoomArchived, ErrPaused, ErrPromptClosed; the same answer again is a no-op
 	ExpirePrompt(ctx context.Context, actor Actor, messageID ulid.ULID) error                                                       // the agent that asked: ErrNotFound otherwise; already closed is a no-op
 
+	GetNote(ctx context.Context, actor Actor) (Note, error)                                                               // human only: ErrForbidden
+	SetNoteText(ctx context.Context, actor Actor, text string) (Note, error)                                              // ErrForbidden, ErrValidation
+	UpdateNoteEntry(ctx context.Context, actor Actor, entryID ulid.ULID, u NoteEntryUpdate) (Note, error)                  // the actor's own entries: ErrNotFound otherwise; ErrValidation
+	DeleteNoteEntry(ctx context.Context, actor Actor, entryID ulid.ULID) (Note, error)                                     // the same
+	SuggestNoteEntry(ctx context.Context, actor Actor, messageID ulid.ULID, text string) (NoteEntry, bool, error)          // agent with an open turn on the message; created is false for a repeat; ErrNotFound, ErrNoTurn, ErrPaused, ErrValidation
+
 	// Subscribe opens a stream of the actor's events after the given event ID; FromNow starts at the end of the log.
 	Subscribe(ctx context.Context, actor Actor, after int64) (*Subscription, error) // ErrForbidden, ErrValidation, ErrUnavailable
 	// AgentGone records that the agent's last stream closed: one agent.presence event per room, connected=false.
