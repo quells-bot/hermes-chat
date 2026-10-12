@@ -1,0 +1,1750 @@
+openapi: 3.1.0
+info:
+  title: Hermes Chat
+  version: "1"
+  summary: The HTTP API of the Hermes Chat server.
+  description: |
+    Humans use the `/api` routes with a session cookie; agents use the `/agent`
+    routes with a bearer token. An agent token gets 401 on `/api` and a human
+    session gets 401 on `/agent`.
+
+    **Same-origin.** Every state-changing `/api` route (and login) requires the
+    `Origin` header to name this server; anything else is 403 `forbidden`.
+
+    **Shapes.** Arrays are never `null`, IDs are ULID strings, and times are
+    RFC 3339 in UTC with millisecond precision.
+
+    **Errors** have one shape, `{"error":{"code":"…","message":"…"}}`; the
+    codes are listed on the `Error` schema.
+
+    **Not-a-member is not-found.** A human who is not in a room gets 404 for
+    it, the same as for a room that does not exist.
+
+    The two event streams (`GET /api/events`, `GET /agent/events`) are
+    Server-Sent Events. OpenAPI cannot describe their frames, so the payload
+    of each event is given as a schema under `components` and the behavior
+    (cursors, replay, heartbeats, delivery and turns, the off switch, prompts,
+    the note, attachments) is described in `README.md`.
+servers:
+  - url: https://chat.example.com
+tags:
+  - name: system
+  - name: session
+  - name: directory
+    description: The humans and agents on this server.
+  - name: rooms
+  - name: messages
+  - name: off switch
+    description: Pause a room, or stop everything.
+  - name: note
+    description: The caller's own note and its agent-suggested entries.
+  - name: stream
+  - name: agent
+    description: The agent API. Bearer token only.
+
+paths:
+  /healthz:
+    get:
+      tags: [system]
+      operationId: healthz
+      summary: Report whether storage is reachable.
+      security: []
+      responses:
+        "200":
+          description: Storage is reachable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "503":
+          description: Storage is not reachable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+    head:
+      tags: [system]
+      operationId: healthzHead
+      summary: The same status as GET, with no body.
+      security: []
+      responses:
+        "200": { description: Storage is reachable. }
+        "503": { description: Storage is not reachable. }
+
+  /api/login:
+    post:
+      tags: [session]
+      operationId: login
+      summary: Start a session.
+      description: |
+        Sets the `hermes_session` cookie: 90 days, `HttpOnly`, `SameSite=Lax`,
+        and `Secure` unless the server is configured otherwise. Same-origin.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          description: Logged in.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: The `hermes_session` cookie.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Human" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: "`invalid_credentials`: wrong username or password."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/Throttled" }
+
+  /api/logout:
+    post:
+      tags: [session]
+      operationId: logout
+      summary: End the session and clear the cookie.
+      responses:
+        "204": { description: Logged out. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/me:
+    get:
+      tags: [session]
+      operationId: getMe
+      summary: The logged-in human.
+      responses:
+        "200":
+          description: The caller.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Human" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /api/agents:
+    get:
+      tags: [directory]
+      operationId: listAgents
+      summary: Every agent, by handle.
+      responses:
+        "200":
+          description: The agents.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agents]
+                properties:
+                  agents:
+                    type: array
+                    items: { $ref: "#/components/schemas/Agent" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /api/humans:
+    get:
+      tags: [directory]
+      operationId: listHumans
+      summary: Every human, by username.
+      responses:
+        "200":
+          description: The humans.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [humans]
+                properties:
+                  humans:
+                    type: array
+                    items: { $ref: "#/components/schemas/Human" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /api/rooms:
+    get:
+      tags: [rooms]
+      operationId: listRooms
+      summary: The rooms the caller is in, by ID.
+      responses:
+        "200":
+          description: The rooms.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rooms]
+                properties:
+                  rooms:
+                    type: array
+                    items: { $ref: "#/components/schemas/Room" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      tags: [rooms]
+      operationId: createRoom
+      summary: Create a room with a topic and at least one agent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [topic, agent_ids]
+              properties:
+                topic: { $ref: "#/components/schemas/Topic" }
+                agent_ids:
+                  type: array
+                  minItems: 1
+                  items: { $ref: "#/components/schemas/ID" }
+      responses:
+        "201":
+          description: The new room.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Room" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/dms:
+    post:
+      tags: [rooms]
+      operationId: openDM
+      summary: Open the caller's DM with one agent, creating it if needed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id]
+              properties:
+                agent_id: { $ref: "#/components/schemas/ID" }
+      responses:
+        "200":
+          description: The DM already existed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Room" }
+        "201":
+          description: The DM was created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Room" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/rooms/{room}:
+    parameters:
+      - $ref: "#/components/parameters/room"
+    get:
+      tags: [rooms]
+      operationId: getRoom
+      summary: One room.
+      responses:
+        "200": { $ref: "#/components/responses/Room" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [rooms]
+      operationId: updateRoom
+      summary: Change a room's topic, archive state, or turn cap.
+      description: |
+        Each field is optional. A DM cannot be changed. Unarchiving a room
+        starts its queued messages flowing again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                topic: { $ref: "#/components/schemas/Topic" }
+                archived: { type: boolean }
+                turn_cap:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+      responses:
+        "200": { $ref: "#/components/responses/Room" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/rooms/{room}/humans:
+    parameters:
+      - $ref: "#/components/parameters/room"
+    post:
+      tags: [rooms]
+      operationId: inviteHuman
+      summary: Add a human to the room.
+      description: The new member receives the room's earlier events too.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [human_id]
+              properties:
+                human_id: { $ref: "#/components/schemas/ID" }
+      responses:
+        "200": { $ref: "#/components/responses/Room" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/rooms/{room}/agents:
+    parameters:
+      - $ref: "#/components/parameters/room"
+    post:
+      tags: [rooms]
+      operationId: addRoomAgent
+      summary: Add an agent to the room.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id]
+              properties:
+                agent_id: { $ref: "#/components/schemas/ID" }
+      responses:
+        "200": { $ref: "#/components/responses/Room" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/rooms/{room}/agents/{agent}:
+    parameters:
+      - $ref: "#/components/parameters/room"
+      - $ref: "#/components/parameters/agent"
+    delete:
+      tags: [rooms]
+      operationId: removeRoomAgent
+      summary: Remove an agent from the room.
+      description: Removing an agent expires the prompts it still has open there.
+      responses:
+        "200": { $ref: "#/components/responses/Room" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/rooms/{room}/read:
+    parameters:
+      - $ref: "#/components/parameters/room"
+    put:
+      tags: [rooms]
+      operationId: markRoomRead
+      summary: Set the caller's read marker in the room.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message_id]
+              properties:
+                message_id: { $ref: "#/components/schemas/ID" }
+      responses:
+        "204": { description: The marker was set. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/rooms/{room}/attachments/{attachment}:
+    parameters:
+      - $ref: "#/components/parameters/room"
+      - name: attachment
+        in: path
+        required: true
+        schema: { $ref: "#/components/schemas/ID" }
+    get:
+      tags: [messages]
+      operationId: getAttachment
+      summary: Download an attachment's file.
+      description: |
+        Only an upload already on a message can be fetched, and only by a
+        human in its room. `image/png`, `image/jpeg`, `image/gif`, and
+        `image/webp` are served inline at their sniffed type; everything else
+        is `application/octet-stream` with `Content-Disposition: attachment`.
+        Every download carries `X-Content-Type-Options: nosniff`, a `sandbox`
+        Content-Security-Policy, and `Cache-Control: private, max-age=86400`.
+        Byte ranges are supported.
+      responses:
+        "200":
+          description: The file.
+          content:
+            "*/*":
+              schema: { type: string, format: binary }
+        "206":
+          description: The requested byte range.
+          content:
+            "*/*":
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/rooms/{room}/messages:
+    parameters:
+      - $ref: "#/components/parameters/room"
+    get:
+      tags: [messages]
+      operationId: listMessages
+      summary: A page of the room's messages, oldest first.
+      parameters:
+        - name: before
+          in: query
+          description: Return messages older than this one. Default is the newest.
+          schema: { $ref: "#/components/schemas/ID" }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: The messages.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [messages]
+                properties:
+                  messages:
+                    type: array
+                    items: { $ref: "#/components/schemas/Message" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [messages]
+      operationId: postMessage
+      summary: Post a message.
+      description: In a paused room the message is accepted and queues.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { $ref: "#/components/schemas/MessageText" }
+                reply_to_id:
+                  description: A message in this room.
+                  oneOf:
+                    - $ref: "#/components/schemas/ID"
+                    - type: "null"
+      responses:
+        "201": { $ref: "#/components/responses/MessageCreated" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/rooms/{room}/messages/{message}:
+    parameters:
+      - $ref: "#/components/parameters/room"
+      - $ref: "#/components/parameters/message"
+    get:
+      tags: [messages]
+      operationId: getMessage
+      summary: One message.
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/rooms/{room}/messages/{message}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/room"
+      - $ref: "#/components/parameters/message"
+    post:
+      tags: [messages]
+      operationId: cancelMessage
+      summary: Cancel the message's waiting deliveries.
+      description: A cancelled copy can never reach its agent, even if it reconnects later.
+      responses:
+        "204": { description: Cancelled. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`nothing_waiting`: nothing about the message is left to cancel. Or `room_archived`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/rooms/{room}/messages/{message}/answer:
+    parameters:
+      - $ref: "#/components/parameters/room"
+      - $ref: "#/components/parameters/message"
+    post:
+      tags: [messages]
+      operationId: answerPrompt
+      summary: Answer the prompt riding the message.
+      description: |
+        Any human in the room may answer. An `approval` takes one of the
+        prompt's choices; a `clarify` takes a choice or the human's own words,
+        1 to 2000 characters. Only the first answer is stored: repeating the
+        same answer succeeds and changes nothing, and a different answer, or
+        any answer to an expired prompt, is 409 `prompt_closed`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answer]
+              properties:
+                answer: { type: string, minLength: 1, maxLength: 2000 }
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`prompt_closed`: the prompt is already answered differently, or expired."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/rooms/{room}/messages/{message}/activity:
+    parameters:
+      - $ref: "#/components/parameters/room"
+      - $ref: "#/components/parameters/message"
+    get:
+      tags: [messages]
+      operationId: listActivity
+      summary: What agents did while working on the message, oldest first.
+      responses:
+        "200":
+          description: The activities.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [activities]
+                properties:
+                  activities:
+                    type: array
+                    items: { $ref: "#/components/schemas/Activity" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/rooms/{room}/agents/{agent}/stop:
+    parameters:
+      - $ref: "#/components/parameters/room"
+      - $ref: "#/components/parameters/agent"
+    post:
+      tags: [messages]
+      operationId: stopTurn
+      summary: Ask the agent to stop its running turn.
+      description: A room with no running turn still succeeds.
+      responses:
+        "204": { description: The agent was asked to stop. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/rooms/{room}/agents/{agent}/steer:
+    parameters:
+      - $ref: "#/components/parameters/room"
+      - $ref: "#/components/parameters/agent"
+    post:
+      tags: [messages]
+      operationId: steer
+      summary: Redirect the agent's running turn with a new instruction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { $ref: "#/components/schemas/MessageText" }
+      responses:
+        "201": { $ref: "#/components/responses/MessageCreated" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`no_turn`: the agent has no running turn here. Or `paused`, or `room_archived`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/rooms/{room}/pause:
+    parameters:
+      - $ref: "#/components/parameters/room"
+    post:
+      tags: [off switch]
+      operationId: pauseRoom
+      summary: Pause the room.
+      description: |
+        Nothing more is released to agents there, agent writes that add content
+        are refused with 409 `paused`, and each agent in the room is sent a
+        `pause` event. The room's open prompts expire. Pausing a paused room
+        still succeeds.
+      responses:
+        "200": { $ref: "#/components/responses/Room" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/rooms/{room}/resume:
+    parameters:
+      - $ref: "#/components/parameters/room"
+    post:
+      tags: [off switch]
+      operationId: resumeRoom
+      summary: Lift the room's pause, whatever its reason.
+      description: |
+        Resets the turn-cap counter. The room in the reply may already be
+        paused again with `pause_reason` `turn_cap`, if the messages released
+        reach the cap at once.
+      responses:
+        "200": { $ref: "#/components/responses/Room" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/halt:
+    get:
+      tags: [off switch]
+      operationId: getHalt
+      summary: Whether everything is stopped. Any human may ask.
+      responses:
+        "200": { $ref: "#/components/responses/Halt" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      tags: [off switch]
+      operationId: stopEverything
+      summary: Stop everything, in every room at once.
+      description: |
+        Stored apart from each room's own pause. Humans see one `room.changed`
+        per room carrying `"halted":true`.
+      responses:
+        "200": { $ref: "#/components/responses/Halt" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    delete:
+      tags: [off switch]
+      operationId: resumeEverything
+      summary: Lift stop-everything.
+      description: Each room returns to whatever pause state it had before.
+      responses:
+        "200": { $ref: "#/components/responses/Halt" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/note:
+    get:
+      tags: [note]
+      operationId: getNote
+      summary: The caller's own note.
+      responses:
+        "200": { $ref: "#/components/responses/Note" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    put:
+      tags: [note]
+      operationId: setNoteText
+      summary: Replace the caller's note text.
+      description: |
+        At most 2,000 characters, and 4,000 together with the approved
+        entries. An empty text clears it. Changing the note writes no event.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, maxLength: 2000 }
+      responses:
+        "200": { $ref: "#/components/responses/Note" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/note/entries/{entry}:
+    parameters:
+      - name: entry
+        in: path
+        required: true
+        schema: { $ref: "#/components/schemas/ID" }
+    patch:
+      tags: [note]
+      operationId: updateNoteEntry
+      summary: Edit, approve, or reject one of the caller's own entries.
+      description: Each field is optional. The entry keeps the agent that added it and when.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text: { type: string, minLength: 1, maxLength: 300 }
+                approved: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/Note" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [note]
+      operationId: deleteNoteEntry
+      summary: Remove one of the caller's own entries.
+      responses:
+        "200": { $ref: "#/components/responses/Note" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/events:
+    get:
+      tags: [stream]
+      operationId: events
+      summary: The human event stream (Server-Sent Events).
+      description: |
+        Stays open. The first frame is `ready` with data `ReadyEvent`. Every
+        committed change to a room the caller is in follows as a frame whose
+        `id` is an increasing integer and whose `event` and data are:
+
+        | `event` | data schema |
+        |---|---|
+        | `message.posted` | `MessageEvent` |
+        | `message.edited` | `MessageEvent` (the finalized message), or `LiveEditEvent` for a live intermediate edit, which has no `id` |
+        | `delivery.changed` | `MessageEvent` |
+        | `prompt.changed` | `MessageEvent` |
+        | `room.changed` | `RoomEvent` |
+        | `activity.posted` | `ActivityEvent` |
+        | `agent.presence` | `PresenceEvent` |
+
+        A comment line (`: hb`) arrives every 25 seconds while idle. See
+        "Event stream" in `README.md` for cursors, replay, and closing.
+      parameters:
+        - $ref: "#/components/parameters/cursor"
+        - $ref: "#/components/parameters/lastEventID"
+      responses:
+        "200":
+          description: The stream.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /agent/me:
+    get:
+      tags: [agent]
+      operationId: agentMe
+      summary: The agent the token belongs to.
+      security: [{ agentToken: [] }]
+      responses:
+        "200":
+          description: The caller.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, handle, display_name]
+                properties:
+                  id: { $ref: "#/components/schemas/ID" }
+                  handle: { type: string }
+                  display_name: { type: string }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /agent/rooms:
+    get:
+      tags: [agent]
+      operationId: agentRooms
+      summary: The rooms the agent is in, by ID.
+      security: [{ agentToken: [] }]
+      responses:
+        "200":
+          description: The rooms.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rooms]
+                properties:
+                  rooms:
+                    type: array
+                    items: { $ref: "#/components/schemas/AgentRoom" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /agent/events:
+    get:
+      tags: [agent, stream]
+      operationId: agentEvents
+      summary: The agent event stream (Server-Sent Events).
+      description: |
+        Stays open; one stream per agent, and a second connection replaces the
+        first. The first frame is `ready` with data `ReadyEvent`. The others:
+
+        | `event` | data schema |
+        |---|---|
+        | `delivery` | `DeliveryEvent` |
+        | `stop` | `RoomRefEvent` |
+        | `pause` | `RoomRefEvent` |
+        | `steer` | `SteerEvent` |
+        | `prompt.answered` | `PromptAnsweredEvent` |
+
+        Delivery is at least once; dedupe by message id. A comment line
+        (`: hb`) arrives every 25 seconds while idle. See "Agent stream" and
+        "Delivery and turns" in `README.md`.
+      security: [{ agentToken: [] }]
+      parameters:
+        - $ref: "#/components/parameters/cursor"
+        - $ref: "#/components/parameters/lastEventID"
+      responses:
+        "200":
+          description: The stream.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /agent/rooms/{room}/attachments:
+    parameters:
+      - $ref: "#/components/parameters/room"
+    post:
+      tags: [agent]
+      operationId: agentUploadAttachment
+      summary: Upload one file, to be named later in a message's `attachment_ids`.
+      description: |
+        The body is the file's bytes, at most 25 MiB. The stored type is
+        sniffed from the first 512 bytes; the request's `Content-Type` is
+        ignored. A paused, archived, or unknown room refuses the upload
+        without reading it.
+      security: [{ agentToken: [] }]
+      parameters:
+        - name: name
+          in: query
+          required: true
+          description: The file's name. No control characters.
+          schema: { type: string, minLength: 1, maxLength: 255 }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "201":
+          description: The stored attachment.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Attachment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413":
+          description: "`too_large`: the file is larger than 25 MiB."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /agent/rooms/{room}/messages:
+    parameters:
+      - $ref: "#/components/parameters/room"
+    post:
+      tags: [agent]
+      operationId: agentPostMessage
+      summary: Post a message as the agent.
+      description: |
+        A message with at least one attachment may have blank text. Each id in
+        `attachment_ids` must be the agent's own upload in this room, not yet
+        posted, at most once.
+      security: [{ agentToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text:
+                  type: string
+                  description: |
+                    Up to 262,144 bytes with no NUL character. Required and
+                    not blank unless the message carries an attachment.
+                reply_to_id:
+                  description: A message in this room.
+                  oneOf:
+                    - $ref: "#/components/schemas/ID"
+                    - type: "null"
+                attachment_ids:
+                  type: array
+                  maxItems: 10
+                  items: { $ref: "#/components/schemas/ID" }
+      responses:
+        "201": { $ref: "#/components/responses/MessageCreated" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /agent/rooms/{room}/prompts:
+    parameters:
+      - $ref: "#/components/parameters/room"
+    post:
+      tags: [agent]
+      operationId: agentPostPrompt
+      summary: Ask the human a question, as a prompt message.
+      description: |
+        An `approval` takes a non-empty subset of `once`, `session`, `always`,
+        `deny` as its choices. A `clarify` takes 0 to 6 choices of 1 to 200
+        characters each, none repeated. A prompt wakes no agent.
+      security: [{ agentToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, text]
+              properties:
+                kind: { $ref: "#/components/schemas/PromptKind" }
+                text: { $ref: "#/components/schemas/MessageText" }
+                choices:
+                  type: array
+                  items: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        "201": { $ref: "#/components/responses/MessageCreated" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /agent/prompts/{message}/expire:
+    parameters:
+      - $ref: "#/components/parameters/message"
+    post:
+      tags: [agent]
+      operationId: agentExpirePrompt
+      summary: Close a prompt the asking agent gave up on.
+      description: Expiring an answered or already expired prompt changes nothing.
+      security: [{ agentToken: [] }]
+      responses:
+        "204": { description: The prompt is closed. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /agent/messages/{message}:
+    parameters:
+      - $ref: "#/components/parameters/message"
+    put:
+      tags: [agent]
+      operationId: agentEditMessage
+      summary: Rewrite one of the agent's own messages (the edit stream).
+      description: |
+        Send `final:false` while working, then `final:true`. A non-final edit
+        after the final one changes nothing. 404 unless the message is the
+        agent's own, in a room it is still in.
+      security: [{ agentToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text, final]
+              properties:
+                text: { $ref: "#/components/schemas/MessageText" }
+                final: { type: boolean }
+      responses:
+        "204": { description: The edit was accepted. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /agent/deliveries/{message}/working:
+    parameters:
+      - $ref: "#/components/parameters/message"
+    post:
+      tags: [agent]
+      operationId: agentTurnWorking
+      summary: Mark the agent's delivery of the message working.
+      description: Allowed in a paused room.
+      security: [{ agentToken: [] }]
+      responses:
+        "204": { description: Recorded. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/NoTurn" }
+
+  /agent/deliveries/{message}/done:
+    parameters:
+      - $ref: "#/components/parameters/message"
+    post:
+      tags: [agent]
+      operationId: agentTurnDone
+      summary: Report the turn done.
+      description: Releases the agent's next queued message in that room. Allowed in a paused room.
+      security: [{ agentToken: [] }]
+      responses:
+        "204": { description: Recorded. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/NoTurn" }
+
+  /agent/deliveries/{message}/failed:
+    parameters:
+      - $ref: "#/components/parameters/message"
+    post:
+      tags: [agent]
+      operationId: agentTurnFailed
+      summary: Report the turn failed.
+      description: Releases the agent's next queued message in that room. Allowed in a paused room.
+      security: [{ agentToken: [] }]
+      responses:
+        "204": { description: Recorded. }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/NoTurn" }
+
+  /agent/deliveries/{message}/remarks:
+    parameters:
+      - $ref: "#/components/parameters/message"
+    post:
+      tags: [agent]
+      operationId: agentRemark
+      summary: Record a remark made while working on the message.
+      description: The delivery must be `delivered` or `working`.
+      security: [{ agentToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { $ref: "#/components/schemas/MessageText" }
+      responses:
+        "201": { $ref: "#/components/responses/ActivityCreated" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/NoTurn" }
+
+  /agent/deliveries/{message}/note-entries:
+    parameters:
+      - $ref: "#/components/parameters/message"
+    post:
+      tags: [agent]
+      operationId: agentSuggestNoteEntry
+      summary: Suggest an entry for the note of the human who wrote the message.
+      description: |
+        The message must have a human author and the agent must still have an
+        open turn on it. The suggestion is quarantined until its human approves
+        it; a quarantine holds at most 50 pending entries.
+      security: [{ agentToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, minLength: 1, maxLength: 300 }
+      responses:
+        "200":
+          description: The same text was already suggested; this is that entry.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NoteEntry" }
+        "201":
+          description: The new entry.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NoteEntry" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/NoTurn" }
+
+  /agent/deliveries/{message}/tools:
+    parameters:
+      - $ref: "#/components/parameters/message"
+    post:
+      tags: [agent]
+      operationId: agentStartTool
+      summary: Record a tool call the agent started.
+      description: The delivery must be `delivered` or `working`.
+      security: [{ agentToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tool]
+              properties:
+                tool:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: No control characters.
+                preview:
+                  type: string
+                  maxLength: 200
+                  description: No control characters.
+                arguments:
+                  type: string
+                  description: At most 65,536 bytes.
+      responses:
+        "201": { $ref: "#/components/responses/ActivityCreated" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/NoTurn" }
+
+  /agent/activities/{activity}:
+    parameters:
+      - name: activity
+        in: path
+        required: true
+        schema: { $ref: "#/components/schemas/ID" }
+    put:
+      tags: [agent]
+      operationId: agentFinishTool
+      summary: Finish a tool's activity.
+      description: Allowed in a paused room, for a tool already started.
+      security: [{ agentToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [duration_ms, succeeded]
+              properties:
+                duration_ms: { type: integer, format: int64, minimum: 0 }
+                succeeded: { type: boolean }
+      responses:
+        "200":
+          description: The finished activity.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Activity" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+security:
+  - sessionCookie: []
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: hermes_session
+      description: Set by `POST /api/login`.
+    agentToken:
+      type: http
+      scheme: bearer
+      description: The token printed once by `hermes-chat agent add` or `agent rotate`.
+
+  parameters:
+    room:
+      name: room
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/ID" }
+    agent:
+      name: agent
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/ID" }
+    message:
+      name: message
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/ID" }
+    cursor:
+      name: cursor
+      in: query
+      description: |
+        Resume after this event id. With no cursor the stream starts at the
+        present. A cursor ahead of the log is treated as its end.
+      schema: { type: integer, format: int64, minimum: 0 }
+    lastEventID:
+      name: Last-Event-ID
+      in: header
+      description: The same as `cursor`; wins if both are given.
+      schema: { type: integer, format: int64, minimum: 0 }
+
+  responses:
+    Room:
+      description: The room as it is now.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Room" }
+    Message:
+      description: The message.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Message" }
+    MessageCreated:
+      description: The new message.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Message" }
+    ActivityCreated:
+      description: The new activity.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Activity" }
+    Note:
+      description: The caller's note as it is now.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Note" }
+    Halt:
+      description: Whether everything is stopped.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [halted]
+            properties:
+              halted: { type: boolean }
+    BadRequest:
+      description: |
+        `bad_request`: a body, query parameter, or id that cannot be read.
+        `validation`: understood, but a value is not acceptable; `message`
+        says which.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthenticated:
+      description: "`unauthenticated`: no valid session or token."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: "`forbidden`: not allowed, including a cross-origin state-changing request."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: "`not_found`: no such thing, or the caller is not in the room."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: |
+        `conflict`: it already exists. `room_archived`: the room's messages,
+        members, and topic cannot change until it is unarchived. `paused`: the
+        room is paused or everything is stopped, so an agent cannot add
+        content and a human cannot steer.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NoTurn:
+      description: |
+        `no_turn`: the delivery is not in a turn the agent can report. Where
+        the request adds content, also `paused` and `room_archived`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Throttled:
+      description: "`throttled`: too many attempts."
+      headers:
+        Retry-After:
+          description: Seconds to wait.
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unavailable:
+      description: "`unavailable`: the server is shutting down; try again shortly."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    ID:
+      type: string
+      description: A ULID. An identifier, never a secret.
+      pattern: "^[0-9A-HJKMNP-TV-Z]{26}$"
+      examples: ["01M4R9P8RJJW133VHPRDC3MJ9F"]
+    Time:
+      type: string
+      format: date-time
+      description: RFC 3339, UTC, millisecond precision.
+      examples: ["2026-10-11T12:00:00.123Z"]
+    Topic:
+      type: string
+      minLength: 1
+      maxLength: 200
+      description: No control characters.
+    MessageText:
+      type: string
+      description: 1 to 262,144 bytes, not blank, with no NUL character.
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [ok, unavailable] }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: |
+                | Status | `code` | Meaning |
+                |---|---|---|
+                | 400 | `bad_request` | A body, query parameter, or ID that cannot be read. |
+                | 400 | `validation` | The request was understood but a value is not acceptable; `message` says which. |
+                | 401 | `invalid_credentials` | Wrong username or password. |
+                | 401 | `unauthenticated` | No valid session or token. |
+                | 403 | `forbidden` | Not allowed, including a cross-origin state-changing request. |
+                | 404 | `not_found` | No such thing. |
+                | 409 | `conflict` | It already exists. |
+                | 409 | `room_archived` | The room is archived; its messages, members, and topic cannot change until it is unarchived. |
+                | 409 | `paused` | The room is paused or everything is stopped; an agent cannot post, edit, remark, start a tool, or add a prompt, and a human cannot steer. |
+                | 409 | `prompt_closed` | The prompt is no longer open: it is already answered or expired. |
+                | 409 | `no_turn` | A turn report, a remark, a tool call, or a steer, for a delivery that is not in a turn the agent can report. |
+                | 409 | `nothing_waiting` | Nothing about the message is left to cancel. |
+                | 413 | `too_large` | The file is larger than 25 MiB. |
+                | 429 | `throttled` | Too many attempts; `Retry-After` gives the seconds to wait. |
+                | 500 | `internal` | Something failed on the server; details are only in the log. |
+                | 503 | `unavailable` | The server is shutting down; try again shortly. |
+              enum:
+                - bad_request
+                - validation
+                - invalid_credentials
+                - unauthenticated
+                - forbidden
+                - not_found
+                - conflict
+                - room_archived
+                - paused
+                - prompt_closed
+                - no_turn
+                - nothing_waiting
+                - too_large
+                - throttled
+                - internal
+                - unavailable
+            message: { type: string }
+      examples:
+        - error: { code: invalid_credentials, message: wrong username or password }
+
+    Human:
+      type: object
+      required: [id, username]
+      properties:
+        id: { $ref: "#/components/schemas/ID" }
+        username:
+          type: string
+          description: "1 to 32 characters: lowercase letters, digits, `_` or `-`, starting with a letter or digit."
+
+    Agent:
+      type: object
+      required: [id, handle, display_name, revoked]
+      properties:
+        id: { $ref: "#/components/schemas/ID" }
+        handle:
+          type: string
+          description: "1 to 32 characters: lowercase letters, digits, `_` or `-`, starting with a letter or digit."
+        display_name: { type: string, minLength: 1, maxLength: 64 }
+        revoked:
+          type: boolean
+          description: Whether the agent's token was revoked.
+
+    RoomAgent:
+      description: An agent as a member of a room.
+      allOf:
+        - $ref: "#/components/schemas/Agent"
+        - type: object
+          required: [connected]
+          properties:
+            connected:
+              type: boolean
+              description: Whether the agent has a live event stream right now.
+
+    Flavor:
+      type: string
+      enum: [dm, channel, conversation]
+      description: Worked out from who is in the room.
+
+    Room:
+      type: object
+      required:
+        - id
+        - flavor
+        - topic
+        - archived
+        - created_at
+        - humans
+        - agents
+        - last_message_id
+        - last_read_message_id
+        - paused
+        - pause_reason
+        - turn_cap
+        - halted
+        - open_prompts
+      properties:
+        id: { $ref: "#/components/schemas/ID" }
+        flavor: { $ref: "#/components/schemas/Flavor" }
+        topic: { type: string }
+        archived: { type: boolean }
+        created_at: { $ref: "#/components/schemas/Time" }
+        humans:
+          type: array
+          items: { $ref: "#/components/schemas/Human" }
+        agents:
+          type: array
+          items: { $ref: "#/components/schemas/RoomAgent" }
+        last_message_id:
+          oneOf:
+            - $ref: "#/components/schemas/ID"
+            - type: "null"
+        last_read_message_id:
+          description: The caller's own read marker.
+          oneOf:
+            - $ref: "#/components/schemas/ID"
+            - type: "null"
+        paused:
+          type: boolean
+          description: Whether a human, or the turn cap, paused this room.
+        pause_reason:
+          description: Why the room is paused; `null` when it is not.
+          oneOf:
+            - type: string
+              enum: [human, turn_cap]
+            - type: "null"
+        turn_cap:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 6
+          description: How many agent-woken turns the room allows since the last human message.
+        halted:
+          type: boolean
+          description: Whether everything is stopped. Separate from `paused`, which stays as it was.
+        open_prompts:
+          type: integer
+          minimum: 0
+          description: How many prompts in the room are still waiting for a human.
+
+    Author:
+      type: object
+      required: [kind, id, name]
+      properties:
+        kind: { type: string, enum: [human, agent] }
+        id: { $ref: "#/components/schemas/ID" }
+        name: { type: string }
+
+    DeliveryState:
+      type: string
+      enum: [waiting, delivered, working, done, failed, cancelled]
+      description: "`waiting → delivered → working → done | failed | cancelled`."
+
+    Delivery:
+      description: One agent's copy of a message and its state.
+      type: object
+      required: [agent, state]
+      properties:
+        agent: { $ref: "#/components/schemas/Agent" }
+        state: { $ref: "#/components/schemas/DeliveryState" }
+
+    PromptKind:
+      type: string
+      enum: [approval, clarify]
+
+    Prompt:
+      description: The question a prompt message asks.
+      type: object
+      required: [kind, choices, state, answer, answered_by, closed_at]
+      properties:
+        kind: { $ref: "#/components/schemas/PromptKind" }
+        choices:
+          type: array
+          items: { type: string }
+          description: For an `approval`, a subset of `once`, `session`, `always`, `deny`.
+        state: { type: string, enum: [open, answered, expired] }
+        answer:
+          type: [string, "null"]
+          description: The human's answer once answered.
+        answered_by:
+          description: The human who answered; `null` while open, when expired, or once that human is removed.
+          oneOf:
+            - $ref: "#/components/schemas/Human"
+            - type: "null"
+        closed_at:
+          description: When it was answered or expired; `null` while open.
+          oneOf:
+            - $ref: "#/components/schemas/Time"
+            - type: "null"
+
+    Attachment:
+      type: object
+      required: [id, name, content_type, size, image]
+      properties:
+        id: { $ref: "#/components/schemas/ID" }
+        name: { type: string }
+        content_type:
+          type: string
+          description: Sniffed from the file, not taken from the upload request.
+        size: { type: integer, format: int64, description: Bytes. }
+        image:
+          type: boolean
+          description: Whether the type is one a browser may show inline.
+
+    Message:
+      type: object
+      required: [id, room_id, author, text, reply_to_id, deliveries, created_at, prompt, attachments]
+      properties:
+        id: { $ref: "#/components/schemas/ID" }
+        room_id: { $ref: "#/components/schemas/ID" }
+        author:
+          description: "`null` for a message whose human has since been removed."
+          oneOf:
+            - $ref: "#/components/schemas/Author"
+            - type: "null"
+        text: { type: string }
+        reply_to_id:
+          oneOf:
+            - $ref: "#/components/schemas/ID"
+            - type: "null"
+        deliveries:
+          type: array
+          description: One entry per agent the message is for; `[]` for an agent's own messages.
+          items: { $ref: "#/components/schemas/Delivery" }
+        created_at: { $ref: "#/components/schemas/Time" }
+        prompt:
+          description: "`null` on an ordinary message."
+          oneOf:
+            - $ref: "#/components/schemas/Prompt"
+            - type: "null"
+        attachments:
+          type: array
+          items: { $ref: "#/components/schemas/Attachment" }
+
+    Activity:
+      description: A remark or a tool call an agent made while working on a message.
+      type: object
+      required: [id, message_id, agent, kind, text, tool, preview, arguments, duration_ms, succeeded, created_at]
+      properties:
+        id: { $ref: "#/components/schemas/ID" }
+        message_id: { $ref: "#/components/schemas/ID" }
+        agent: { $ref: "#/components/schemas/Agent" }
+        kind: { type: string, enum: [remark, tool] }
+        text: { type: string, description: The remark; empty for a tool. }
+        tool: { type: string, description: The tool's name; empty for a remark. }
+        preview: { type: string }
+        arguments: { type: string }
+        duration_ms:
+          type: [integer, "null"]
+          format: int64
+          description: "`null` until a tool's activity finishes."
+        succeeded:
+          type: [boolean, "null"]
+          description: "`null` until a tool's activity finishes."
+        created_at: { $ref: "#/components/schemas/Time" }
+
+    NoteEntry:
+      description: Something an agent suggested for a human's note.
+      type: object
+      required: [id, agent, text, approved, created_at]
+      properties:
+        id: { $ref: "#/components/schemas/ID" }
+        agent: { $ref: "#/components/schemas/Agent" }
+        text: { type: string, maxLength: 300 }
+        approved:
+          type: boolean
+          description: Whether the human approved the entry for agents to see.
+        created_at: { $ref: "#/components/schemas/Time" }
+
+    Note:
+      type: object
+      required: [text, entries]
+      properties:
+        text: { type: string, maxLength: 2000 }
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/NoteEntry" }
+
+    AgentRoom:
+      description: A room as an agent sees it.
+      type: object
+      required: [id, flavor, topic, humans, paused]
+      properties:
+        id: { $ref: "#/components/schemas/ID" }
+        flavor: { $ref: "#/components/schemas/Flavor" }
+        topic: { type: string }
+        humans:
+          type: array
+          items: { $ref: "#/components/schemas/Human" }
+        paused:
+          type: boolean
+          description: "`true` when the room is paused or everything is stopped."
+
+    AgentMessage:
+      description: A message as an agent sees it.
+      type: object
+      required: [id, room_id, author, text, reply_to_message_id, reply_to_text, reply_to_author_name, created_at]
+      properties:
+        id: { $ref: "#/components/schemas/ID" }
+        room_id: { $ref: "#/components/schemas/ID" }
+        author:
+          description: "`null` once the human who wrote it was removed."
+          oneOf:
+            - type: object
+              required: [kind, id, name, is_bot]
+              properties:
+                kind: { type: string, enum: [human, agent] }
+                id: { $ref: "#/components/schemas/ID" }
+                name: { type: string }
+                is_bot:
+                  type: boolean
+                  description: "`true` exactly when the author is an agent."
+            - type: "null"
+        text: { type: string }
+        reply_to_message_id:
+          oneOf:
+            - $ref: "#/components/schemas/ID"
+            - type: "null"
+        reply_to_text:
+          type: [string, "null"]
+          description: The replied-to body.
+        reply_to_author_name:
+          type: [string, "null"]
+          description: "`null` without a reply, or when that human has since been removed."
+        created_at: { $ref: "#/components/schemas/Time" }
+
+    ReadyEvent:
+      description: Data of the `ready` frame, the first on either stream.
+      type: object
+      required: [cursor]
+      properties:
+        cursor:
+          type: integer
+          format: int64
+          description: Where the stream really starts.
+
+    MessageEvent:
+      description: Data of `message.posted`, `message.edited` (finalized), `delivery.changed`, and `prompt.changed`.
+      type: object
+      required: [message]
+      properties:
+        message: { $ref: "#/components/schemas/Message" }
+
+    LiveEditEvent:
+      description: |
+        Data of a live `message.edited` frame, sent while an agent streams
+        edits. It has no log row and no `id`, and a slow browser can miss one.
+      type: object
+      required: [message_id, text, final]
+      properties:
+        message_id: { $ref: "#/components/schemas/ID" }
+        text: { type: string }
+        final: { type: boolean }
+
+    RoomEvent:
+      description: Data of `room.changed`. Apply it by replacing the room you hold.
+      type: object
+      required: [room]
+      properties:
+        room: { $ref: "#/components/schemas/Room" }
+
+    ActivityEvent:
+      description: Data of `activity.posted`.
+      type: object
+      required: [message_id, activity]
+      properties:
+        message_id: { $ref: "#/components/schemas/ID" }
+        activity: { $ref: "#/components/schemas/Activity" }
+
+    PresenceEvent:
+      description: Data of `agent.presence`. Apply `connected` to that agent in every room it is in.
+      type: object
+      required: [agent, connected]
+      properties:
+        agent: { $ref: "#/components/schemas/Agent" }
+        connected: { type: boolean }
+
+    DeliveryEvent:
+      description: Data of the agent stream's `delivery`, which hands the agent a message to work on.
+      type: object
+      required: [message, room, context, note]
+      properties:
+        message: { $ref: "#/components/schemas/AgentMessage" }
+        room: { $ref: "#/components/schemas/AgentRoom" }
+        context:
+          type: array
+          description: The room's recent messages, at most 20 and 4,096 bytes of text; channels only.
+          items: { $ref: "#/components/schemas/AgentMessage" }
+        note:
+          type: [string, "null"]
+          description: The author's note when the author is the room's only human, else `null`.
+
+    RoomRefEvent:
+      description: Data of the agent stream's `stop` and `pause`.
+      type: object
+      required: [room_id]
+      properties:
+        room_id: { $ref: "#/components/schemas/ID" }
+
+    SteerEvent:
+      description: Data of the agent stream's `steer`.
+      type: object
+      required: [room_id, message]
+      properties:
+        room_id: { $ref: "#/components/schemas/ID" }
+        message: { $ref: "#/components/schemas/AgentMessage" }
+
+    PromptAnsweredEvent:
+      description: Data of the agent stream's `prompt.answered`.
+      type: object
+      required: [room_id, message_id, answer]
+      properties:
+        room_id: { $ref: "#/components/schemas/ID" }
+        message_id: { $ref: "#/components/schemas/ID" }
+        answer: { type: string }

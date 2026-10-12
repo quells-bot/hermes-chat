@@ -87,163 +87,22 @@ A human created before passwords existed needs `user passwd` before logging in.
 
 ## HTTP API
 
-| Route | Auth | Purpose |
-|---|---|---|
-| `GET /healthz` | none | Reports whether storage is reachable. `HEAD` gets the same status with no body. |
-| `POST /api/login` | none, same-origin | Body `{"username":"…","password":"…"}`. Replies `{"id":"…","username":"…"}` and sets the `hermes_session` cookie (90 days, `HttpOnly`, `SameSite=Lax`, `Secure` unless configured off). |
-| `POST /api/logout` | session cookie, same-origin | Ends the session and clears the cookie. Replies 204. |
-| `GET /api/me` | session cookie | Replies `{"id":"…","username":"…"}`. |
-| `GET /api/agents` | session cookie | Replies `{"agents":[agent…]}`, by handle. |
-| `GET /api/humans` | session cookie | Replies `{"humans":[human…]}`, by username. |
-| `GET /api/rooms` | session cookie | Replies `{"rooms":[room…]}`, the rooms the caller is in, by ID. |
-| `POST /api/rooms` | session cookie, same-origin | Body `{"topic":"…","agent_ids":["…"]}`. Replies 201 with the room. |
-| `POST /api/dms` | session cookie, same-origin | Body `{"agent_id":"…"}`. Replies 201 with the room if it was created, 200 with it if it existed. |
-| `GET /api/rooms/:room` | session cookie | Replies the room. |
-| `PATCH /api/rooms/:room` | session cookie, same-origin | Body `{"topic":"…","archived":true,"turn_cap":6}`, each optional; `turn_cap` is 1 to 100 and not allowed on a DM. Replies the room. |
-| `POST /api/rooms/:room/humans` | session cookie, same-origin | Body `{"human_id":"…"}`. Replies the room. |
-| `POST /api/rooms/:room/agents` | session cookie, same-origin | Body `{"agent_id":"…"}`. Replies the room. |
-| `DELETE /api/rooms/:room/agents/:agent` | session cookie, same-origin | Replies the room. |
-| `PUT /api/rooms/:room/read` | session cookie, same-origin | Body `{"message_id":"…"}`. Sets the caller's read marker. Replies 204. |
-| `GET /api/rooms/:room/messages` | session cookie | Query `before=<id>` (default: the newest) and `limit=<1..200>` (default 50). Replies `{"messages":[message…]}`, oldest first. |
-| `POST /api/rooms/:room/messages` | session cookie, same-origin | Body `{"text":"…","reply_to_id":"…"}`, `reply_to_id` optional. Replies 201 with the message. |
-| `GET /api/rooms/:room/messages/:message` | session cookie | Replies the message. |
-| `GET /api/rooms/:room/attachments/:attachment` | session cookie | Serves an attachment's file; see "Attachments". Only a human in its room, and only once it is on a message. |
-| `POST /api/rooms/:room/messages/:message/cancel` | session cookie, same-origin | Cancels the message's waiting deliveries; a cancelled copy can never reach its agent. Replies 204. |
-| `POST /api/rooms/:room/messages/:message/answer` | session cookie, same-origin | Body `{"answer":"…"}`. Answers the prompt riding the message; see "Prompts". Replies 200 with the message. |
-| `GET /api/rooms/:room/messages/:message/activity` | session cookie | Replies `{"activities":[activity…]}`, oldest first. |
-| `POST /api/rooms/:room/agents/:agent/stop` | session cookie, same-origin | Asks the agent to stop its running turn; a room with no turn still succeeds. Replies 204. |
-| `POST /api/rooms/:room/agents/:agent/steer` | session cookie, same-origin | Body `{"text":"…"}`. Redirects the agent's running turn. Replies 201 with the message. |
-| `POST /api/rooms/:room/pause` | session cookie, same-origin | Pauses the room; see "The off switch". Pausing a paused room still succeeds. Replies the room. |
-| `POST /api/rooms/:room/resume` | session cookie, same-origin | Lifts the room's pause, whatever its reason. Replies the room, which may already be paused again with `pause_reason` `turn_cap`. |
-| `GET /api/halt` | session cookie | Replies `{"halted":false}`: whether everything is stopped. Any human may ask. |
-| `POST /api/halt` | session cookie, same-origin | Stops everything. Replies `{"halted":true}`. |
-| `DELETE /api/halt` | session cookie, same-origin | Lifts stop-everything. Replies `{"halted":false}`. |
-| `GET /api/events` | session cookie | The event stream; see "Event stream". |
-| `GET /api/note` | session cookie | The caller's own note; see "The note". |
-| `PUT /api/note` | session cookie, same-origin | Body `{"text":"…"}`. Replaces the caller's note text. Replies 200 with the note. |
-| `PATCH /api/note/entries/:entry` | session cookie, same-origin | Body `{"text":"…","approved":true}`, each optional. Changes one of the caller's own entries. Replies 200 with the note. |
-| `DELETE /api/note/entries/:entry` | session cookie, same-origin | Removes one of the caller's own entries. Replies 200 with the note. |
-| `GET /agent/me` | `Authorization: Bearer <token>` | Replies `{"id":"…","handle":"…","display_name":"…"}`. |
-| `GET /agent/rooms` | bearer | Replies `{"rooms":[agent room…]}`, the rooms the agent is in, by ID. |
-| `POST /agent/rooms/:room/attachments` | bearer | The file's bytes as the body, `?name=…` in the query. Stores the file and returns the attachment; see "Attachments". Replies 201. |
-| `POST /agent/rooms/:room/messages` | bearer | Body `{"text":"…","reply_to_id":"…","attachment_ids":["…"]}`, `reply_to_id` and `attachment_ids` optional. Replies 201 with the message. |
-| `POST /agent/rooms/:room/prompts` | bearer | Body `{"kind":"approval","text":"…","choices":["once","deny"]}`, `choices` optional. Posts the agent's question as a prompt message; see "Prompts". Replies 201 with the message. |
-| `POST /agent/prompts/:message/expire` | bearer | Closes a prompt the asking agent gave up on. Already closed is a no-op. Replies 204. |
-| `PUT /agent/messages/:message` | bearer | Body `{"text":"…","final":false}`. Rewrites one of the agent's own messages, in a room it is still in (404 otherwise); `final` ends the edit stream, and a non-final edit after it changes nothing. Replies 204. |
-| `POST /agent/deliveries/:message/working` | bearer | Marks the agent's delivery of the delivered message working. Replies 204. |
-| `POST /agent/deliveries/:message/done` | bearer | Reports the turn done. Replies 204. |
-| `POST /agent/deliveries/:message/failed` | bearer | Reports the turn failed. Replies 204. |
-| `POST /agent/deliveries/:message/remarks` | bearer | Body `{"text":"…"}`. Records a remark on a delivery that is `delivered` or `working` (409 `no_turn` otherwise). Replies 201 with the activity. |
-| `POST /agent/deliveries/:message/note-entries` | bearer | Body `{"text":"…"}`. Suggests an entry for the note of the human who wrote the delivered message, mid-turn; see "The note". Replies 201 with the entry, 200 with it when the same text was already suggested. |
-| `POST /agent/deliveries/:message/tools` | bearer | Body `{"tool":"…","preview":"…","arguments":"…"}`, `preview` and `arguments` optional. Records a tool call, under the same rule as a remark. Replies 201 with the activity. |
-| `PUT /agent/activities/:activity` | bearer | Body `{"duration_ms":123,"succeeded":true}`. Finishes a tool's activity. Replies 200 with the activity. |
-| `GET /agent/events` | bearer | The agent's event stream; see "Agent stream". |
-
-Same-origin means the `Origin` header must name this server. Errors have one
-shape:
+The routes, request and response bodies, error codes, and JSON shapes are in
+[`docs/openapi.yaml`](docs/openapi.yaml) (OpenAPI 3.1). Humans use `/api` with
+the `hermes_session` cookie; agents use `/agent` with a bearer token. Every
+state-changing `/api` route, and login, requires the `Origin` header to name
+this server. Errors have one shape:
 
     {"error":{"code":"invalid_credentials","message":"wrong username or password"}}
 
-| Status | `code` | Meaning |
-|---|---|---|
-| 400 | `bad_request` | A body, query parameter, or ID that cannot be read. |
-| 400 | `validation` | The request was understood but a value is not acceptable; `message` says which. |
-| 401 | `invalid_credentials` | Wrong username or password. |
-| 401 | `unauthenticated` | No valid session or token. |
-| 403 | `forbidden` | Not allowed, including a cross-origin state-changing request. |
-| 404 | `not_found` | No such thing. |
-| 409 | `conflict` | It already exists. |
-| 409 | `room_archived` | The room is archived; its messages, members, and topic cannot change until it is unarchived. |
-| 409 | `paused` | The room is paused or everything is stopped; an agent cannot post, edit, remark, start a tool, or add a prompt, and a human cannot steer. |
-| 409 | `prompt_closed` | The prompt is no longer open: it is already answered or expired. |
-| 409 | `no_turn` | A turn report, a remark, a tool call, or a steer, for a delivery that is not in a turn the agent can report. |
-| 409 | `nothing_waiting` | Nothing about the message is left to cancel. |
-| 413 | `too_large` | The file is larger than 25 MiB. |
-| 429 | `throttled` | Too many attempts; `Retry-After` gives the seconds to wait. |
-| 500 | `internal` | Something failed on the server; details are only in the log. |
-| 503 | `unavailable` | The server is shutting down; try again shortly. |
+The spec lists each `code`. The sections below describe behavior the spec
+cannot: the two event streams, delivery and turns, the off switch, prompts, the
+note, and attachments. They name shapes such as `<message>` and `<room>`, which
+are the spec's `Message` and `Room` schemas (`<agent message>` and
+`<agent room>` are `AgentMessage` and `AgentRoom`).
 
-The JSON shapes. Arrays are never `null`, IDs are ULID strings, and times are
-RFC 3339 in UTC.
-
-    human    {"id":"01…","username":"kai"}
-    agent    {"id":"01…","handle":"scout","display_name":"Scout","revoked":false}
-    room     {"id":"01…","flavor":"conversation","topic":"Trip planning","archived":false,
-              "created_at":"2026-10-11T12:00:00.123Z","humans":[human…],
-              "agents":[{"id":"01…","handle":"scout","display_name":"Scout","revoked":false,
-                         "connected":false}…],
-              "last_message_id":null,"last_read_message_id":null,
-              "paused":false,"pause_reason":null,"turn_cap":6,"halted":false,"open_prompts":0}
-    message  {"id":"01…","room_id":"01…","author":{"kind":"human","id":"01…","name":"kai"},
-              "text":"hello","reply_to_id":null,
-              "deliveries":[{"agent":{agent…},"state":"waiting"}…],
-              "created_at":"2026-10-11T12:00:00.123Z","prompt":null,
-              "attachments":[attachment…]}
-    activity {"id":"01…","message_id":"01…","agent":{agent…},"kind":"tool","text":"",
-              "tool":"web_search","preview":"searching…","arguments":"{…}",
-              "duration_ms":null,"succeeded":null,"created_at":"2026-10-11T12:00:01.000Z"}
-
-`flavor` is `dm`, `channel`, or `conversation`, worked out from who is in the
-room. `author` is `null` for a message whose human has since been removed.
-`last_read_message_id` is the caller's own marker. `deliveries` is never
-`null`: each entry is one agent's copy and its `state` in `waiting`,
-`delivered`, `working`, `done` `failed`, or `cancelled`, and `[]` for an
-agent's own messages. `connected` is whether the agent has a live event stream
-right now. `paused` is whether a human (or the turn cap) paused this room, and
-`pause_reason` is then `"human"` or `"turn_cap"`, else `null`. `turn_cap` is
-how many agent-woken turns the room allows (default 6). `halted` is whether
-everything is stopped; it is separate from `paused`, which stays as it was. An
-`activity`'s `kind` is `remark` or `tool`; `duration_ms` and
-`succeeded` are `null` until a tool's activity finishes. `open_prompts` is how
-many prompts in the room are still waiting for a human. `prompt` is `null` on
-an ordinary message and a prompt object on the message an agent's question
-rides (see "Prompts"). A human who is not in
-a room gets 404 for it, the same as for a room that does not exist. Only
-humans use the `/api` routes; an agent token gets 401 there.
-
-The prompt object on a message:
-
-    prompt   {"kind":"approval","choices":["once","deny"],"state":"open",
-              "answer":null,"answered_by":null,"closed_at":null}
-
-`kind` is `approval` or `clarify`. `state` is `open`, `answered`, or
-`expired`. `answer` is the human's answer once answered, `answered_by` the
-human who gave it (or `null` once that human is removed), and `closed_at` the
-time it was answered or expired (or `null` while open).
-
-The note and one of its entries:
-
-    note        {"text":"I live in Lisbon.","entries":[note entry…]}
-    note entry  {"id":"01…","agent":{agent…},"text":"prefers trains","approved":false,
-                 "created_at":"2026-10-11T12:00:00.123Z"}
-
-`entries` is never `null`; `approved` is whether the human approved the entry
-for agents to see.
-
-An attachment, riding a message's `attachments` array (never `null`):
-
-    attachment {"id":"01…","name":"cat.png","content_type":"image/png","size":40,"image":true}
-
-`image` is whether the type is one a browser may show inline; see
-"Attachments".
-
-Under the agent API the room and message shapes differ, and only agents use
-them:
-
-    agent room    {"id":"01…","flavor":"dm","topic":"","humans":[human…],"paused":false}
-    agent message {"id":"01…","room_id":"01…","text":"hello",
-                   "author":{"kind":"human","id":"01…","name":"kai","is_bot":false},
-                   "reply_to_message_id":null,"reply_to_text":null,"reply_to_author_name":null,
-                   "created_at":"2026-10-11T12:00:00.123Z"}
-
-An agent room's `paused` is `true` when the room is paused or everything is
-stopped, so a plugin that reconnects can learn what it missed.
-
-`is_bot` is `true` exactly when the author is an agent. The three `reply_to_*`
-fields are all `null` without a reply; with one, `reply_to_text` is the
-replied-to body and `reply_to_author_name` its author's name, or `null` when
-that human has since been removed. `author` is `null` once the human who wrote
-it was removed. A human session gets 401 on the `/agent` routes.
+`TestRoutes_MatchTheOpenAPISpec` fails when a route is added or removed without
+the spec following.
 
 ## Event stream
 

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Hermes Chat is a chat server: a single Go binary exposing a JSON/HTTP API with an SSE event stream, backed by SQLite. Humans authenticate with sessions (argon2id passwords); agents authenticate with bearer tokens. The product is documented in `README.md` (API contract, env vars, limits) and the specs under `docs/superpowers/specs/`; stages 1–7 of the architecture plan are implemented.
+Hermes Chat is a chat server: a single Go binary exposing a JSON/HTTP API with an SSE event stream, backed by SQLite. Humans authenticate with sessions (argon2id passwords); agents authenticate with bearer tokens. The product is documented in `docs/openapi.yaml` (routes, bodies, error codes, JSON shapes), `README.md` (behavior, env vars, limits), and the specs under `docs/superpowers/specs/`; stages 1–7 of the architecture plan are implemented.
 
 ## Architecture & Data Flow
 
@@ -56,7 +56,7 @@ Locally: `go run ./cmd/hermes-chat serve` (requires `HERMES_CHAT_DB_PATH`; migra
 ## Code Conventions & Common Patterns
 
 - **Configuration**: envconfig struct in `config.go`, env prefix `HERMES_CHAT_` only; validation of debug addr/gin mode/proxies happens in `validateForServe`, not at load. `serve` opens the attachments directory (`wireUp` in `wires.go`). TLS is `HERMES_CHAT_TLS_MODE` (`autocert` by default, or `off`), `HERMES_CHAT_TLS_DOMAIN` (required for autocert), and `HERMES_CHAT_TLS_CACHE_DIR`; `cmd/hermes-chat/tls.go` builds the certificate manager and wraps the API listener.
-- **Errors**: bus defines sentinels + `ValidationError` in `bus/bus.go`; never build HTTP responses in bus. `app/errors.go` has the single errorTable mapping them to status + `{"error":{"code","message"}}`. New error kinds go in both places, plus `README.md`'s table.
+- **Errors**: bus defines sentinels + `ValidationError` in `bus/bus.go`; never build HTTP responses in bus. `app/errors.go` has the single errorTable mapping them to status + `{"error":{"code","message"}}`. New error kinds go in both places, plus the `Error` schema in `docs/openapi.yaml`.
 - **Validation** happens in bus, not handlers: trim, then reject with `ValidationError` carrying the user-visible message.
 - **Transactions**: bus methods that must be atomic call `storage.Repository.InTx`; the event row is written in the same tx as the change, then the Hub is rung (`bus/event.go`).
 - **IDs and time**: ULIDs from `ulid.New(t, entropy)`; IDs are identifiers, never secrets — tokens use 32 random bytes (`bus/token.go`). Time is injected via the `Clock` func so tests fix it; `now()` truncates to UTC milliseconds before storage.
@@ -75,6 +75,7 @@ Locally: `go run ./cmd/hermes-chat serve` (requires `HERMES_CHAT_DB_PATH`; migra
 - `deploy/hermes-chat-upgrade` — on-box upgrade: database copy, binary swap, health check, rollback; scripts read the env file without sourcing it, so values are unquoted
 - `cmd/hermes-chat/layering.go` — layering rules; `cmd/hermes-chat/layering_test.go` enforces them
 - `cmd/hermes-chat/internal/app/errors.go` — error code ↔ HTTP status table
+- `docs/openapi.yaml` — the HTTP API contract (OpenAPI 3.1); a new or changed route, body, or shape is updated here in the same change, and `TestRoutes_MatchTheOpenAPISpec` fails if a route and the spec disagree
 - `cmd/hermes-chat/internal/bus/bus.go` — Service interface, sentinel errors, Service impl
 - `cmd/hermes-chat/internal/storage/db.go` — pools and pragmas (WAL, busy_timeout 5s, foreign_keys on)
 - `cmd/hermes-chat/internal/storage/migrate.go` — embeds and applies migrations

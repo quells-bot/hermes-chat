@@ -5,7 +5,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -103,4 +107,40 @@ func TestRoutes_Table(t *testing.T) {
 		"POST /api/rooms/:room/pause", "POST /api/rooms/:room/resume",
 		"PUT /agent/activities/:activity", "PUT /agent/messages/:message", "PUT /api/note", "PUT /api/rooms/:room/read",
 	}, got)
+}
+
+// docs/openapi.yaml describes exactly the routes the server registers. The
+// spec is scanned by indentation, which holds as long as paths sit at two
+// spaces and their methods at four.
+func TestRoutes_MatchTheOpenAPISpec(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	routes(e, app.NewController(bus.NewService(storagetest.NewRepo(t), nil), app.Options{}), newLogger(io.Discard, -4))
+	var registered []string
+	for _, r := range e.Routes() {
+		registered = append(registered, r.Method+" "+regexp.MustCompile(`:(\w+)`).ReplaceAllString(r.Path, "{$1}"))
+	}
+	sort.Strings(registered)
+
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "openapi.yaml"))
+	require.NoError(t, err)
+	pathLine := regexp.MustCompile(`^  (/\S*):$`)
+	methodLine := regexp.MustCompile(`^    (get|head|post|put|patch|delete):$`)
+	var documented []string
+	path, inPaths := "", false
+	for _, line := range strings.Split(string(raw), "\n") {
+		switch {
+		case line == "paths:":
+			inPaths = true
+		case inPaths && line != "" && !strings.HasPrefix(line, " "):
+			inPaths = false // the next top-level key
+		case inPaths && pathLine.MatchString(line):
+			path = pathLine.FindStringSubmatch(line)[1]
+		case inPaths && methodLine.MatchString(line):
+			documented = append(documented, strings.ToUpper(methodLine.FindStringSubmatch(line)[1])+" "+path)
+		}
+	}
+	sort.Strings(documented)
+	require.NotEmpty(t, documented)
+	assert.Equal(t, registered, documented)
 }
