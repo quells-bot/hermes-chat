@@ -89,7 +89,7 @@ A human created before passwords existed needs `user passwd` before logging in.
 
 | Route | Auth | Purpose |
 |---|---|---|
-| `GET /healthz` | none | Reports whether storage is reachable. |
+| `GET /healthz` | none | Reports whether storage is reachable. `HEAD` gets the same status with no body. |
 | `POST /api/login` | none, same-origin | Body `{"username":"…","password":"…"}`. Replies `{"id":"…","username":"…"}` and sets the `hermes_session` cookie (90 days, `HttpOnly`, `SameSite=Lax`, `Secure` unless configured off). |
 | `POST /api/logout` | session cookie, same-origin | Ends the session and clears the cookie. Replies 204. |
 | `GET /api/me` | session cookie | Replies `{"id":"…","username":"…"}`. |

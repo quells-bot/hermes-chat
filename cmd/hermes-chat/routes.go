@@ -14,6 +14,7 @@ func routes(e *gin.Engine, ctrl app.Controller, log *slog.Logger) {
 
 	// Public: no credentials.
 	e.GET("/healthz", ctrl.Healthz)
+	e.HEAD("/healthz", ctrl.Healthz) // uptime monitors and curl -I
 	e.POST("/api/login", app.SameOrigin(), ctrl.Login)
 
 	// Human API: session cookie, same-origin for state changes.

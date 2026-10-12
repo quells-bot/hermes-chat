@@ -92,6 +92,7 @@ func TestRoutes_Table(t *testing.T) {
 		"DELETE /api/halt", "DELETE /api/note/entries/:entry", "DELETE /api/rooms/:room/agents/:agent",
 		"GET /agent/events", "GET /agent/me", "GET /agent/rooms", "GET /api/agents", "GET /api/events", "GET /api/halt", "GET /api/humans", "GET /api/me", "GET /api/note", "GET /api/rooms",
 		"GET /api/rooms/:room", "GET /api/rooms/:room/attachments/:attachment", "GET /api/rooms/:room/messages", "GET /api/rooms/:room/messages/:message", "GET /api/rooms/:room/messages/:message/activity", "GET /healthz",
+		"HEAD /healthz",
 		"PATCH /api/note/entries/:entry", "PATCH /api/rooms/:room",
 		"POST /agent/deliveries/:message/done", "POST /agent/deliveries/:message/failed", "POST /agent/deliveries/:message/note-entries", "POST /agent/deliveries/:message/remarks",
 		"POST /agent/deliveries/:message/tools", "POST /agent/deliveries/:message/working", "POST /agent/prompts/:message/expire", "POST /agent/rooms/:room/attachments", "POST /agent/rooms/:room/messages",

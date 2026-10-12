@@ -160,7 +160,7 @@ Once, on the host, in this order. Allowing 22 before enabling ufw keeps your ssh
    curl -s -o /dev/null -w '%{http_version} %{http_code}\n' --http2 https://chat.example.com/healthz
    ```
 
-   Worked: it prints `2 200` (HTTP/2, status 200) with no certificate warning. Use this GET; `curl -I` sends HEAD, which the server answers with 404.
+   Worked: it prints `2 200` (HTTP/2, status 200) with no certificate warning. `curl -sI --http2` works too and shows `HTTP/2 200` as its first line.
 
    If you published an AAAA record, check IPv6 as well:
 
