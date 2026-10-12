@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -172,12 +173,16 @@ func (s *service) buildRoomLayout(ctx context.Context, r storage.Repository, row
 		}
 		room.Humans = append(room.Humans, h)
 	}
+	workingIDs, err := r.ListWorkingAgentIDs(ctx, row.ID)
+	if err != nil {
+		return Room{}, fmt.Errorf("list working agents: %w", err)
+	}
 	for _, ar := range agentRows {
 		a, err := agentFromRow(ar)
 		if err != nil {
 			return Room{}, err
 		}
-		room.Agents = append(room.Agents, RoomAgent{Agent: a, Connected: s.hub.agentConnected(a.ID)})
+		room.Agents = append(room.Agents, RoomAgent{Agent: a, Connected: s.hub.agentConnected(a.ID), Working: slices.Contains(workingIDs, ar.ID)})
 	}
 	halted, err := r.GetHaltedAtMs(ctx)
 	if err != nil {

@@ -630,3 +630,37 @@ func TestTurnWorking_ClosesNothing(t *testing.T) {
 	require.NoError(t, w.s.TurnWorking(ctx, agentActor(w.scout), m.ID))
 	assert.True(t, isStreaming(t, w, room, early.ID))
 }
+
+func TestRoom_AgentWorking(t *testing.T) { // Review Focus 6
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	other, err := w.s.CreateRoom(ctx, w.kai, "Other", ids(w.scout))
+	require.NoError(t, err)
+	working := func(id ulid.ULID) bool {
+		r, err := w.s.GetRoom(ctx, w.kai, id)
+		require.NoError(t, err)
+		return r.Agents[0].Working
+	}
+	assert.False(t, working(room.ID))
+
+	sub := scoutSub(t, w)
+	defer sub.Close()
+	m, err := w.s.PostMessage(ctx, w.kai, room.ID, "first", ulid.Zero)
+	require.NoError(t, err)
+	require.Equal(t, bus.DeliveryDelivered, m.Deliveries[0].State)
+	assert.False(t, working(room.ID)) // delivered is not working
+
+	require.NoError(t, w.s.TurnWorking(ctx, agentActor(w.scout), m.ID))
+	assert.True(t, working(room.ID))
+	assert.False(t, working(other.ID)) // per room
+
+	rooms, err := w.s.ListRooms(ctx, w.kai)
+	require.NoError(t, err)
+	require.Len(t, rooms, 2)
+	for _, r := range rooms {
+		assert.Equal(t, r.ID == room.ID, r.Agents[0].Working)
+	}
+
+	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), m.ID))
+	assert.False(t, working(room.ID))
+}
