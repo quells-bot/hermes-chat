@@ -2,6 +2,8 @@ module github.com/quells-bot/hermes-chat
 
 go 1.26.0
 
+ignore ./web/node_modules
+
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/kelseyhightower/envconfig v1.4.0
