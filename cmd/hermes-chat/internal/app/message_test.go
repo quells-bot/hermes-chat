@@ -194,3 +194,60 @@ func TestListActivity(t *testing.T) {
 	assert.Equal(t, 404, c.call(c.ada, "GET", "/api/rooms/"+room.ID.String()+"/messages/"+m.ID.String()+"/activity", "").Code)
 	assert.Equal(t, 404, c.call(c.kai, "GET", "/api/rooms/"+room.ID.String()+"/messages/"+ulid.Make().String()+"/activity", "").Code)
 }
+
+func TestPostMessage_ClientID(t *testing.T) {
+	c := newChat(t)
+	room := "/api/rooms/" + obj(t, c.call(c.kai, "POST", "/api/rooms", `{"topic":"T","agent_ids":["`+c.scout.ID.String()+`"]}`))["id"].(string)
+	w := c.call(c.kai, "POST", room+"/messages", `{"text":"hi","client_id":"k1"}`)
+	require.Equal(t, 201, w.Code, w.Body.String())
+	first := obj(t, w)
+	assert.Equal(t, "k1", first["client_id"])
+	assert.Equal(t, false, first["streaming"])
+
+	// the same key again is the same message, whatever else the retry says
+	w = c.call(c.kai, "POST", room+"/messages", `{"text":"other","client_id":"k1"}`)
+	require.Equal(t, 200, w.Code, w.Body.String())
+	again := obj(t, w)
+	assert.Equal(t, first["id"], again["id"])
+	assert.Equal(t, "hi", again["text"])
+	assert.Len(t, obj(t, c.call(c.kai, "GET", room+"/messages", ""))["messages"], 1)
+
+	// absent, null, and empty all mean no key
+	for _, body := range []string{`{"text":"x"}`, `{"text":"x","client_id":null}`, `{"text":"x","client_id":""}`} {
+		w = c.call(c.kai, "POST", room+"/messages", body)
+		require.Equal(t, 201, w.Code, body)
+		m := obj(t, w)
+		assert.Contains(t, m, "client_id")
+		assert.Nil(t, m["client_id"], body)
+	}
+	assert.Len(t, obj(t, c.call(c.kai, "GET", room+"/messages", ""))["messages"], 4)
+}
+
+func TestPostMessage_ClientIDValidation(t *testing.T) { // Review Focus 4
+	c := newChat(t)
+	room := "/api/rooms/" + obj(t, c.call(c.kai, "POST", "/api/rooms", `{"topic":"T","agent_ids":["`+c.scout.ID.String()+`"]}`))["id"].(string)
+	for _, bad := range []string{"a b", strings.Repeat("a", 65)} {
+		w := c.call(c.kai, "POST", room+"/messages", `{"text":"hi","client_id":"`+bad+`"}`)
+		assert.Equal(t, 400, w.Code)
+		assert.JSONEq(t, `{"error":{"code":"validation","message":"client_id must be at most 64 characters: letters, digits, \"-\" or \"_\""}}`, w.Body.String())
+	}
+	assert.JSONEq(t, `{"messages":[]}`, c.call(c.kai, "GET", room+"/messages", "").Body.String())
+}
+
+func TestMessageJSON_Streaming(t *testing.T) {
+	c := newChat(t)
+	kai := bus.Actor{Kind: bus.ActorHuman, ID: c.kaiH.ID}
+	scout := bus.Actor{Kind: bus.ActorAgent, ID: c.scout.ID}
+	room, _, err := c.svc.OpenDM(ctx, kai, c.scout.ID)
+	require.NoError(t, err)
+	reply, err := c.svc.PostMessage(ctx, scout, room.ID, "…", ulid.Zero)
+	require.NoError(t, err)
+	streaming := func() any {
+		return obj(t, c.call(c.kai, "GET", "/api/rooms/"+room.ID.String()+"/messages/"+reply.ID.String(), ""))["streaming"]
+	}
+	assert.Equal(t, false, streaming())
+	require.NoError(t, c.svc.EditMessage(ctx, scout, reply.ID, "par", false))
+	assert.Equal(t, true, streaming())
+	require.NoError(t, c.svc.EditMessage(ctx, scout, reply.ID, "partial answer", true))
+	assert.Equal(t, false, streaming())
+}

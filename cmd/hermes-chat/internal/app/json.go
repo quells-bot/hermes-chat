@@ -30,6 +30,7 @@ type agentBody struct {
 type roomAgentBody struct {
 	agentBody
 	Connected bool `json:"connected"`
+	Working   bool `json:"working"` // has a delivery in 'working' in this room
 }
 
 type roomBody struct {
@@ -71,6 +72,8 @@ type messageBody struct {
 	CreatedAt  time.Time         `json:"created_at"`
 	Prompt     *promptBody       `json:"prompt"`         // the question this message asks, when any
 	Attachments []attachmentBody `json:"attachments"`    // the files riding the message; never null
+	ClientID    *string          `json:"client_id"`      // the key its human posted it with, when any
+	Streaming   bool             `json:"streaming"`      // an agent is still editing it
 }
 
 // promptBody is the prompt riding a message, as the UI shows it.
@@ -176,7 +179,7 @@ func roomJSON(r bus.Room) any {
 		out.Humans = append(out.Humans, humanJSON(h))
 	}
 	for _, ra := range r.Agents {
-		out.Agents = append(out.Agents, roomAgentBody{agentBody: agentJSON(ra.Agent), Connected: ra.Connected})
+		out.Agents = append(out.Agents, roomAgentBody{agentBody: agentJSON(ra.Agent), Connected: ra.Connected, Working: ra.Working})
 	}
 	return out
 }
@@ -186,7 +189,12 @@ func roomJSON(r bus.Room) any {
 // with no waiting copies carry [].
 func messageJSON(m bus.Message) any {
 	out := messageBody{ID: m.ID, RoomID: m.RoomID, Text: m.Text, ReplyToID: optionalID(m.ReplyToID), CreatedAt: m.CreatedAt,
-		Deliveries: make([]deliveryBody, 0, len(m.Deliveries)), Attachments: make([]attachmentBody, 0, len(m.Attachments))}
+		Deliveries: make([]deliveryBody, 0, len(m.Deliveries)), Attachments: make([]attachmentBody, 0, len(m.Attachments)),
+		Streaming: m.Streaming}
+	if m.ClientID != "" {
+		clientID := m.ClientID
+		out.ClientID = &clientID
+	}
 	if m.Author != nil {
 		out.Author = &authorBody{Kind: m.Author.Kind, ID: m.Author.ID, Name: m.Author.Name}
 	}

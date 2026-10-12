@@ -101,6 +101,18 @@ note, and attachments. They name shapes such as `<message>` and `<room>`, which
 are the spec's `Message` and `Room` schemas (`<agent message>` and
 `<agent room>` are `AgentMessage` and `AgentRoom`).
 
+A post (`POST /api/rooms/:room/messages`) and a steer may carry a `client_id`:
+a key the client makes up, at most 64 characters of letters, digits, `-` and
+`_`. A request that repeats a key the same human already used in that room
+answers 200 with the message the first request made, instead of 201 with a new
+one, and changes nothing: no second message, event, or delivery. The first
+request wins; the repeat's text is not compared. The key is looked up after
+the membership check and before every other, so a retry gets its message back
+even when the room has since been archived or the steered turn has ended. The
+message carries its `client_id` to every human in the room, so a client can
+match a `message.posted` event to the post it is still waiting on. Without a
+`client_id` every request posts.
+
 `TestRoutes_MatchTheOpenAPISpec` fails when a route is added or removed without
 the spec following.
 
@@ -148,6 +160,18 @@ in memory, and carry the current intermediate text so the UI can show typing
 without a round trip. A slow browser can miss one — the row update (throttled
 to once a second) and the finalize event carry the text it missed — and the
 UI ignores a non-final edit for a message it knows is finalized.
+
+A message's `streaming` is true from its first stored non-final edit until it
+is finalized, so a browser that loads a room mid-stream knows more text is
+coming; the logged `message.edited` carries `streaming:false`. When a turn
+ends (`done` or `failed`) without a final edit, the server finalizes the
+messages that agent was still streaming in the room since the turn's message,
+with the text last stored, and writes `message.edited` for each.
+
+Each of a room's `agents` carries `working`: whether that agent has a delivery
+in state `working` in that room. It is read when the room is loaded and no
+event announces it; keep it current from `delivery.changed` (state `working`
+sets it, `done` and `failed` clear it).
 
 An SSE frame may be replayed after a reconnect: the server resends everything
 after the client's cursor, at least once. The plugin dedupes by message id.
@@ -351,8 +375,10 @@ an agent gets 403. Downloads support byte ranges.
 
 ## Known limits
 
-- Posting is not idempotent. A phone that retries a `POST` after a timeout can
-  post the message twice.
+- Only a human's post and steer take a `client_id`. An agent that retries a
+  post can post twice, and creating a room twice makes two rooms; the other
+  human writes (the note, read markers, pause, answers) are safe to repeat as
+  they are.
 - `user remove` runs in another process and writes no event, so an open
   browser learns that a member has gone only when it next loads the room.
 - Every committed change wakes every open stream, and each runs one indexed
@@ -371,8 +397,9 @@ an agent gets 403. Downloads support byte ranges.
   most once a second) and the finalize event carry the text it missed.
 - A revoked or removed agent's open deliveries stall in `delivered`/`working`;
   nothing cancels another actor's turn.
-- A message an agent was streaming when its room was paused stays unfinalized,
-  with the text of its last stored edit.
+- A message an agent was streaming outside a turn (a scheduled report) stays
+  `streaming` until its final edit arrives; one streamed during a turn is
+  closed when the turn ends.
 - Stop everything writes one `room.changed` per room and one `pause` per agent
   per room.
 - A prompt nobody answers and its agent never expires stays open, with its

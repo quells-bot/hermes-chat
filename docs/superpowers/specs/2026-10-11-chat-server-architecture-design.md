@@ -543,7 +543,7 @@ Made alongside this document so the two agree:
 
 ## 14. Build stages
 
-The server is built in seven stages *(agreed by Kai)*. Each ends in something
+The server is built in eight stages *(seven agreed by Kai at the outset; the eighth added 2026-10-12)*. Each ends in something
 that runs and is tested. Each stage gets its own implementation plan, written
 only once the stage before it is merged, so every plan builds on real code
 instead of guessed interfaces. Plans live in `docs/superpowers/plans/`.
@@ -571,5 +571,7 @@ instead of guessed interfaces. Plans live in `docs/superpowers/plans/`.
    per-human note with its quarantine, and file storage.
 7. **TLS and deploy.** Autocert, the HTTP/2 check, and the cross-compile and
    deploy scripts.
+8. **Shapes for the web UI.** A client id that makes posting and steering safe
+   to retry, `working` on a room's agents, and `streaming` on a message.
 
 The web UI and the Hermes plugin follow as their own projects.

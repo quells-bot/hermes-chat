@@ -100,7 +100,7 @@ func TestRooms_CreateGetAndList(t *testing.T) {
 	require.Len(t, rooms, 1)
 	want := fmt.Sprintf(`{"id":%q,"flavor":"conversation","topic":"Trip planning","archived":false,"created_at":%q,
         "humans":[{"id":%q,"username":"kai"}],
-        "agents":[{"id":%q,"handle":"scout","display_name":"Scout","revoked":false,"connected":false}],
+        "agents":[{"id":%q,"handle":"scout","display_name":"Scout","revoked":false,"connected":false,"working":false}],
         "last_message_id":null,"last_read_message_id":null,
         "paused":false,"pause_reason":null,"turn_cap":6,"halted":false,"open_prompts":0}`, id, stamp(rooms[0].CreatedAt), c.kaiH.ID, c.scout.ID)
 	assert.JSONEq(t, want, w.Body.String())
@@ -300,4 +300,65 @@ func TestDirectory(t *testing.T) {
 	require.Equal(t, 200, w.Code)
 	assert.JSONEq(t, fmt.Sprintf(`{"humans":[{"id":%q,"username":"ada"},{"id":%q,"username":"kai"}]}`, c.adaH.ID, c.kaiH.ID), w.Body.String())
 	assert.NotContains(t, w.Body.String(), "argon2")
+}
+
+func TestSteer_ClientID(t *testing.T) {
+	c := newChat(t)
+	kai := bus.Actor{Kind: bus.ActorHuman, ID: c.kaiH.ID}
+	scout := bus.Actor{Kind: bus.ActorAgent, ID: c.scout.ID}
+	room, _, err := c.svc.OpenDM(ctx, kai, c.scout.ID)
+	require.NoError(t, err)
+	sub, err := c.svc.Subscribe(ctx, scout, bus.FromNow)
+	require.NoError(t, err)
+	defer sub.Close()
+	m, err := c.svc.PostMessage(ctx, kai, room.ID, "work", ulid.Zero)
+	require.NoError(t, err)
+	require.NoError(t, c.svc.TurnWorking(ctx, scout, m.ID))
+	steer := "/api/rooms/" + room.ID.String() + "/agents/" + c.scout.ID.String() + "/steer"
+
+	w := c.call(c.kai, "POST", steer, `{"text":"also check trains","client_id":"s1"}`)
+	require.Equal(t, 201, w.Code, w.Body.String())
+	first := obj(t, w)
+	assert.Equal(t, "s1", first["client_id"])
+
+	// a retry after the turn ended still gets its message back
+	require.NoError(t, c.svc.TurnDone(ctx, scout, m.ID))
+	w = c.call(c.kai, "POST", steer, `{"text":"also check trains","client_id":"s1"}`)
+	require.Equal(t, 200, w.Code, w.Body.String())
+	assert.Equal(t, first["id"], obj(t, w)["id"])
+
+	w = c.call(c.kai, "POST", steer, `{"text":"x","client_id":"a b"}`)
+	assert.Equal(t, 400, w.Code)
+	assert.JSONEq(t, `{"error":{"code":"validation","message":"client_id must be at most 64 characters: letters, digits, \"-\" or \"_\""}}`, w.Body.String())
+}
+
+// The room's agents carry whether each is working in that room right now.
+func TestRoomJSON_AgentWorking(t *testing.T) { // Review Focus 6
+	c := newChat(t)
+	kai := bus.Actor{Kind: bus.ActorHuman, ID: c.kaiH.ID}
+	scout := bus.Actor{Kind: bus.ActorAgent, ID: c.scout.ID}
+	room, _, err := c.svc.OpenDM(ctx, kai, c.scout.ID)
+	require.NoError(t, err)
+	working := func() any {
+		agents := obj(t, c.call(c.kai, "GET", "/api/rooms/"+room.ID.String(), ""))["agents"].([]any)
+		require.Len(t, agents, 1)
+		return agents[0].(map[string]any)["working"]
+	}
+	assert.Equal(t, false, working())
+
+	sub, err := c.svc.Subscribe(ctx, scout, bus.FromNow)
+	require.NoError(t, err)
+	defer sub.Close()
+	m, err := c.svc.PostMessage(ctx, kai, room.ID, "work", ulid.Zero)
+	require.NoError(t, err)
+	assert.Equal(t, false, working()) // delivered, not yet working
+	require.NoError(t, c.svc.TurnWorking(ctx, scout, m.ID))
+	assert.Equal(t, true, working())
+
+	rooms := obj(t, c.call(c.kai, "GET", "/api/rooms", ""))["rooms"].([]any)
+	require.Len(t, rooms, 1)
+	assert.Equal(t, true, rooms[0].(map[string]any)["agents"].([]any)[0].(map[string]any)["working"])
+
+	require.NoError(t, c.svc.TurnDone(ctx, scout, m.ID))
+	assert.Equal(t, false, working())
 }
