@@ -466,6 +466,10 @@ func (s *service) Steer(ctx context.Context, actor Actor, roomID, agentID ulid.U
 		if err := r.PutMessage(ctx, msg); err != nil {
 			return fmt.Errorf("put message: %w", err)
 		}
+		// a steer is a human message: the agent-turn count starts over
+		if err := resetAgentTurns(ctx, r, row); err != nil {
+			return err
+		}
 		if err := putEvent(ctx, r, EventMessagePosted, row.ID, msg.ID, at); err != nil {
 			return err
 		}

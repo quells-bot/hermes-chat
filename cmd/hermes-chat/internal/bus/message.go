@@ -251,6 +251,12 @@ func (s *service) PostMessage(ctx context.Context, actor Actor, roomID ulid.ULID
 		if err := putEvent(ctx, r, EventMessagePosted, row.ID, msg.ID, at); err != nil {
 			return err
 		}
+		if actor.Kind == ActorHuman {
+			// a human message starts the agent-turn count over
+			if err := resetAgentTurns(ctx, r, row); err != nil {
+				return err
+			}
+		}
 		for _, a := range wake {
 			if err := s.releaseHead(ctx, r, row.ID, a, at, false); err != nil {
 				return err

@@ -106,7 +106,8 @@ func wakeAgents(author Actor, flavor RoomFlavor, text string, replyToRow *storag
 // releaseHead hands the pair's waiting head to the agent: it sets the delivery
 // to delivered and writes the agent-targeted delivery event. It does nothing
 // when the room is gone, archived, or paused, the agent has no live stream, or
-// the pair has no releasable head. It reads the room itself rather than trust
+// the pair has no releasable head, or the head is an agent's message over the
+// room's turn cap (which pauses the room instead). It reads the room itself rather than trust
 // a row its caller read earlier, so it sees a change made in this transaction.
 // notify is false when a message.posted event in the same transaction already
 // carries the current deliveries (its payload is loaded at poll time), so no
@@ -134,6 +135,9 @@ func (s *service) releaseHead(ctx context.Context, r storage.Repository, roomID 
 	}
 	if !ok {
 		return nil
+	}
+	if release, err := s.countAgentTurn(ctx, r, room, head, at); err != nil || !release {
+		return err
 	}
 	if err := r.SetDeliveryState(ctx, room.ID, agent.ID.String(), head.MessageID, string(DeliveryDelivered)); err != nil {
 		return fmt.Errorf("set delivered: %w", err)

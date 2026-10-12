@@ -58,10 +58,11 @@ const (
 	PauseTurnCap PauseReason = "turn_cap" // its agents reached the turn cap
 )
 
-// RoomUpdate changes what is non-nil. Archived is applied before Topic.
+// RoomUpdate changes what is non-nil. Archived is applied first, then Topic, then TurnCap.
 type RoomUpdate struct {
 	Topic    *string
 	Archived *bool
+	TurnCap  *int // 1 to MaxTurnCap
 }
 
 func validateTopic(topic string) (string, error) {
@@ -424,7 +425,8 @@ func (s *service) mutateRoom(ctx context.Context, op string, actor Actor, roomID
 	return s.GetRoom(ctx, actor, roomID)
 }
 
-// UpdateRoom applies the non-nil fields of u: Archived first, then Topic.
+// UpdateRoom applies the non-nil fields of u: Archived first, then Topic, then
+// TurnCap. Neither the topic nor the cap of an archived room can be changed.
 func (s *service) UpdateRoom(ctx context.Context, actor Actor, roomID ulid.ULID, u RoomUpdate) (Room, error) {
 	return s.mutateRoom(ctx, "update room", actor, roomID, true, func(r storage.Repository, row storage.Room, at time.Time) (bool, error) {
 		archived := row.ArchivedAtMs != nil
@@ -447,23 +449,37 @@ func (s *service) UpdateRoom(ctx context.Context, actor Actor, roomID ulid.ULID,
 				}
 			}
 		}
-		if u.Topic == nil {
-			return changed, nil
+		if u.Topic != nil {
+			if archived {
+				return false, ErrRoomArchived
+			}
+			topic, err := validateTopic(*u.Topic)
+			if err != nil {
+				return false, err
+			}
+			if topic != row.Topic {
+				if err := r.SetRoomTopic(ctx, row.ID, topic); err != nil {
+					return false, fmt.Errorf("set topic: %w", err)
+				}
+				changed = true
+			}
 		}
-		if archived {
-			return false, ErrRoomArchived
+		if u.TurnCap != nil {
+			if archived {
+				return false, ErrRoomArchived
+			}
+			turnCap := int64(*u.TurnCap)
+			if turnCap < 1 || turnCap > MaxTurnCap {
+				return false, errTurnCap
+			}
+			if turnCap != row.TurnCap {
+				if err := r.SetRoomTurnCap(ctx, row.ID, turnCap); err != nil {
+					return false, fmt.Errorf("set turn cap: %w", err)
+				}
+				changed = true
+			}
 		}
-		topic, err := validateTopic(*u.Topic)
-		if err != nil {
-			return false, err
-		}
-		if topic == row.Topic {
-			return changed, nil
-		}
-		if err := r.SetRoomTopic(ctx, row.ID, topic); err != nil {
-			return false, fmt.Errorf("set topic: %w", err)
-		}
-		return true, nil
+		return changed, nil
 	})
 }
 
