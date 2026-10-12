@@ -1,7 +1,8 @@
-// Package fakeagent is a test-only client for the agent API. It is a leaf: it
-// imports only net/http and internal/sse, and no production package may import
-// it. It speaks the agent API for one agent token and drives the agent stream
-// (GET /agent/events) like the Hermes plugin would.
+// Package fakeagent is a client for the agent API, built for tests and for
+// cmd/fakeagent. It speaks the agent API for one agent token and drives the
+// agent stream (GET /agent/events) like the Hermes plugin would. It is a leaf:
+// it imports only net/http and internal/sse. The server (cmd/hermes-chat) must
+// not import it outside tests; nothing enforces that.
 package fakeagent
 
 import (
@@ -14,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/sse"
+	"github.com/quells-bot/hermes-chat/internal/sse"
 )
 
 // Client speaks the agent API for one agent token.

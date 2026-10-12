@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/oklog/ulid/v2"
-	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/reqid"
+	"github.com/quells-bot/hermes-chat/internal/reqid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

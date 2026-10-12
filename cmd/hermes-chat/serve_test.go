@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/cli"
-	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/sse"
+	"github.com/quells-bot/hermes-chat/internal/sse"
 )
 
 // startServe runs serve on two 127.0.0.1:0 listeners and returns their base URLs,

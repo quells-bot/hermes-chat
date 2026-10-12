@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/reqid"
+	"github.com/quells-bot/hermes-chat/internal/reqid"
 )
 
 func TestLoadConfig_Defaults(t *testing.T) {

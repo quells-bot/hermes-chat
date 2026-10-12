@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/fakeagent"
-	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/sse"
+	"github.com/quells-bot/hermes-chat/internal/fakeagent"
+	"github.com/quells-bot/hermes-chat/internal/sse"
 )
 
 // frameOf reads agent frames until one has the wanted event, skipping the others.

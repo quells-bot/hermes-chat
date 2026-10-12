@@ -4,7 +4,7 @@ import (
 	"io"
 	"log/slog"
 
-	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/reqid"
+	"github.com/quells-bot/hermes-chat/internal/reqid"
 )
 
 // newLogger returns a JSON logger that adds the request ID found in the log context.

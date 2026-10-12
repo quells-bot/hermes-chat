@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/sse"
+	"github.com/quells-bot/hermes-chat/internal/sse"
 )
 
 // data decodes one frame's JSON data.

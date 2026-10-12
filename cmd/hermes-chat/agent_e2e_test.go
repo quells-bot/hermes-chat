@@ -17,8 +17,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/fakeagent"
-	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/sse"
+	"github.com/quells-bot/hermes-chat/internal/fakeagent"
+	"github.com/quells-bot/hermes-chat/internal/sse"
 )
 
 // agentWorld is the end-to-end fixture: a running server, a logged-in human
