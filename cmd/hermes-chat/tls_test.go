@@ -113,6 +113,16 @@ func TestServe_AutocertRefusesOtherHosts(t *testing.T) {
 	require.Error(t, err) // the handshake fails; no certificate is requested for a host not configured
 }
 
+// The certificate manager asks for a certificate for the configured domain and
+// no other, whoever connects.
+func TestCertManager_HostPolicyAllowsOnlyTheDomain(t *testing.T) {
+	m := certManager("chat.test", t.TempDir())
+	require.NotNil(t, m.HostPolicy)
+	assert.NoError(t, m.HostPolicy(context.Background(), "chat.test"))
+	assert.Error(t, m.HostPolicy(context.Background(), "other.test"))
+	assert.Error(t, m.HostPolicy(context.Background(), "sub.chat.test"))
+}
+
 func TestServe_AutocertAnswersPlainHTTPWith400(t *testing.T) {
 	addr, _ := startTLSServe(t, "chat.test")
 	resp, err := http.Get("http://" + addr + "/healthz")
