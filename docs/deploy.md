@@ -235,15 +235,37 @@ The other commands in the README's Commands section work the same way (`user lis
 
 What the script does, in order:
 
-1. Runs the candidate with no arguments and refuses (exit 1, nothing stopped) unless it prints hermes-chat's usage. This catches the wrong architecture and a truncated copy.
-2. Reads `/etc/hermes-chat/env`, and refuses if the database path is not absolute or, with `autocert`, the domain is missing.
-3. Stops the service. Open event streams drop here; clients reconnect when it is back.
-4. Copies the database (and its `-wal` and `-shm` files) to `/var/lib/hermes-chat/backups/<UTC timestamp>/`.
-5. Moves the running binary to `hermes-chat.previous` and installs the candidate.
-6. Starts the service and polls `/healthz` for up to 60 seconds.
-7. If healthy, prints the line above and deletes all but the newest five backup directories.
+1. Refuses (exit 1, nothing stopped) if `curl` or `systemctl` is not installed.
+2. Runs the candidate with no arguments and refuses (exit 1, nothing stopped) unless it prints hermes-chat's usage. This catches the wrong architecture and a truncated copy.
+3. Reads `/etc/hermes-chat/env`, and refuses if the database path is not absolute or, with `autocert`, the domain is missing.
+4. Stops the service. Open event streams drop here; clients reconnect when it is back.
+5. Copies the database (and its `-wal` and `-shm` files) to `/var/lib/hermes-chat/backups/<UTC timestamp>/`.
+6. Moves the running binary to `hermes-chat.previous` and installs the candidate.
+7. Starts the service and polls `/healthz` for up to 60 seconds. It stops waiting sooner if the unit has given up: the unit restarts a server that fails after 2 seconds, and after five failed starts in a minute systemd marks it failed and stops trying.
+8. If healthy, prints the line above and deletes all but the newest five backup directories.
 
-If the health check fails, the script stops the service, puts back the previous binary and the database as it was before the upgrade (so any migration the new version ran is undone), starts the old version, and exits 1 with `new version failed its health check; rolled back to the previous version`. If the session drops or the script is interrupted after the service was stopped, it does the same and prints `upgrade failed; ...`; when the binary had not been swapped yet the message is `upgrade failed; restarted the previous version`.
+If the health check fails, the script prints `last health check error: ` followed by what `curl` said, stops the service, puts back the previous binary and the database as it was before the upgrade (so any migration the new version ran is undone), starts the old version, and exits 1. If the session drops or the script is interrupted after the service was stopped, it does the same with `upgrade failed` in place of `new version failed its health check`. The last line it prints says what state the host is in:
+
+| Last line ends with | State | What to do |
+|---|---|---|
+| `rolled back to the previous version` | The old version is running on the old database. | Read the log (section 10) for why the new version failed. |
+| `restarted the previous version` | The binary had not been swapped yet; the old version is running. | Fix what the lines above it report, then run the upgrade again. |
+| `rolled back to the previous version, but it did not start: check systemctl status hermes-chat` | The old binary and database are back, but the service is not running. | See below. |
+| `the previous version did not start: check systemctl status hermes-chat` | The binary had not been swapped yet, and the service is not running. | See below. |
+| `could not restore the previous version: check /usr/local/bin/hermes-chat.previous and <backup directory>` | A file could not be put back. The service is stopped and was not started. | Put the binary and the database back by hand (section 9, from step 2), using the backup directory the line names. |
+| `nothing to roll back to` | A first install failed; the service is stopped. | Section 5, step 3. |
+
+When the service did not start, find out why and start it by hand. `reset-failed` clears the start limit, which otherwise refuses the start:
+
+```
+systemctl status hermes-chat
+journalctl -u hermes-chat -o cat -n 50
+systemctl reset-failed hermes-chat && systemctl start hermes-chat
+```
+
+Worked: `systemctl status hermes-chat` shows `Active: active (running)`.
+
+After any rollback, by the script or by hand, run the `curl` check in section 6, step 1, to confirm the old version is serving.
 
 ## 9. Roll back by hand
 
@@ -279,11 +301,12 @@ Use this when an upgrade passed its health check but the new version is wrong. I
 4. Start and check.
 
    ```
+   systemctl reset-failed hermes-chat
    systemctl start hermes-chat
    curl -s -o /dev/null -w '%{http_code}\n' --resolve chat.example.com:443:127.0.0.1 https://chat.example.com/healthz
    ```
 
-   Worked: `200`.
+   Worked: `200`. `reset-failed` prints nothing; it clears a start limit left by a version that kept failing. Then run the `curl` check in section 6, step 1, from the build machine.
 
 ## 10. Logs
 
@@ -308,7 +331,7 @@ Each request is one JSON line. Certificate trouble shows as lines containing `ac
 | `/var/lib/hermes-chat/certs/` | issued certificates and the Let's Encrypt account key |
 | `/var/lib/hermes-chat/backups/` | the last five pre-upgrade database copies |
 
-Back up the database, `attachments/`, and, to avoid asking Let's Encrypt for a new certificate after a rebuild, `certs/`. Stop the service first, or copy the `-wal` and `-shm` files with the database. `backups/` is not a backup: it holds only the last five pre-upgrade copies and sits on the same disk. Scheduled off-host backups are not part of this setup.
+Back up the database, `attachments/`, and, to avoid asking Let's Encrypt for a new certificate after a rebuild, `certs/`. Stop the service first, or copy the `-wal` and `-shm` files with the database. After restoring `certs/` or `attachments/` from a copy, give the files back to the service user: `chown -R hermes-chat: /var/lib/hermes-chat/certs /var/lib/hermes-chat/attachments`. `backups/` is not a backup: it holds only the last five pre-upgrade copies and sits on the same disk. Scheduled off-host backups are not part of this setup.
 
 ## 12. Running behind a reverse proxy instead
 

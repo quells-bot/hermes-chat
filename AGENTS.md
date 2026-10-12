@@ -52,7 +52,7 @@ Locally: `go run ./cmd/hermes-chat serve` (requires `HERMES_CHAT_DB_PATH`; migra
 
 ## Code Conventions & Common Patterns
 
-- **Configuration**: envconfig struct in `config.go`, env prefix `HERMES_CHAT_` only; validation of debug addr/gin mode/proxies happens in `ValidateForServe`, not at load. `serve` opens the attachments directory (`wireUp` in `wires.go`). TLS is `HERMES_CHAT_TLS_MODE` (`autocert` by default, or `off`), `HERMES_CHAT_TLS_DOMAIN` (required for autocert), and `HERMES_CHAT_TLS_CACHE_DIR`; `cmd/hermes-chat/tls.go` builds the certificate manager and wraps the API listener.
+- **Configuration**: envconfig struct in `config.go`, env prefix `HERMES_CHAT_` only; validation of debug addr/gin mode/proxies happens in `validateForServe`, not at load. `serve` opens the attachments directory (`wireUp` in `wires.go`). TLS is `HERMES_CHAT_TLS_MODE` (`autocert` by default, or `off`), `HERMES_CHAT_TLS_DOMAIN` (required for autocert), and `HERMES_CHAT_TLS_CACHE_DIR`; `cmd/hermes-chat/tls.go` builds the certificate manager and wraps the API listener.
 - **Errors**: bus defines sentinels + `ValidationError` in `bus/bus.go`; never build HTTP responses in bus. `app/errors.go` has the single errorTable mapping them to status + `{"error":{"code","message"}}`. New error kinds go in both places, plus `README.md`'s table.
 - **Validation** happens in bus, not handlers: trim, then reject with `ValidationError` carrying the user-visible message.
 - **Transactions**: bus methods that must be atomic call `storage.Repository.InTx`; the event row is written in the same tx as the change, then the Hub is rung (`bus/event.go`).
@@ -86,7 +86,7 @@ Locally: `go run ./cmd/hermes-chat serve` (requires `HERMES_CHAT_DB_PATH`; migra
 
 ## Testing & QA
 
-`go test ./...` (~5s, no flags needed). Three tiers, plus the deploy script:
+`go test ./...` (~10s, no flags needed). Three tiers, plus the deploy script:
 
 - **Unit** — `internal/bus`, `internal/storage`, `internal/sse`, `internal/reqid`: storage tests get a migrated SQLite via `storage/storagetest.NewRepo`; `bus` takes a fixed `Clock` and `export_test.go` exposes internals (throttle state, argon limiter) for testing.
 - **HTTP** — `internal/app` (package `app_test`): httptest against a real bus; helpers `newEngine`, `authEngine`, `newChat`.

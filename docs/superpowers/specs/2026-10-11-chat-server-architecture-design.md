@@ -260,6 +260,7 @@ stands.
 ### 6.6 Small extras *(Claude's calls)*
 
 An unauthenticated `GET /healthz` that returns 200 once the database answers.
+`HEAD /healthz` gets the same status with no body.
 
 ### 6.7 Deploy
 
@@ -281,6 +282,12 @@ The target is one Debian 13 host, run under systemd. The runbook is
   candidate, stop the unit, copy the database aside, swap the binary, start,
   and wait for `/healthz`. A failed health check restores the old binary and
   the database as it was. The newest five database copies are kept.
+- **Restart policy** *(Claude's call)*. The unit restarts the server when it
+  fails (`Restart=on-failure`, `RestartSec=2`) and gives up after five failed
+  starts in a minute (`StartLimitIntervalSec=60`, `StartLimitBurst=5`), which
+  leaves the unit failed instead of restarting for ever. `hermes-chat-upgrade`
+  clears that limit (`systemctl reset-failed`) before each start, and stops
+  waiting for `/healthz` as soon as the unit has given up.
 - **TLS.** autocert answers the TLS-ALPN challenge on 443. There is no port-80
   listener and no redirect (section 6.4).
 - **Host firewall.** ufw allows 22 and 443 and nothing else; turning it on is a
