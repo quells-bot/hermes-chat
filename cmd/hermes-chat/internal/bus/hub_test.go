@@ -113,8 +113,6 @@ func TestSubscribe_Cursors(t *testing.T) {
 	var ve bus.ValidationError
 	require.ErrorAs(t, err, &ve)
 	assert.Equal(t, "cursor must not be negative", ve.Message)
-	_, err = w.s.Subscribe(ctx, bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}, bus.FromNow)
-	assert.ErrorIs(t, err, bus.ErrForbidden)
 }
 
 // Review Focus 3.
@@ -323,3 +321,64 @@ func TestPoll_StorageFailureIsReportedAndTheCursorStays(t *testing.T) {
 	assert.ErrorIs(t, err, errDisk)
 	assert.Zero(t, sub.Cursor())
 }
+
+func TestHub_OneStreamPerAgent(t *testing.T) {
+	w := newWorld(t)
+	scout := bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}
+	connected := w.s.(interface{ AgentConnected(ulid.ULID) bool })
+
+	first, err := w.s.Subscribe(ctx, scout, bus.FromNow)
+	require.NoError(t, err)
+	defer first.Close()
+	assert.True(t, connected.AgentConnected(w.scout.ID))
+
+	second, err := w.s.Subscribe(ctx, scout, bus.FromNow)
+	require.NoError(t, err)
+	defer second.Close()
+	assert.True(t, connected.AgentConnected(w.scout.ID), "still connected while the replacement is open")
+	_, open := <-first.Wake()
+	assert.False(t, open, "the replaced stream's wake channel is closed")
+	assert.Equal(t, 1, w.s.(interface{ Subscribers() int }).Subscribers())
+
+	second.Close()
+	assert.False(t, connected.AgentConnected(w.scout.ID))
+	assert.Equal(t, 0, w.s.(interface{ Subscribers() int }).Subscribers())
+}
+
+func TestHub_BroadcastEditReachesHumansAndDropsWhenFull(t *testing.T) {
+	w := newWorld(t)
+	human, err := w.s.Subscribe(ctx, w.kai, bus.FromNow)
+	require.NoError(t, err)
+	defer human.Close()
+	agent, err := w.s.Subscribe(ctx, bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}, bus.FromNow)
+	require.NoError(t, err)
+	defer agent.Close()
+
+	msgID := ulid.Make()
+	for i := range editsBuffer + 8 {
+		w.s.(interface{ BroadcastEdit(bus.LiveEdit) }).BroadcastEdit(bus.LiveEdit{MessageID: msgID, Text: fmt.Sprint(i)})
+	}
+	got := len(readAllAvailable(human.Edits()))
+	assert.Equal(t, editsBuffer, got, "buffered, then dropped; never blocked")
+	assert.Len(t, readAllAvailable(agent.Edits()), 0, "agents get no edits")
+}
+
+// readAllAvailable drains edits without blocking and returns what it got.
+func readAllAvailable(edits <-chan bus.LiveEdit) (out []bus.LiveEdit) {
+	for {
+		select {
+		case e, ok := <-edits:
+			if !ok {
+				return
+			}
+			out = append(out, e)
+		default:
+			return
+		}
+	}
+}
+
+// editsBuffer matches the bus package's unexported edits channel bound, so the
+// drop-when-full test can target it. Reaching the public constant would couple
+// the black-box test to an internal; the value is pinned by the prod code.
+const editsBuffer = 32

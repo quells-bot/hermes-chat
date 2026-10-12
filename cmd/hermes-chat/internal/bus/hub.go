@@ -18,6 +18,15 @@ const FromNow int64 = -1
 // pollBatch is the most log rows one read of a Poll takes.
 const pollBatch = 100
 
+// editsBuffer bounds the edits channel of one human subscription.
+const editsBuffer = 32
+
+// LiveEdit is one streaming edit, pushed to live human streams from memory.
+type LiveEdit struct {
+	MessageID ulid.ULID
+	Text      string
+}
+
 // Hub holds the live subscriptions. It is a grace.Runner: when Run's context
 // ends it closes them all.
 //
@@ -26,12 +35,13 @@ const pollBatch = 100
 // each reads the event log from its own cursor to find out what it may see.
 type Hub struct {
 	mu      sync.Mutex
-	subs    map[*Subscription]struct{} // guarded by mu
-	stopped bool                       // guarded by mu
+	subs    map[*Subscription]struct{}  // guarded by mu
+	agents  map[ulid.ULID]*Subscription // guarded by mu
+	stopped bool                        // guarded by mu
 }
 
 func newHub() *Hub {
-	return &Hub{subs: map[*Subscription]struct{}{}}
+	return &Hub{subs: map[*Subscription]struct{}{}, agents: map[ulid.ULID]*Subscription{}}
 }
 
 // Run blocks until ctx is done, then stops the hub: every subscription's wake
@@ -54,6 +64,7 @@ func (h *Hub) stop() {
 		close(sub.wake)
 	}
 	clear(h.subs)
+	clear(h.agents)
 }
 
 // ring wakes every subscription. A wake channel holds one pending ring, so a
@@ -69,12 +80,21 @@ func (h *Hub) ring() {
 	}
 }
 
-// add registers sub. It reports false if the hub has stopped.
+// add registers sub. It reports false if the hub has stopped. For an agent it
+// first replaces any live stream of the same agent: the old one leaves subs and
+// its wake channel is closed, so its handler returns.
 func (h *Hub) add(sub *Subscription) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.stopped {
 		return false
+	}
+	if sub.actor.Kind == ActorAgent {
+		if old, ok := h.agents[sub.actor.ID]; ok {
+			delete(h.subs, old)
+			close(old.wake)
+		}
+		h.agents[sub.actor.ID] = sub
 	}
 	h.subs[sub] = struct{}{}
 	return true
@@ -84,12 +104,39 @@ func (h *Hub) remove(sub *Subscription) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.subs, sub)
+	if sub.actor.Kind == ActorAgent && h.agents[sub.actor.ID] == sub {
+		delete(h.agents, sub.actor.ID)
+	}
 }
 
 func (h *Hub) count() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.subs)
+}
+
+// agentConnected reports whether the agent has a live stream.
+func (h *Hub) agentConnected(id ulid.ULID) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, ok := h.agents[id]
+	return ok
+}
+
+// broadcastEdit offers e to every human subscription, in memory; a subscription
+// whose buffer is full drops the edit. It never blocks. Agents get no edits.
+func (h *Hub) broadcastEdit(e LiveEdit) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for sub := range h.subs {
+		if sub.edits == nil {
+			continue
+		}
+		select {
+		case sub.edits <- e:
+		default:
+		}
+	}
 }
 
 // Hub returns the service's hub, for the caller that runs it.
@@ -103,15 +150,18 @@ type Subscription struct {
 	actor  Actor
 	cursor int64
 	wake   chan struct{} // sent to and closed by the hub alone
+	edits  chan LiveEdit // buffered live edits; nil for an agent's subscription
 }
+
+// Edits receives live edits; nil for an agent's subscription.
+func (s *Subscription) Edits() <-chan LiveEdit { return s.edits }
 
 // Subscribe opens a stream of the events the actor may see, starting after the
 // event with the given ID. FromNow, or an ID beyond the end of the log, starts
-// at the end. Nothing committed after Subscribe returns is missed.
+// at the end. Nothing committed after Subscribe returns is missed. A second
+// subscription for the same agent replaces the first: the old one's wake
+// channel is closed, so its handler returns.
 func (s *service) Subscribe(ctx context.Context, actor Actor, after int64) (*Subscription, error) {
-	if actor.Kind != ActorHuman {
-		return nil, ErrForbidden
-	}
 	if after < FromNow {
 		return nil, ValidationError{Message: "cursor must not be negative"}
 	}
@@ -124,7 +174,11 @@ func (s *service) Subscribe(ctx context.Context, actor Actor, after int64) (*Sub
 	}
 	// The cursor was read before registering. An event committed in between
 	// rings nobody here, but it lies past the cursor, so the first Poll reads it.
-	sub := &Subscription{svc: s, actor: actor, cursor: after, wake: make(chan struct{}, 1)}
+	var edits chan LiveEdit // agents get no live edits
+	if actor.Kind == ActorHuman {
+		edits = make(chan LiveEdit, editsBuffer)
+	}
+	sub := &Subscription{svc: s, actor: actor, cursor: after, wake: make(chan struct{}, 1), edits: edits}
 	if !s.hub.add(sub) {
 		return nil, ErrUnavailable
 	}
@@ -134,7 +188,8 @@ func (s *service) Subscribe(ctx context.Context, actor Actor, after int64) (*Sub
 // Cursor returns the ID of the last event read, or where the stream started.
 func (s *Subscription) Cursor() int64 { return s.cursor }
 
-// Wake receives when Poll may have something. It is closed when the hub stops.
+// Wake receives when Poll may have something. It is closed when the hub stops,
+// or when an agent's stream is replaced by a newer one.
 func (s *Subscription) Wake() <-chan struct{} { return s.wake }
 
 // Close takes the subscription out of the hub. It is safe to call twice, and
@@ -147,7 +202,13 @@ func (s *Subscription) Close() { s.svc.hub.remove(s) }
 func (s *Subscription) Poll(ctx context.Context) ([]Event, error) {
 	repo := s.svc.repo
 	for {
-		rows, err := repo.ListEventsForHuman(ctx, s.actor.ID.String(), s.cursor, pollBatch)
+		var rows []storage.Event
+		var err error
+		if s.actor.Kind == ActorAgent {
+			rows, err = repo.ListEventsForAgent(ctx, s.actor.ID.String(), s.cursor, pollBatch)
+		} else {
+			rows, err = repo.ListEventsForHuman(ctx, s.actor.ID.String(), s.cursor, pollBatch)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("poll: list events: %w", err)
 		}
