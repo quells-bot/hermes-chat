@@ -389,7 +389,7 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 			return Event{}, false, err
 		}
 		e.Room = &room
-	case EventMessagePosted, EventMessageEdited, EventDeliveryChanged:
+	case EventMessagePosted, EventMessageEdited, EventDeliveryChanged, EventPromptChanged:
 		msgRow, err := r.GetMessage(ctx, row.SubjectID)
 		if errors.Is(err, storage.ErrNotFound) {
 			return Event{}, false, nil
@@ -444,6 +444,36 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 			return Event{}, false, err
 		}
 		e.Message = &msgs[0]
+	case EventPromptAnswered:
+		// An answer the agent has not read when its room closes is dropped,
+		// exactly as a steer is: the pause has already told the plugin to stop
+		// that turn, and resuming the room does not send the answer.
+		roomRow, err := r.GetRoom(ctx, row.RoomID)
+		if errors.Is(err, storage.ErrNotFound) {
+			return Event{}, false, nil
+		}
+		if err != nil {
+			return Event{}, false, fmt.Errorf("get room: %w", err)
+		}
+		if closed, err := paused(ctx, r, roomRow); err != nil || closed {
+			return Event{}, false, err
+		}
+		msgRow, err := r.GetMessage(ctx, row.SubjectID)
+		if errors.Is(err, storage.ErrNotFound) {
+			return Event{}, false, nil
+		}
+		if err != nil {
+			return Event{}, false, fmt.Errorf("get message: %w", err)
+		}
+		msgs, err := messagesFromRows(ctx, r, []storage.Message{msgRow})
+		if err != nil {
+			return Event{}, false, err
+		}
+		// an expired prompt hands over nothing; nor does one answered twice
+		if msgs[0].Prompt == nil || msgs[0].Prompt.State != PromptAnswered {
+			return Event{}, false, nil
+		}
+		e.Message = &msgs[0]
 	case EventAgentPresence:
 		// The subject is the agent whose connection changed; show whether it
 		// is connected now. A deleted agent skips the row.
@@ -495,6 +525,27 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 			return Event{}, false, err
 		}
 		e.Room = &room
+		// The delivered message's author's note, when the author is the room's
+		// only human. Decided here, when the agent reads the delivery, so a
+		// human who joins before the read keeps their privacy.
+		if e.Message.Author != nil && e.Message.Author.Kind == ActorHuman &&
+			len(room.Humans) == 1 && room.Humans[0].ID == e.Message.Author.ID {
+			text, err := r.GetNoteText(ctx, e.Message.Author.ID.String())
+			if err != nil {
+				return Event{}, false, fmt.Errorf("get note text: %w", err)
+			}
+			rows, err := r.ListNoteEntries(ctx, e.Message.Author.ID.String())
+			if err != nil {
+				return Event{}, false, fmt.Errorf("list note entries: %w", err)
+			}
+			approved := []string{}
+			for _, row := range rows {
+				if row.ApprovedAtMs != nil {
+					approved = append(approved, row.Text)
+				}
+			}
+			e.Note = composeNote(text, approved)
+		}
 		if room.Flavor == FlavorChannel {
 			// the delivered message's predecessors, bounded in count and text
 			ctxRows, err := r.ListMessages(ctx, row.RoomID, row.SubjectID, contextMessages)

@@ -4,6 +4,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"time"
 
@@ -22,6 +23,8 @@ var (
 	ErrNothingWaiting  = errors.New("no waiting delivery for this message")
 	ErrNoTurn          = errors.New("no turn is running")
 	ErrPaused          = errors.New("paused") // the room is paused, or everything is stopped
+	ErrPromptClosed    = errors.New("prompt is closed") // answered otherwise, or expired
+	ErrTooLarge        = errors.New("too large")
 
 	// ErrUnavailable reports that the server is shutting down.
 	ErrUnavailable = errors.New("unavailable")
@@ -92,6 +95,21 @@ type Service interface {
 	StopTurn(ctx context.Context, actor Actor, roomID, agentID ulid.ULID) error                      // human only; ErrNotFound
 	Steer(ctx context.Context, actor Actor, roomID, agentID ulid.ULID, text string) (Message, error) // human only; ErrNotFound, ErrValidation, ErrNoTurn, ErrRoomArchived, ErrPaused
 
+	PostPrompt(ctx context.Context, actor Actor, roomID ulid.ULID, kind PromptKind, text string, choices []string) (Message, error) // agent member only: ErrForbidden for a human; ErrNotFound, ErrValidation, ErrRoomArchived, ErrPaused
+	AnswerPrompt(ctx context.Context, actor Actor, roomID, messageID ulid.ULID, answer string) (Message, error)                     // human member; ErrNotFound, ErrValidation, ErrRoomArchived, ErrPaused, ErrPromptClosed; the same answer again is a no-op
+	ExpirePrompt(ctx context.Context, actor Actor, messageID ulid.ULID) error                                                       // the agent that asked: ErrNotFound otherwise; already closed is a no-op
+
+	GetNote(ctx context.Context, actor Actor) (Note, error)                                                               // human only: ErrForbidden
+	SetNoteText(ctx context.Context, actor Actor, text string) (Note, error)                                              // ErrForbidden, ErrValidation
+	UpdateNoteEntry(ctx context.Context, actor Actor, entryID ulid.ULID, u NoteEntryUpdate) (Note, error)                  // the actor's own entries: ErrNotFound otherwise; ErrValidation
+	DeleteNoteEntry(ctx context.Context, actor Actor, entryID ulid.ULID) (Note, error)                                     // the same
+	SuggestNoteEntry(ctx context.Context, actor Actor, messageID ulid.ULID, text string) (NoteEntry, bool, error)          // agent with an open turn on the message; created is false for a repeat; ErrNotFound, ErrNoTurn, ErrPaused, ErrValidation
+
+	UploadAttachment(ctx context.Context, actor Actor, roomID ulid.ULID, name, contentType string, body io.Reader) (Attachment, error) // agent member only: ErrForbidden for a human; ErrNotFound, ErrValidation, ErrRoomArchived, ErrPaused, ErrTooLarge
+	// PostMessageWithAttachments is PostMessage carrying files the actor uploaded to this room. The text may be blank when there is at least one.
+	PostMessageWithAttachments(ctx context.Context, actor Actor, roomID ulid.ULID, text string, replyTo ulid.ULID, attachmentIDs []ulid.ULID) (Message, error)
+	OpenAttachment(ctx context.Context, actor Actor, roomID, attachmentID ulid.ULID) (Attachment, io.ReadSeekCloser, error) // human member; ErrNotFound, also for an upload on no message yet; the caller closes the file
+
 	// Subscribe opens a stream of the actor's events after the given event ID; FromNow starts at the end of the log.
 	Subscribe(ctx context.Context, actor Actor, after int64) (*Subscription, error) // ErrForbidden, ErrValidation, ErrUnavailable
 	// AgentGone records that the agent's last stream closed: one agent.presence event per room, connected=false.
@@ -107,6 +125,21 @@ type editWrites struct {
 	last map[string]time.Time // keyed by message id
 }
 
+// FileStore keeps attachment bodies, each under its attachment's id. *storage.Files is one.
+type FileStore interface {
+	Create(ctx context.Context, id string, r io.Reader) (int64, error)
+	Open(id string) (io.ReadSeekCloser, error) // an error wrapping io/fs.ErrNotExist when there is none
+	Remove(id string) error
+}
+
+// Option tunes a service at construction.
+type Option func(*service)
+
+// WithFiles gives the service the store holding attachment bodies.
+func WithFiles(files FileStore) Option {
+	return func(s *service) { s.files = files }
+}
+
 type service struct {
 	repo       storage.Repository
 	clock      Clock
@@ -114,14 +147,19 @@ type service struct {
 	argon      argonLimiter
 	hub        *Hub
 	editWrites editWrites
+	files      FileStore // nil unless WithFiles was applied
 }
 
 // NewService returns a Service backed by repo, reading time from clock.
-func NewService(repo storage.Repository, clock Clock) *service {
-	return &service{
+func NewService(repo storage.Repository, clock Clock, opts ...Option) *service {
+	s := &service{
 		repo: repo, clock: clock, throttle: newThrottle(), argon: newArgonLimiter(), hub: newHub(),
 		editWrites: editWrites{last: map[string]time.Time{}},
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Health reports whether storage is reachable.

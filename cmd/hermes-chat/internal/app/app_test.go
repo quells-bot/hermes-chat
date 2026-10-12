@@ -39,7 +39,7 @@ func newEngine(t *testing.T, svc bus.Service) (*gin.Engine, *bytes.Buffer) {
 
 func realSvc(t *testing.T) bus.Service {
 	t.Helper()
-	return bus.NewService(storagetest.NewRepo(t), time.Now)
+	return bus.NewService(storagetest.NewRepo(t), time.Now, bus.WithFiles(storagetest.NewFiles(t)))
 }
 
 // do performs a request; hdr is alternating header names and values.

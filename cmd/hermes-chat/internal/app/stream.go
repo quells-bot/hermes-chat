@@ -71,6 +71,8 @@ func (h *controller) eventFrame(ctx context.Context, e bus.Event) (sse.Frame, er
 	case e.Kind == bus.EventMessageEdited && e.Message != nil:
 		// the finalized message, from the log
 		body = map[string]any{"message": messageJSON(*e.Message)}
+	case e.Kind == bus.EventPromptChanged && e.Message != nil:
+		body = map[string]any{"message": messageJSON(*e.Message)}
 	default:
 		return sse.Frame{}, fmt.Errorf("event %d: nothing to send for kind %q", e.ID, e.Kind)
 	}
@@ -91,15 +93,26 @@ func agentEventFrame(e bus.Event) (sse.Frame, error) {
 		for _, cm := range e.Context {
 			context = append(context, agentMessageJSON(cm))
 		}
+		var note *string
+		if e.Note != "" {
+			note = &e.Note
+		}
 		body = map[string]any{
 			"message": agentMessageJSON(*e.Message),
 			"room":    agentRoomJSON(*e.Room),
 			"context": context,
+			"note":    note,
 		}
 	case e.Kind == bus.EventControlStop, e.Kind == bus.EventControlPause:
 		body = map[string]any{"room_id": e.RoomID.String()}
 	case e.Kind == bus.EventControlSteer && e.Message != nil:
 		body = map[string]any{"room_id": e.RoomID.String(), "message": agentMessageJSON(*e.Message)}
+	case e.Kind == bus.EventPromptAnswered && e.Message != nil && e.Message.Prompt != nil:
+		body = map[string]any{
+			"room_id":    e.RoomID.String(),
+			"message_id": e.Message.ID.String(),
+			"answer":     e.Message.Prompt.Answer,
+		}
 	default:
 		return sse.Frame{}, fmt.Errorf("event %d: nothing to send for kind %q", e.ID, e.Kind)
 	}

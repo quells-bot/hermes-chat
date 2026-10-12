@@ -75,6 +75,14 @@ func obj(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
 	return m
 }
 
+// mustJSON is json.Marshal that fails the test.
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return b
+}
+
 func stamp(at time.Time) string { return at.Format(time.RFC3339Nano) } // how encoding/json writes a time
 
 const notFound = `{"error":{"code":"not_found","message":"not found"}}`
@@ -94,7 +102,7 @@ func TestRooms_CreateGetAndList(t *testing.T) {
         "humans":[{"id":%q,"username":"kai"}],
         "agents":[{"id":%q,"handle":"scout","display_name":"Scout","revoked":false,"connected":false}],
         "last_message_id":null,"last_read_message_id":null,
-        "paused":false,"pause_reason":null,"turn_cap":6,"halted":false}`, id, stamp(rooms[0].CreatedAt), c.kaiH.ID, c.scout.ID)
+        "paused":false,"pause_reason":null,"turn_cap":6,"halted":false,"open_prompts":0}`, id, stamp(rooms[0].CreatedAt), c.kaiH.ID, c.scout.ID)
 	assert.JSONEq(t, want, w.Body.String())
 	assert.JSONEq(t, want, c.call(c.kai, "GET", "/api/rooms/"+id, "").Body.String())
 	assert.JSONEq(t, `{"rooms":[`+want+`]}`, c.call(c.kai, "GET", "/api/rooms", "").Body.String())

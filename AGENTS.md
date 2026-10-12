@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Hermes Chat is a chat server: a single Go binary exposing a JSON/HTTP API with an SSE event stream, backed by SQLite. Humans authenticate with sessions (argon2id passwords); agents authenticate with bearer tokens. The product is documented in `README.md` (API contract, env vars, limits) and the specs under `docs/superpowers/specs/`; stages 1–5 of the architecture plan are implemented.
+Hermes Chat is a chat server: a single Go binary exposing a JSON/HTTP API with an SSE event stream, backed by SQLite. Humans authenticate with sessions (argon2id passwords); agents authenticate with bearer tokens. The product is documented in `README.md` (API contract, env vars, limits) and the specs under `docs/superpowers/specs/`; stages 1–6 of the architecture plan are implemented.
 
 ## Architecture & Data Flow
 
@@ -10,9 +10,9 @@ Module `github.com/quells-bot/hermes-chat`; all code lives under `cmd/hermes-cha
 
 - **`cmd/hermes-chat` (package main)** — server: dispatch (`main.go`), config (`config.go`), wiring (`wires.go`), HTTP bootstrap (`serve.go`, `routes.go`), logging (`logging.go`), layering check (`layering.go`).
 - **`internal/cli`** — admin subcommands (`migrate`, `user`, `agent`) in `admin.go`/`admin_agent.go`, terminal password input (`password_input.go`); wires bus+storage itself (`openSvc`), builds no hub and no HTTP controller.
-- **`internal/app`** — gin HTTP layer: handlers (`room.go`, `message.go`, `pause.go`, `auth.go`, `stream.go`), middleware (`middleware.go`), JSON bodies (`json.go`), bus-error→HTTP mapping (`errors.go`). Knows HTTP, nothing about SQL.
-- **`internal/bus`** — business logic. `Service` interface (`bus.go`), sentinel errors (`ErrNotFound`, `ErrConflict`, …), auth/rate limiting (`session.go`, `throttle.go`, `password.go`), event fan-out `Hub` (`hub.go`), the off switch (`pause.go`, `halt.go`, `turncap.go`: room pause, stop everything, the turn cap). Knows no HTTP or SQL.
-- **`internal/storage`** — `Repository` interface over sqlc queries; two SQLite pools (`db.go`: 1 write connection with `_txlock=immediate`, ≥4 read connections, WAL); error translation (`mapErr`); migrations (`migrate.go`, goose as a library, embedded via `go:embed`).
+- **`internal/app`** — gin HTTP layer: handlers (`room.go`, `message.go`, `pause.go`, `auth.go`, `stream.go`, `prompt.go`, `note.go`, `attachment.go`), middleware (`middleware.go`), JSON bodies (`json.go`), bus-error→HTTP mapping (`errors.go`). Knows HTTP, nothing about SQL.
+- **`internal/bus`** — business logic. `Service` interface (`bus.go`), sentinel errors (`ErrNotFound`, `ErrConflict`, …), auth/rate limiting (`session.go`, `throttle.go`, `password.go`), event fan-out `Hub` (`hub.go`), the off switch (`pause.go`, `halt.go`, `turncap.go`: room pause, stop everything, the turn cap), and the stage 6 features (`prompt.go`, `note.go`, `attachment.go`: prompts, the per-human note, uploads). Knows no HTTP or SQL.
+- **`internal/storage`** — `Repository` interface over sqlc queries; two SQLite pools (`db.go`: 1 write connection with `_txlock=immediate`, ≥4 read connections, WAL); error translation (`mapErr`); migrations (`migrate.go`, goose as a library, embedded via `go:embed`); the stage 6 rows (`prompt.go`, `note.go`, `attachment.go`) and the attachment file store (`files.go`).
 - **Leaves** `internal/reqid` (ULID per request, slog handler) and `internal/sse` (frame encode/decode); import none of the layers.
 
 Request flow: gin route → app handler → `bus.Service` method → `storage.Repository` → sqlcgen → SQLite. Writes happen inside one transaction; `bus` writes the event row and rings the Hub in the same tx (`bus/event.go`). SSE handlers (`app/stream.go`) wake on the ring, then poll events after the subscription cursor (`storage.ListEventsForHuman`), so a stream never depends on in-memory state.
@@ -28,7 +28,7 @@ Request flow: gin route → app handler → `bus.Service` method → `storage.Re
 | `cmd/hermes-chat/internal/app/` | HTTP handlers, middleware, SSE endpoint, error mapping |
 | `cmd/hermes-chat/internal/bus/` | Service, domain types, sessions, tokens, throttling, hub |
 | `cmd/hermes-chat/internal/storage/` | Repository impl, DB pools, migrations |
-| `cmd/hermes-chat/internal/storage/queries/` | sqlc query definitions (`activities`, `agents`, `deliveries`, `events`, `halt`, `humans`, `messages`, `rooms`, `sessions`) |
+|`cmd/hermes-chat/internal/storage/queries/`|sqlc query definitions (`activities`, `agents`, `attachments`, `deliveries`, `events`, `halt`, `humans`, `messages`, `notes`, `prompts`, `rooms`, `sessions`)|
 | `cmd/hermes-chat/internal/storage/migrations/` | goose SQL migrations `NNNNN_name.sql` |
 | `cmd/hermes-chat/internal/storage/sqlcgen/` | generated — never edit |
 | `cmd/hermes-chat/internal/storage/storagetest/` | test-only helper; production code must not import it (layering test enforces) |
@@ -50,14 +50,14 @@ Locally: `go run ./cmd/hermes-chat serve` (requires `HERMES_CHAT_DB_PATH`; migra
 
 ## Code Conventions & Common Patterns
 
-- **Configuration**: envconfig struct in `config.go`, env prefix `HERMES_CHAT_` only; validation of debug addr/gin mode/proxies happens in `ValidateForServe`, not at load.
+- **Configuration**: envconfig struct in `config.go`, env prefix `HERMES_CHAT_` only; validation of debug addr/gin mode/proxies happens in `ValidateForServe`, not at load. `serve` opens the attachments directory (`wireUp` in `wires.go`).
 - **Errors**: bus defines sentinels + `ValidationError` in `bus/bus.go`; never build HTTP responses in bus. `app/errors.go` has the single errorTable mapping them to status + `{"error":{"code","message"}}`. New error kinds go in both places, plus `README.md`'s table.
 - **Validation** happens in bus, not handlers: trim, then reject with `ValidationError` carrying the user-visible message.
 - **Transactions**: bus methods that must be atomic call `storage.Repository.InTx`; the event row is written in the same tx as the change, then the Hub is rung (`bus/event.go`).
 - **IDs and time**: ULIDs from `ulid.New(t, entropy)`; IDs are identifiers, never secrets — tokens use 32 random bytes (`bus/token.go`). Time is injected via the `Clock` func so tests fix it; `now()` truncates to UTC milliseconds before storage.
 - **Concurrency**: single write connection (`_txlock=immediate`); the Hub is a doorbell — ring buffered channels, one indexed poll per ring, batch 100; subscriptions accept humans and agents.
 - **Logging**: one JSON line per request via `app/middleware.go` (RequestID + RequestLogger); `reqid` threads through slog.
-- **The off switch** is one gate: `releaseHead` (`bus/delivery.go`) re-reads the room and the halt inside the transaction and releases nothing while `paused()` is true, and agent writes check the same function. A new way to deliver to or accept content from an agent must go through one of the two.
+- **The off switch** is one gate: `releaseHead` (`bus/delivery.go`) re-reads the room and the halt inside the transaction and releases nothing while `paused()` is true, and agent writes check the same function. Closing a room also expires its open prompts (`expireOpenPrompts`), and a prompt, a note suggestion, and an upload are agent writes that check `paused()`. A new way to deliver to or accept content from an agent must go through one of the two.
 - **Migrations**: next numbered file in `migrations/`, `-- +goose Up`/`-- +goose Down`, every table `STRICT`. After adding one: `just generate`.
 - **Queries**: add named queries under `storage/queries/*.sql`, then `just generate`; call them only from `storage`, wrapped as `Repository` methods.
 

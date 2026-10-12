@@ -28,13 +28,17 @@ func agentEngine(t *testing.T, svc bus.Service) *gin.Engine {
 	agent := e.Group("/agent", ctrl.AgentAuth)
 	agent.GET("/rooms", ctrl.AgentRooms)
 	agent.POST("/rooms/:room/messages", ctrl.AgentPostMessage)
+	agent.POST("/rooms/:room/attachments", ctrl.AgentUploadAttachment)
 	agent.PUT("/messages/:message", ctrl.AgentEditMessage)
 	agent.POST("/deliveries/:message/working", ctrl.AgentTurnWorking)
+	agent.POST("/deliveries/:message/note-entries", ctrl.AgentSuggestNoteEntry)
 	agent.POST("/deliveries/:message/done", ctrl.AgentTurnDone)
 	agent.POST("/deliveries/:message/failed", ctrl.AgentTurnFailed)
 	agent.POST("/deliveries/:message/remarks", ctrl.AgentRemark)
 	agent.POST("/deliveries/:message/tools", ctrl.AgentStartTool)
 	agent.PUT("/activities/:activity", ctrl.AgentFinishTool)
+	agent.POST("/rooms/:room/prompts", ctrl.AgentPostPrompt)
+	agent.POST("/prompts/:message/expire", ctrl.AgentExpirePrompt)
 	return e
 }
 

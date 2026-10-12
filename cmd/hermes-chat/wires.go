@@ -31,7 +31,11 @@ func wireUp(ctx context.Context, cfg Config) (wires, error) {
 		return w, err
 	}
 
-	svc := bus.NewService(storage.NewRepo(db), time.Now)
+	files, err := storage.OpenFiles(cfg.attachmentsDir())
+	if err != nil {
+		return w, err
+	}
+	svc := bus.NewService(storage.NewRepo(db), time.Now, bus.WithFiles(files))
 	w.Hub = svc.Hub()
 	w.App = app.NewController(svc, app.Options{CookieSecure: cfg.CookieSecure})
 	return w, nil

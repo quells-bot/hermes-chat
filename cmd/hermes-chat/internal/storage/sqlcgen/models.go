@@ -32,6 +32,18 @@ type Agent struct {
 	CreatedAt   int64
 }
 
+type Attachment struct {
+	ID              string
+	RoomID          string
+	MessageID       sql.NullString
+	UploaderHumanID sql.NullString
+	UploaderAgentID sql.NullString
+	Name            string
+	ContentType     string
+	Size            int64
+	CreatedAt       int64
+}
+
 type Delivery struct {
 	RoomID    string
 	AgentID   string
@@ -69,6 +81,33 @@ type Message struct {
 	Body          string
 	CreatedAt     int64
 	FinalizedAt   sql.NullInt64
+}
+
+type Note struct {
+	HumanID   string
+	Text      string
+	UpdatedAt int64
+}
+
+type NoteEntry struct {
+	ID         string
+	HumanID    string
+	AgentID    string
+	Text       string
+	ApprovedAt sql.NullInt64
+	CreatedAt  int64
+}
+
+type Prompt struct {
+	MessageID  string
+	RoomID     string
+	AgentID    string
+	Kind       string
+	Choices    string
+	State      string
+	Answer     string
+	AnsweredBy sql.NullString
+	ClosedAt   sql.NullInt64
 }
 
 type Room struct {

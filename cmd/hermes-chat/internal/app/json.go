@@ -46,6 +46,7 @@ type roomBody struct {
 	PauseReason       *string         `json:"pause_reason"` // "human" or "turn_cap" while paused
 	TurnCap           int             `json:"turn_cap"`
 	Halted            bool            `json:"halted"`
+	OpenPrompts       int             `json:"open_prompts"` // prompts still waiting for a human
 }
 
 type authorBody struct {
@@ -66,8 +67,20 @@ type messageBody struct {
 	Author     *authorBody    `json:"author"`
 	Text       string         `json:"text"`
 	ReplyToID  *ulid.ULID     `json:"reply_to_id"`
-	Deliveries []deliveryBody `json:"deliveries"` // never null; [] for an agent's own messages
-	CreatedAt  time.Time      `json:"created_at"`
+	Deliveries []deliveryBody    `json:"deliveries"` // never null; [] for an agent's own messages
+	CreatedAt  time.Time         `json:"created_at"`
+	Prompt     *promptBody       `json:"prompt"`         // the question this message asks, when any
+	Attachments []attachmentBody `json:"attachments"`    // the files riding the message; never null
+}
+
+// promptBody is the prompt riding a message, as the UI shows it.
+type promptBody struct {
+	Kind       string     `json:"kind"`
+	Choices    []string   `json:"choices"`
+	State      string     `json:"state"`
+	Answer     *string    `json:"answer"`      // the human's answer once answered
+	AnsweredBy *humanBody `json:"answered_by"` // the human who answered, when any
+	ClosedAt   *time.Time `json:"closed_at"`   // once answered or expired
 }
 
 type agentRoomBody struct {
@@ -110,6 +123,27 @@ type activityBody struct {
 	CreatedAt  time.Time        `json:"created_at"`
 }
 
+type noteBody struct {
+	Text    string          `json:"text"`
+	Entries []noteEntryBody `json:"entries"` // never null
+}
+
+type noteEntryBody struct {
+	ID        ulid.ULID `json:"id"`
+	Agent     agentBody `json:"agent"`
+	Text      string    `json:"text"`
+	Approved  bool      `json:"approved"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type attachmentBody struct {
+	ID          ulid.ULID `json:"id"`
+	Name        string    `json:"name"`
+	ContentType string    `json:"content_type"`
+	Size        int64     `json:"size"`
+	Image       bool      `json:"image"` // a safe type a browser may show inline
+}
+
 // optionalID is nil for a zero ID, which JSON writes as null.
 func optionalID(id ulid.ULID) *ulid.ULID {
 	if id.IsZero() {
@@ -132,7 +166,7 @@ func roomJSON(r bus.Room) any {
 		ID: r.ID, Flavor: string(r.Flavor), Topic: r.Topic, Archived: r.Archived(), CreatedAt: r.CreatedAt,
 		Humans: make([]humanBody, 0, len(r.Humans)), Agents: make([]roomAgentBody, 0, len(r.Agents)),
 		LastMessageID: optionalID(r.LastMessageID), LastReadMessageID: optionalID(r.LastReadMessageID),
-		Paused: r.Paused(), TurnCap: r.TurnCap, Halted: r.Halted,
+		Paused: r.Paused(), TurnCap: r.TurnCap, Halted: r.Halted, OpenPrompts: r.OpenPrompts,
 	}
 	if r.Paused() {
 		reason := string(r.PauseReason)
@@ -152,12 +186,41 @@ func roomJSON(r bus.Room) any {
 // with no waiting copies carry [].
 func messageJSON(m bus.Message) any {
 	out := messageBody{ID: m.ID, RoomID: m.RoomID, Text: m.Text, ReplyToID: optionalID(m.ReplyToID), CreatedAt: m.CreatedAt,
-		Deliveries: make([]deliveryBody, 0, len(m.Deliveries))}
+		Deliveries: make([]deliveryBody, 0, len(m.Deliveries)), Attachments: make([]attachmentBody, 0, len(m.Attachments))}
 	if m.Author != nil {
 		out.Author = &authorBody{Kind: m.Author.Kind, ID: m.Author.ID, Name: m.Author.Name}
 	}
 	for _, d := range m.Deliveries {
 		out.Deliveries = append(out.Deliveries, deliveryBody{Agent: agentJSON(d.Agent), State: string(d.State)})
+	}
+	if m.Prompt != nil {
+		p := promptJSON(*m.Prompt)
+		out.Prompt = &p
+	}
+	for _, a := range m.Attachments {
+		out.Attachments = append(out.Attachments, attachmentJSON(a))
+	}
+	return out
+}
+
+// attachmentJSON builds the attachment object.
+func attachmentJSON(a bus.Attachment) attachmentBody {
+	return attachmentBody{ID: a.ID, Name: a.Name, ContentType: a.ContentType, Size: a.Size, Image: a.Image()}
+}
+
+// promptJSON builds the prompt object; answer and closed_at are null until they exist.
+func promptJSON(p bus.Prompt) promptBody {
+	out := promptBody{Kind: string(p.Kind), Choices: p.Choices, State: string(p.State)}
+	if p.Answer != "" {
+		answer := p.Answer
+		out.Answer = &answer
+	}
+	if p.AnsweredBy != nil {
+		out.AnsweredBy = &humanBody{ID: p.AnsweredBy.ID, Username: p.AnsweredBy.Username}
+	}
+	if !p.ClosedAt.IsZero() {
+		at := p.ClosedAt
+		out.ClosedAt = &at
 	}
 	return out
 }
@@ -206,6 +269,19 @@ func (h *controller) activityJSON(ctx context.Context, a bus.Activity) (any, err
 		Text: a.Text, Tool: a.Tool, Preview: a.Preview, Arguments: a.Arguments,
 		DurationMs: a.DurationMs, Succeeded: a.Succeeded, CreatedAt: a.CreatedAt,
 	}, nil
+}
+
+// noteJSON builds the note object; its entries array is never null.
+func noteJSON(n bus.Note) any {
+	out := noteBody{Text: n.Text, Entries: make([]noteEntryBody, 0, len(n.Entries))}
+	for _, e := range n.Entries {
+		out.Entries = append(out.Entries, noteEntryJSON(e))
+	}
+	return out
+}
+
+func noteEntryJSON(e bus.NoteEntry) noteEntryBody {
+	return noteEntryBody{ID: e.ID, Agent: agentJSON(e.Agent), Text: e.Text, Approved: e.Approved, CreatedAt: e.CreatedAt}
 }
 
 // jsonString quotes s as a JSON string literal, for building a frame's data by hand.

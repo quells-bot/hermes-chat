@@ -106,6 +106,27 @@ type Repository interface {
 	GetActivity(ctx context.Context, id string) (Activity, error)                             // ErrNotFound
 	SetActivityResult(ctx context.Context, id string, durationMs int64, succeeded bool) error // ErrNotFound, also for a remark
 	ListActivities(ctx context.Context, roomID, messageID string) ([]Activity, error)         // oldest first; empty, not nil
+
+	PutPrompt(ctx context.Context, p Prompt) error                                            // ErrConflict on a second prompt for the message; only the first five fields are written: a new prompt is open
+	GetPrompt(ctx context.Context, messageID string) (Prompt, error)                          // ErrNotFound
+	ListPromptsInRange(ctx context.Context, roomID, firstID, lastID string) ([]Prompt, error) // by message id; empty, not nil
+	ListOpenPrompts(ctx context.Context, roomID string) ([]Prompt, error)                     // roomID "" means every room; by message id; empty, not nil
+	CountOpenPrompts(ctx context.Context, roomID string) (int64, error)
+	ClosePrompt(ctx context.Context, messageID, state, answer string, answeredBy *string, closedAtMs int64) error // ErrNotFound when there is no open prompt for the message
+
+	GetNoteText(ctx context.Context, humanID string) (string, error)                  // "" when the human has written none
+	PutNoteText(ctx context.Context, humanID, text string, updatedAtMs int64) error   // replaces
+	PutNoteEntry(ctx context.Context, e NoteEntry) error                              // ErrConflict on duplicate id
+	GetNoteEntry(ctx context.Context, id string) (NoteEntry, error)                   // ErrNotFound
+	ListNoteEntries(ctx context.Context, humanID string) ([]NoteEntry, error)         // oldest first, pending and approved; empty, not nil
+	SetNoteEntryText(ctx context.Context, id, text string) error                      // ErrNotFound
+	SetNoteEntryApprovedAt(ctx context.Context, id string, approvedAtMs *int64) error // ErrNotFound; nil returns it to quarantine
+	DeleteNoteEntry(ctx context.Context, id string) error                             // ErrNotFound
+
+	PutAttachment(ctx context.Context, a Attachment) error                                            // ErrConflict on duplicate id; MessageID is not written: a new attachment is on no message
+	GetAttachment(ctx context.Context, id string) (Attachment, error)                                 // ErrNotFound
+	AttachToMessage(ctx context.Context, id, messageID string) error                                  // ErrNotFound when it is missing or already on a message
+	ListAttachmentsInRange(ctx context.Context, roomID, firstID, lastID string) ([]Attachment, error) // those on messages in the id range; by message id, then id; empty, not nil
 }
 
 type repo struct {

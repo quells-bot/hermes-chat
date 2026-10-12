@@ -24,6 +24,8 @@ const (
 	EventControlSteer    EventKind = "steer"            // agent: subject is the steer message
 	EventControlPause    EventKind = "pause"            // agent: subject is the room
 	EventAgentPresence   EventKind = "agent.presence"   // human: subject is the agent
+	EventPromptChanged   EventKind = "prompt.changed"   // human: subject is the prompt's message
+	EventPromptAnswered  EventKind = "prompt.answered"  // agent: subject is the prompt's message
 )
 
 // contextMessages and contextTextBytes bound the context an agent-targeted
@@ -46,6 +48,7 @@ type Event struct {
 	Agent     *Agent    // agent.presence: the agent whose connection changed
 	Context   []Message // delivery on a channel: the messages leading up to the delivered one
 	Connected bool      // agent.presence: whether the agent is connected now
+	Note      string    // delivery: the author's note, when the author is the room's only human
 }
 
 // putEvent appends an event to the log. Call it inside the transaction that

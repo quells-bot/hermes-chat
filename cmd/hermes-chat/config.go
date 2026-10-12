@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 
 	"github.com/kelseyhightower/envconfig"
 )
@@ -19,6 +20,7 @@ type Config struct {
 
 	CookieSecure   bool     `split_words:"true" default:"true"` // HERMES_CHAT_COOKIE_SECURE
 	TrustedProxies []string `split_words:"true"`                // HERMES_CHAT_TRUSTED_PROXIES, comma-separated IPs or CIDRs; empty trusts none
+	AttachmentsDir string   `split_words:"true"`                // HERMES_CHAT_ATTACHMENTS_DIR; "" means "attachments" beside the database file
 }
 
 func loadConfig() (Config, error) {
@@ -71,6 +73,15 @@ func parseLevel(s string) (slog.Level, bool) {
 func (c Config) slogLevel() slog.Level {
 	l, _ := parseLevel(c.LogLevel)
 	return l
+}
+
+// attachmentsDir returns where attachment bodies live: the configured
+// directory, or one named attachments beside the database file.
+func (c Config) attachmentsDir() string {
+	if c.AttachmentsDir != "" {
+		return c.AttachmentsDir
+	}
+	return filepath.Join(filepath.Dir(c.DBPath), "attachments")
 }
 
 // checkLoopback requires addr to name a loopback host, so pprof is never public.

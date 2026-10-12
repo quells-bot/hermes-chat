@@ -46,6 +46,9 @@ func (s *service) StopEverything(ctx context.Context, actor Actor) error {
 		if err := r.SetHaltedAtMs(ctx, &ms); err != nil {
 			return fmt.Errorf("set halt: %w", err)
 		}
+		if _, err := s.expireOpenPrompts(ctx, r, "", "", at); err != nil {
+			return err
+		}
 		ids, byRoom, err := roomAgentsByRoom(ctx, r)
 		if err != nil {
 			return err

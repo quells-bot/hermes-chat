@@ -282,7 +282,7 @@ func TestEvents_ReadyThenLive(t *testing.T) {
 	f := next(t, d)
 	assert.Equal(t, "3", f.ID)
 	assert.Equal(t, "message.posted", f.Event)
-	assert.JSONEq(t, fmt.Sprintf(`{"message":{"id":%q,"room_id":%q,"author":{"kind":"human","id":%q,"name":"kai"},"text":"after","reply_to_id":null,"deliveries":[{"agent":{"id":%q,"handle":"scout","display_name":"Scout","revoked":false},"state":"waiting"}],"created_at":%q}}`,
+	assert.JSONEq(t, fmt.Sprintf(`{"message":{"id":%q,"room_id":%q,"author":{"kind":"human","id":%q,"name":"kai"},"text":"after","reply_to_id":null,"deliveries":[{"agent":{"id":%q,"handle":"scout","display_name":"Scout","revoked":false},"state":"waiting"}],"created_at":%q,"prompt":null,"attachments":[]}}`,
 		m.ID, r.room.ID, r.kai.ID, r.scout.ID, stamp(m.CreatedAt)), f.Data)
 
 	_, err := r.svc.UpdateRoom(ctx, r.kai, r.room.ID, bus.RoomUpdate{Topic: ptr("Renamed")})
@@ -352,6 +352,24 @@ func TestEvents_NewFrames(t *testing.T) {
 	q.want(func(f sse.Frame) bool { return f.Event == "message.edited" && strings.Contains(f.Data, `"final":false`) })
 	q.want(func(f sse.Frame) bool { return f.Event == "delivery.changed" && strings.Contains(f.Data, `"state":"done"`) })
 	q.want(func(f sse.Frame) bool { return f.Event == "agent.presence" && strings.Contains(f.Data, `"connected":false`) })
+}
+
+func TestStream_PromptFrames(t *testing.T) {
+	r := newRig(t, app.Options{}, nil)
+	_, human := r.open(t, r.cookie, "")
+	_, agent := r.openAgent(t, r.scoutToken, "")
+	next(t, human)
+	next(t, agent) // ready
+	m, err := r.svc.PostPrompt(ctx, r.scoutActor(), r.room.ID, bus.PromptApproval, "run it?", []string{"once"})
+	require.NoError(t, err)
+	_, err = r.svc.AnswerPrompt(ctx, r.kai, r.room.ID, m.ID, "once")
+	require.NoError(t, err)
+
+	hq, aq := newFrameQueue(t, human), newFrameQueue(t, agent)
+	f := hq.want(func(f sse.Frame) bool { return f.Event == "prompt.changed" })
+	assert.Contains(t, f.Data, `"state":"answered"`)
+	f = aq.want(func(f sse.Frame) bool { return f.Event == "prompt.answered" })
+	assert.JSONEq(t, fmt.Sprintf(`{"room_id":%q,"message_id":%q,"answer":"once"}`, r.room.ID, m.ID), f.Data)
 }
 
 // Review Focus 1.
@@ -598,6 +616,7 @@ type delivery struct {
 	}
 	Room    map[string]any `json:"room"`
 	Context []any          `json:"context"`
+	Note    *string        `json:"note"` // the author's composed note, null when there is none
 }
 
 func TestAgentEvents_ReadyThenDelivery(t *testing.T) {
@@ -612,6 +631,7 @@ func TestAgentEvents_ReadyThenDelivery(t *testing.T) {
 	m := r.post(t, "after")
 	f := next(t, d)
 	assert.Equal(t, "delivery", f.Event)
+	assert.Contains(t, f.Data, `"note":null`, "no note on an empty one")
 	var first delivery
 	require.NoError(t, json.Unmarshal([]byte(f.Data), &first))
 	assert.Equal(t, m.ID, first.Message.ID)
@@ -663,6 +683,22 @@ func TestAgentEvents_ReadyThenDelivery(t *testing.T) {
 	assert.Equal(t, steer.ID.String(), str.Message["id"])
 
 	assert.True(t, nothingElse(d, 150 * time.Millisecond), "nothing follows the steer")
+}
+
+func TestAgentEvents_DeliveryCarriesTheAuthorsNote(t *testing.T) {
+	r := newRig(t, app.Options{}, nil)
+	_, err := r.svc.SetNoteText(ctx, r.kai, "I live in Lisbon.")
+	require.NoError(t, err)
+	_, d := r.openAgent(t, r.scoutToken, "")
+	next(t, d) // ready
+	m := r.post(t, "where is home?")
+	f := next(t, d)
+	assert.Equal(t, "delivery", f.Event)
+	var first delivery
+	require.NoError(t, json.Unmarshal([]byte(f.Data), &first))
+	require.NotNil(t, first.Note)
+	assert.Equal(t, "I live in Lisbon.", *first.Note)
+	assert.Equal(t, m.ID, first.Message.ID)
 }
 
 func TestAgentEvents_RevokedWithinAHeartbeat(t *testing.T) {
