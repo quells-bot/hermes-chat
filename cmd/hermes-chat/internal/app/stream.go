@@ -236,7 +236,12 @@ func (h *controller) AgentEvents(c *gin.Context) {
 	}
 	defer func() {
 		sub.Close()
-		_ = h.svc.AgentGone(ctx, actor)
+		// The context is already over on a client disconnect, the dominant
+		// close path, so run the presence-off write detached from its
+		// cancellation: it must still reach the log, or browsers miss it.
+		if err := h.svc.AgentGone(context.WithoutCancel(ctx), actor); err != nil {
+			slog.ErrorContext(ctx, "agent gone", "error", err)
+		}
 	}()
 
 	rc := http.NewResponseController(c.Writer)

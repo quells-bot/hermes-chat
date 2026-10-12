@@ -589,6 +589,29 @@ func TestAgentEvents_RevokedWithinAHeartbeat(t *testing.T) {
 	assert.False(t, room.Agents[0].Connected, "closing on revocation flips presence off")
 }
 
+// A client disconnect is the dominant way an agent stream ends. The handler's
+// exit must still write the connected=false presence rows, even though the
+// request context is already over by then: the human subscriber sees them.
+func TestAgentEvents_DisconnectWritesPresenceOff(t *testing.T) {
+	r := newRig(t, app.Options{HeartbeatInterval: 20 * time.Millisecond}, nil)
+	_, human := r.open(t, r.cookie, "")
+	next(t, human) // ready
+	resp, agent := r.openAgent(t, r.scoutToken, "")
+	next(t, agent) // ready
+	f := next(t, human)
+	assert.Equal(t, "agent.presence", f.Event)
+	var on struct{ Connected bool `json:"connected"` }
+	require.NoError(t, json.Unmarshal([]byte(f.Data), &on))
+	assert.True(t, on.Connected, "the human saw the connection open")
+
+	resp.Body.Close() // the agent's client disconnects for real
+	f = next(t, human)
+	assert.Equal(t, "agent.presence", f.Event)
+	var off struct{ Connected bool `json:"connected"` }
+	require.NoError(t, json.Unmarshal([]byte(f.Data), &off))
+	assert.False(t, off.Connected, "the human saw the connection close")
+}
+
 func TestAgentEvents_SecondConnectionReplacesTheFirst(t *testing.T) {
 	r := newRig(t, app.Options{HeartbeatInterval: 20 * time.Millisecond}, nil)
 	connected := func() bool {
