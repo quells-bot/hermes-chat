@@ -287,7 +287,7 @@ func TestEvents_ReadyThenLive(t *testing.T) {
 	f := next(t, d)
 	assert.Equal(t, "3", f.ID)
 	assert.Equal(t, "message.posted", f.Event)
-	assert.JSONEq(t, fmt.Sprintf(`{"message":{"id":%q,"room_id":%q,"author":{"kind":"human","id":%q,"name":"kai"},"text":"after","reply_to_id":null,"deliveries":[{"agent":{"id":%q,"handle":"scout","display_name":"Scout","revoked":false},"state":"waiting"}],"created_at":%q,"prompt":null,"attachments":[]}}`,
+	assert.JSONEq(t, fmt.Sprintf(`{"message":{"id":%q,"room_id":%q,"author":{"kind":"human","id":%q,"name":"kai"},"text":"after","reply_to_id":null,"deliveries":[{"agent":{"id":%q,"handle":"scout","display_name":"Scout","revoked":false},"state":"waiting"}],"created_at":%q,"prompt":null,"attachments":[],"client_id":null,"streaming":false}}`,
 		m.ID, r.room.ID, r.kai.ID, r.scout.ID, stamp(m.CreatedAt)), f.Data)
 
 	_, err := r.svc.UpdateRoom(ctx, r.kai, r.room.ID, bus.RoomUpdate{Topic: ptr("Renamed")})
@@ -735,7 +735,7 @@ func TestAgentEvents_ReadyThenDelivery(t *testing.T) {
 
 	// Steer names the room and carries the steer message; it needs a working turn.
 	require.NoError(t, r.svc.TurnWorking(ctx, r.scoutActor(), rep.ID))
-	steer, err := r.svc.Steer(ctx, r.kai, r.room.ID, r.scout.ID, "keep going")
+	steer, _, err := r.svc.Steer(ctx, r.kai, r.room.ID, r.scout.ID, "", "keep going")
 	require.NoError(t, err)
 	f = next(t, d)
 	assert.Equal(t, "steer", f.Event)
@@ -873,4 +873,17 @@ func TestAgentEvents_PauseFrame(t *testing.T) {
 	assert.Equal(t, "pause", f.Event)
 	assert.JSONEq(t, fmt.Sprintf(`{"room_id":%q}`, r.room.ID.String()), f.Data)
 	assert.NotEmpty(t, f.ID)
+}
+
+// The client id is the posting human's business: a delivery does not carry it.
+func TestAgentMessageJSON_HasNoClientID(t *testing.T) {
+	r := newRig(t, app.Options{HeartbeatInterval: 20 * time.Millisecond}, nil)
+	_, d := r.openAgent(t, r.scoutToken, "")
+	require.Equal(t, "ready", next(t, d).Event)
+	_, _, err := r.svc.PostMessageOnce(ctx, r.kai, r.room.ID, "k1", "keyed", ulid.Zero)
+	require.NoError(t, err)
+	f := next(t, d)
+	require.Equal(t, "delivery", f.Event)
+	assert.Contains(t, f.Data, `"text":"keyed"`)
+	assert.NotContains(t, f.Data, "client_id")
 }

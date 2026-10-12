@@ -171,3 +171,29 @@ func TestGetDeliveredDelivery(t *testing.T) {
 	_, err = r.GetDeliveredDelivery(ctx, trip.ID, atlas.ID)
 	assert.ErrorIs(t, err, storage.ErrNotFound)
 }
+
+func TestListWorkingAgentIDs(t *testing.T) {
+	r := roomed(t)
+	m1 := msg("1", trip.ID, kai.ID)
+	m2 := msg("2", trip.ID, kai.ID)
+	m3 := msg("3", dm.ID, kai.ID)
+	for _, m := range []storage.Message{m1, m2, m3} {
+		require.NoError(t, r.PutMessage(ctx, m))
+	}
+	none, err := r.ListWorkingAgentIDs(ctx, trip.ID)
+	require.NoError(t, err)
+	assert.NotNil(t, none)
+	assert.Empty(t, none)
+
+	require.NoError(t, r.PutDelivery(ctx, storage.Delivery{RoomID: trip.ID, AgentID: scout.ID, MessageID: m1.ID, State: "done"}))
+	require.NoError(t, r.PutDelivery(ctx, storage.Delivery{RoomID: trip.ID, AgentID: scout.ID, MessageID: m2.ID, State: "working"}))
+	require.NoError(t, r.PutDelivery(ctx, storage.Delivery{RoomID: trip.ID, AgentID: atlas.ID, MessageID: m2.ID, State: "delivered"}))
+	require.NoError(t, r.PutDelivery(ctx, storage.Delivery{RoomID: dm.ID, AgentID: scout.ID, MessageID: m3.ID, State: "delivered"}))
+
+	got, err := r.ListWorkingAgentIDs(ctx, trip.ID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{scout.ID}, got) // delivered is not working
+	got, err = r.ListWorkingAgentIDs(ctx, dm.ID)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}

@@ -63,7 +63,8 @@ func (h *controller) ListMessages(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"messages": out})
 }
 
-// PostMessage adds a message to a room.
+// PostMessage adds a message to a room. A post that repeats the client_id of
+// an earlier one answers 200 with that message instead of 201 with a new one.
 func (h *controller) PostMessage(c *gin.Context) {
 	roomID, ok := pathID(c, "room")
 	if !ok {
@@ -72,6 +73,7 @@ func (h *controller) PostMessage(c *gin.Context) {
 	var body struct {
 		Text      string  `json:"text"`
 		ReplyToID *string `json:"reply_to_id"`
+		ClientID  *string `json:"client_id"` // absent, null, and "" all mean no key
 	}
 	if !readJSON(c, maxMessageBody, &body) {
 		return
@@ -82,12 +84,27 @@ func (h *controller) PostMessage(c *gin.Context) {
 			return
 		}
 	}
-	msg, err := h.svc.PostMessage(c.Request.Context(), actorFrom(c), roomID, body.Text, replyTo)
+	msg, created, err := h.svc.PostMessageOnce(c.Request.Context(), actorFrom(c), roomID, optionalString(body.ClientID), body.Text, replyTo)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, messageJSON(msg))
+	c.JSON(postedStatus(created), messageJSON(msg))
+}
+
+// postedStatus is 201 for a new message and 200 for the repeat of an earlier post.
+func postedStatus(created bool) int {
+	if created {
+		return http.StatusCreated
+	}
+	return http.StatusOK
+}
+
+func optionalString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // GetMessage describes one message in a room the caller belongs to.

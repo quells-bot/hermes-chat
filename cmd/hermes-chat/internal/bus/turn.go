@@ -190,9 +190,11 @@ func turnAllowed(target, current DeliveryState) bool {
 // turnReport applies the state transition for the agent's delivery of the
 // message. ErrNoTurn when the current state cannot reach it; a no-op when it
 // already holds it. Each real change writes one delivery.changed event, and
-// done and failed release the pair's next waiting head.
+// done and failed close the turn's unfinished streams (closeStreams) and
+// release the pair's next waiting head.
 func (s *service) turnReport(ctx context.Context, actor Actor, messageID ulid.ULID, target DeliveryState) error {
 	at := s.now()
+	var closed []string // the messages the turn left streaming, now finalized
 	err := s.record(ctx, func(r storage.Repository) error {
 		d, err := requireTurnDelivery(ctx, r, actor.ID, messageID)
 		if err != nil {
@@ -212,6 +214,10 @@ func (s *service) turnReport(ctx context.Context, actor Actor, messageID ulid.UL
 			return err
 		}
 		if target == DeliveryDone || target == DeliveryFailed {
+			closed, err = s.closeStreams(ctx, r, d.RoomID, actor.ID, messageID, at)
+			if err != nil {
+				return err
+			}
 			ar, err := r.GetAgentByID(ctx, actor.ID.String())
 			if err != nil {
 				return fmt.Errorf("get agent: %w", err)
@@ -229,7 +235,45 @@ func (s *service) turnReport(ctx context.Context, actor Actor, messageID ulid.UL
 	if err != nil {
 		return wrapOp("report turn", err)
 	}
+	s.editWrites.mu.Lock()
+	for _, id := range closed {
+		delete(s.editWrites.last, id)
+		delete(s.editWrites.text, id)
+	}
+	s.editWrites.mu.Unlock()
 	return nil
+}
+
+// closeStreams finalizes every message the agent was still streaming in the
+// room that is newer than the turn's message, and writes one message.edited
+// event for each. The text is the newest non-final edit, which browsers have
+// already seen and the throttled row may not hold; after a restart that is
+// forgotten, and the stored text stands. A turn that ends without its final
+// edit would otherwise leave its reply streaming for ever. It cannot tell a
+// turn's reply from another stream the agent began in the room during the
+// turn, so that one is closed too. It returns the ids it closed.
+func (s *service) closeStreams(ctx context.Context, r storage.Repository, roomID string, agentID, turnMessageID ulid.ULID, at time.Time) ([]string, error) {
+	open, err := r.ListStreamingMessages(ctx, roomID, agentID.String(), turnMessageID.String())
+	if err != nil {
+		return nil, fmt.Errorf("list streaming messages: %w", err)
+	}
+	ids := make([]string, 0, len(open))
+	for _, m := range open {
+		s.editWrites.mu.Lock()
+		text, ok := s.editWrites.text[m.ID]
+		s.editWrites.mu.Unlock()
+		if !ok {
+			text = m.Body
+		}
+		if err := r.FinalizeMessage(ctx, m.ID, text, at.UnixMilli()); err != nil {
+			return nil, fmt.Errorf("finalize message: %w", err)
+		}
+		if err := putEvent(ctx, r, EventMessageEdited, roomID, m.ID, at); err != nil {
+			return nil, err
+		}
+		ids = append(ids, m.ID)
+	}
+	return ids, nil
 }
 
 func (s *service) TurnWorking(ctx context.Context, actor Actor, messageID ulid.ULID) error {
@@ -419,20 +463,33 @@ func (s *service) StopTurn(ctx context.Context, actor Actor, roomID, agentID uli
 
 // Steer sends the agent a control message during its running turn. It requires
 // the pair's delivery to be working, and it creates no delivery row: steer is
-// applied at the next tool boundary without ending the turn.
-func (s *service) Steer(ctx context.Context, actor Actor, roomID, agentID ulid.ULID, text string) (Message, error) {
+// applied at the next tool boundary without ending the turn. A steer that
+// repeats the client id of an earlier post or steer by the same human in the
+// room returns that message, with created false, and steers nobody.
+func (s *service) Steer(ctx context.Context, actor Actor, roomID, agentID ulid.ULID, clientID, text string) (Message, bool, error) {
 	if actor.Kind != ActorHuman {
-		return Message{}, ErrForbidden
+		return Message{}, false, ErrForbidden
+	}
+	if !validClientID(clientID) {
+		return Message{}, false, errClientID
 	}
 	if !validMessageText(text) {
-		return Message{}, errMessageText
+		return Message{}, false, errMessageText
 	}
 	at := s.now()
 	var posted Message
+	created := true
 	err := s.record(ctx, func(r storage.Repository) error {
 		row, err := roomForMember(ctx, r, actor, roomID)
 		if err != nil {
 			return err
+		}
+		// before every other check: a retry gets its message back even after the turn ended
+		if first, found, err := repeatedPost(ctx, r, row.ID, actor.ID, clientID); err != nil {
+			return err
+		} else if found {
+			posted, created = first, false
+			return nil
 		}
 		if row.ArchivedAtMs != nil {
 			return ErrRoomArchived
@@ -463,6 +520,9 @@ func (s *service) Steer(ctx context.Context, actor Actor, roomID, agentID ulid.U
 		msg := storage.Message{ID: id.String(), RoomID: row.ID, Body: text, CreatedAtMs: at.UnixMilli()}
 		human := actor.ID.String()
 		msg.AuthorHumanID = &human
+		if clientID != "" {
+			msg.ClientID = &clientID
+		}
 		if err := r.PutMessage(ctx, msg); err != nil {
 			return fmt.Errorf("put message: %w", err)
 		}
@@ -484,7 +544,7 @@ func (s *service) Steer(ctx context.Context, actor Actor, roomID, agentID ulid.U
 		return nil
 	})
 	if err != nil {
-		return Message{}, wrapOp("steer", err)
+		return Message{}, false, wrapOp("steer", err)
 	}
-	return posted, nil
+	return posted, created, nil
 }

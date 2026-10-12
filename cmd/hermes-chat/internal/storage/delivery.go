@@ -112,3 +112,14 @@ func (r *repo) ListAgentRoomIDs(ctx context.Context, agentID string) ([]string, 
 	}
 	return rows, nil
 }
+
+func (r *repo) ListWorkingAgentIDs(ctx context.Context, roomID string) ([]string, error) {
+	ids, err := r.reads.ListWorkingAgentIDs(ctx, roomID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	if ids == nil {
+		ids = []string{}
+	}
+	return ids, nil
+}

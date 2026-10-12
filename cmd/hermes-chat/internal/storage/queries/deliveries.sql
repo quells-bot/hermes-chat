@@ -52,3 +52,6 @@ ORDER BY message_id LIMIT 1;
 SELECT room_id, agent_id, message_id, state FROM deliveries
 WHERE room_id = ? AND agent_id = ? AND state = 'delivered'
 ORDER BY message_id LIMIT 1;
+
+-- name: ListWorkingAgentIDs :many
+SELECT DISTINCT agent_id FROM deliveries WHERE room_id = ? AND state = 'working' ORDER BY agent_id;

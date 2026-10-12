@@ -248,6 +248,33 @@ func (q *Queries) ListDeliveriesInRange(ctx context.Context, arg ListDeliveriesI
 	return items, nil
 }
 
+const listWorkingAgentIDs = `-- name: ListWorkingAgentIDs :many
+SELECT DISTINCT agent_id FROM deliveries WHERE room_id = ? AND state = 'working' ORDER BY agent_id
+`
+
+func (q *Queries) ListWorkingAgentIDs(ctx context.Context, roomID string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listWorkingAgentIDs, roomID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var agent_id string
+		if err := rows.Scan(&agent_id); err != nil {
+			return nil, err
+		}
+		items = append(items, agent_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const releasableDeliveries = `-- name: ReleasableDeliveries :many
 SELECT d.room_id, d.agent_id, d.message_id, d.state FROM deliveries d
 WHERE d.agent_id = ? AND d.state = 'waiting'

@@ -91,3 +91,65 @@ func TestListMessages(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, all[4].ID, last)
 }
+
+func TestMessage_ClientIDRoundTrips(t *testing.T) {
+	r := roomed(t)
+	keyed := msg("1", trip.ID, kai.ID)
+	keyed.ClientID = sp("k1")
+	require.NoError(t, r.PutMessage(ctx, keyed))
+	plain := msg("2", trip.ID, kai.ID)
+	require.NoError(t, r.PutMessage(ctx, plain))
+
+	got, err := r.GetMessageByClientID(ctx, trip.ID, kai.ID, "k1")
+	require.NoError(t, err)
+	assert.Equal(t, keyed, got)
+	got, err = r.GetMessage(ctx, plain.ID)
+	require.NoError(t, err)
+	assert.Nil(t, got.ClientID)
+	_, err = r.GetMessageByClientID(ctx, trip.ID, kai.ID, "nope")
+	assert.ErrorIs(t, err, storage.ErrNotFound)
+}
+
+func TestMessage_ClientIDIsUniquePerRoomAndHuman(t *testing.T) {
+	r := roomed(t)
+	keyed := func(n, roomID, humanID string) storage.Message {
+		m := msg(n, roomID, humanID)
+		m.ClientID = sp("k1")
+		return m
+	}
+	require.NoError(t, r.PutMessage(ctx, keyed("1", trip.ID, kai.ID)))
+	assert.ErrorIs(t, r.PutMessage(ctx, keyed("2", trip.ID, kai.ID)), storage.ErrConflict)
+	assert.NoError(t, r.PutMessage(ctx, keyed("3", trip.ID, ada.ID))) // another human
+	assert.NoError(t, r.PutMessage(ctx, keyed("4", dm.ID, kai.ID)))   // another room
+	assert.NoError(t, r.PutMessage(ctx, msg("5", trip.ID, kai.ID)))   // no key never collides
+	assert.NoError(t, r.PutMessage(ctx, msg("6", trip.ID, kai.ID)))
+}
+
+func TestMessage_StreamingList(t *testing.T) {
+	r := roomed(t)
+	byScout := func(n string) storage.Message {
+		return storage.Message{ID: "01JA00000000000000000000M" + n, RoomID: trip.ID, AuthorAgentID: sp(scout.ID), Body: "body " + n, CreatedAtMs: 1791700001000}
+	}
+	m1, m2, m3 := byScout("1"), byScout("2"), byScout("3")
+	for _, m := range []storage.Message{m1, m2, m3} {
+		require.NoError(t, r.PutMessage(ctx, m))
+	}
+	require.NoError(t, r.SetMessageBody(ctx, m2.ID, "partial", 1791700002000))
+	require.NoError(t, r.SetMessageBody(ctx, m3.ID, "partial", 1791700002000))
+	require.NoError(t, r.FinalizeMessage(ctx, m3.ID, "whole", 1791700003000))
+
+	got, err := r.ListStreamingMessages(ctx, trip.ID, scout.ID, "")
+	require.NoError(t, err)
+	require.Len(t, got, 1) // m1 was never edited, m3 is finalized
+	assert.Equal(t, m2.ID, got[0].ID)
+	assert.Equal(t, "partial", got[0].Body)
+	assert.Equal(t, ms(1791700002000), got[0].EditedAtMs)
+
+	after, err := r.ListStreamingMessages(ctx, trip.ID, scout.ID, m2.ID)
+	require.NoError(t, err)
+	assert.NotNil(t, after)
+	assert.Empty(t, after)
+	other, err := r.ListStreamingMessages(ctx, trip.ID, atlas.ID, "")
+	require.NoError(t, err)
+	assert.Empty(t, other)
+}

@@ -77,6 +77,8 @@ type Service interface {
 	Halted(ctx context.Context) (bool, error)
 
 	PostMessage(ctx context.Context, actor Actor, roomID ulid.ULID, text string, replyTo ulid.ULID) (Message, error) // ErrNotFound, ErrValidation, ErrRoomArchived; ErrPaused for an agent
+	// PostMessageOnce is PostMessage for a human whose request may be a retry: a repeat of the client id returns the first message and created false.
+	PostMessageOnce(ctx context.Context, actor Actor, roomID ulid.ULID, clientID, text string, replyTo ulid.ULID) (msg Message, created bool, err error) // human only: ErrForbidden; otherwise as PostMessage
 	CancelMessage(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) error                               // ErrNotFound, ErrForbidden, ErrNothingWaiting
 	GetMessage(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) (Message, error)                       // ErrNotFound, also for a message in another room
 	// ListMessages returns up to limit messages older than before (zero: the newest), oldest first.
@@ -93,7 +95,7 @@ type Service interface {
 	FinishTool(ctx context.Context, actor Actor, activityID ulid.ULID, durationMs int64, succeeded bool) (Activity, error)
 	ListActivity(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) ([]Activity, error)  // human viewer only
 	StopTurn(ctx context.Context, actor Actor, roomID, agentID ulid.ULID) error                      // human only; ErrNotFound
-	Steer(ctx context.Context, actor Actor, roomID, agentID ulid.ULID, text string) (Message, error) // human only; ErrNotFound, ErrValidation, ErrNoTurn, ErrRoomArchived, ErrPaused
+	Steer(ctx context.Context, actor Actor, roomID, agentID ulid.ULID, clientID, text string) (msg Message, created bool, err error) // human only; ErrNotFound, ErrValidation, ErrNoTurn, ErrRoomArchived, ErrPaused; a repeat of the client id returns the first message and created false
 
 	PostPrompt(ctx context.Context, actor Actor, roomID ulid.ULID, kind PromptKind, text string, choices []string) (Message, error) // agent member only: ErrForbidden for a human; ErrNotFound, ErrValidation, ErrRoomArchived, ErrPaused
 	AnswerPrompt(ctx context.Context, actor Actor, roomID, messageID ulid.ULID, answer string) (Message, error)                     // human member; ErrNotFound, ErrValidation, ErrRoomArchived, ErrPaused, ErrPromptClosed; the same answer again is a no-op
@@ -119,10 +121,13 @@ type Service interface {
 var _ Service = (*service)(nil)
 
 // editWrites throttles non-final message edits: per message, when its body was
-// last written, so a non-final edit touches the row only once a second.
+// last written, so a non-final edit touches the row only once a second. It
+// also keeps the text of the newest non-final edit, which the row may not have
+// yet, for the turn that ends without a final one (closeStreams).
 type editWrites struct {
 	mu   sync.Mutex
 	last map[string]time.Time // keyed by message id
+	text map[string]string    // keyed by message id; the newest non-final text
 }
 
 // FileStore keeps attachment bodies, each under its attachment's id. *storage.Files is one.
@@ -154,7 +159,7 @@ type service struct {
 func NewService(repo storage.Repository, clock Clock, opts ...Option) *service {
 	s := &service{
 		repo: repo, clock: clock, throttle: newThrottle(), argon: newArgonLimiter(), hub: newHub(),
-		editWrites: editWrites{last: map[string]time.Time{}},
+		editWrites: editWrites{last: map[string]time.Time{}, text: map[string]string{}},
 	}
 	for _, opt := range opts {
 		opt(s)

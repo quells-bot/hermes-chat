@@ -212,15 +212,16 @@ func (h *controller) Steer(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Text string `json:"text"`
+		Text     string  `json:"text"`
+		ClientID *string `json:"client_id"` // absent, null, and "" all mean no key
 	}
 	if !readJSON(c, maxMessageBody, &body) {
 		return
 	}
-	msg, err := h.svc.Steer(c.Request.Context(), actorFrom(c), roomID, agentID, body.Text)
+	msg, created, err := h.svc.Steer(c.Request.Context(), actorFrom(c), roomID, agentID, optionalString(body.ClientID), body.Text)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, messageJSON(msg))
+	c.JSON(postedStatus(created), messageJSON(msg))
 }

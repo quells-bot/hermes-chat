@@ -308,7 +308,7 @@ func TestStopTurnAndSteer(t *testing.T) {
 	assert.Empty(t, drain(t, sub))
 
 	// steer applies to the running turn and creates no delivery
-	steerMsg, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "also check trains")
+	steerMsg, _, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "", "also check trains")
 	require.NoError(t, err)
 	assert.Equal(t, room.ID, steerMsg.RoomID)
 	assert.Equal(t, "also check trains", steerMsg.Text)
@@ -337,20 +337,20 @@ func TestStopTurnAndSteer(t *testing.T) {
 	// no working delivery for the pair is no turn
 	require.NoError(t, w.s.TurnDone(ctx, scoutActor, mID))
 	drain(t, humanSub) // delivery.changed
-	_, err = w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "again")
+	_, _, err = w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "", "again")
 	require.ErrorIs(t, err, bus.ErrNoTurn)
 
 	// an archived room refuses steer
 	conv, _ := w.s.CreateRoom(ctx, w.kai, "Conv", ids(w.scout))
 	_, err = w.s.UpdateRoom(ctx, w.kai, conv.ID, bus.RoomUpdate{Archived: ptr(true)})
 	require.NoError(t, err)
-	_, err = w.s.Steer(ctx, w.kai, conv.ID, w.scout.ID, "x")
+	_, _, err = w.s.Steer(ctx, w.kai, conv.ID, w.scout.ID, "", "x")
 	require.ErrorIs(t, err, bus.ErrRoomArchived)
 	// an agent cannot steer
-	_, err = w.s.Steer(ctx, scoutActor, room.ID, w.scout.ID, "x")
+	_, _, err = w.s.Steer(ctx, scoutActor, room.ID, w.scout.ID, "", "x")
 	require.ErrorIs(t, err, bus.ErrForbidden)
 	// a non-member agent is not found
-	_, err = w.s.Steer(ctx, w.kai, room.ID, w.atlas.ID, "x")
+	_, _, err = w.s.Steer(ctx, w.kai, room.ID, w.atlas.ID, "", "x")
 	require.ErrorIs(t, err, bus.ErrNotFound)
 
 	// stop is idempotent and needs no running turn
@@ -467,4 +467,267 @@ func TestRemovedAgent_WritesNothingMore(t *testing.T) {
 	got, err := w.s.GetMessage(ctx, w.kai, room.ID, reply.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "draft", got.Text)
+}
+
+func TestSteer_RepeatReturnsTheFirst(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	_, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	first, created, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "s1", "also check trains")
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.Equal(t, "s1", first.ClientID)
+	require.Len(t, of(drain(t, sub), bus.EventControlSteer), 1)
+
+	again, created, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "s1", "something else")
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, first.ID, again.ID)
+	assert.Equal(t, "also check trains", again.Text)
+	assert.Empty(t, of(drain(t, sub), bus.EventControlSteer)) // the agent is not steered twice
+}
+
+func TestSteer_RepeatAfterTheTurnEnded(t *testing.T) { // Review Focus 1
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	mID, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	first, _, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "s1", "also check trains")
+	require.NoError(t, err)
+	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), mID))
+
+	again, created, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "s1", "also check trains")
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, first.ID, again.ID)
+	_, _, err = w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "s2", "also check trains")
+	assert.ErrorIs(t, err, bus.ErrNoTurn)
+}
+
+func TestSteerAndPostShareAKeySpace(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	_, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	posted, _, err := w.s.PostMessageOnce(ctx, w.kai, room.ID, "k1", "second", ulid.Zero)
+	require.NoError(t, err)
+	got, created, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "k1", "faster")
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, posted.ID, got.ID)
+}
+
+func TestSteer_ClientIDValidation(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	_, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	_, _, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "a b", "faster")
+	var ve bus.ValidationError
+	require.ErrorAs(t, err, &ve)
+	assert.Equal(t, `client_id must be at most 64 characters: letters, digits, "-" or "_"`, ve.Message)
+}
+
+// streamed has scout post a message in the room and store one non-final edit of it.
+func streamed(t *testing.T, w world, room bus.Room, text string) bus.Message {
+	t.Helper()
+	m, err := w.s.PostMessage(ctx, agentActor(w.scout), room.ID, "…", ulid.Zero)
+	require.NoError(t, err)
+	require.NoError(t, w.s.EditMessage(ctx, agentActor(w.scout), m.ID, text, false))
+	return m
+}
+
+func isStreaming(t *testing.T, w world, room bus.Room, id ulid.ULID) bool {
+	t.Helper()
+	m, err := w.s.GetMessage(ctx, w.kai, room.ID, id)
+	require.NoError(t, err)
+	return m.Streaming
+}
+
+func TestMessage_StreamingFollowsEdits(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	mID, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	scout := agentActor(w.scout)
+	reply, err := w.s.PostMessage(ctx, scout, room.ID, "…", ulid.Zero)
+	require.NoError(t, err)
+	assert.False(t, reply.Streaming)
+	assert.False(t, isStreaming(t, w, room, reply.ID)) // posted in one piece, so far
+	assert.False(t, isStreaming(t, w, room, mID))      // a human's message never streams
+
+	require.NoError(t, w.s.EditMessage(ctx, scout, reply.ID, "par", false))
+	assert.True(t, isStreaming(t, w, room, reply.ID))
+	require.NoError(t, w.s.EditMessage(ctx, scout, reply.ID, "partial answer", true))
+	assert.False(t, isStreaming(t, w, room, reply.ID))
+}
+
+func TestTurnEnd_ClosesAnAbandonedStream(t *testing.T) { // Review Focus 5
+	for name, report := range map[string]func(bus.Service, bus.Actor, ulid.ULID) error{
+		"done":   func(s bus.Service, a bus.Actor, id ulid.ULID) error { return s.TurnDone(ctx, a, id) },
+		"failed": func(s bus.Service, a bus.Actor, id ulid.ULID) error { return s.TurnFailed(ctx, a, id) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t)
+			room := dmRoom(t, w)
+			mID, sub := startedTurn(t, w, room)
+			defer sub.Close()
+			abandoned := streamed(t, w, room, "half")
+			whole, err := w.s.PostMessage(ctx, agentActor(w.scout), room.ID, "in one piece", ulid.Zero)
+			require.NoError(t, err)
+			human, err := w.s.Subscribe(ctx, w.kai, bus.FromNow)
+			require.NoError(t, err)
+			defer human.Close()
+
+			require.NoError(t, report(w.s, agentActor(w.scout), mID))
+
+			got, err := w.s.GetMessage(ctx, w.kai, room.ID, abandoned.ID)
+			require.NoError(t, err)
+			assert.False(t, got.Streaming)
+			assert.Equal(t, "half", got.Text)
+			edited := of(drain(t, human), bus.EventMessageEdited)
+			require.Len(t, edited, 1) // none for the one-piece message
+			assert.Equal(t, abandoned.ID, edited[0].Message.ID)
+			assert.False(t, edited[0].Message.Streaming)
+			assert.NotEqual(t, whole.ID, edited[0].Message.ID)
+		})
+	}
+}
+
+func TestTurnEnd_LeavesOlderStreamsAlone(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	report := streamed(t, w, room, "a scheduled report, so far") // before the turn's message
+	mID, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), mID))
+	assert.True(t, isStreaming(t, w, room, report.ID))
+}
+
+func TestTurnEnd_AFinalEditStillLands(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	mID, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	abandoned := streamed(t, w, room, "half")
+	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), mID))
+	require.NoError(t, w.s.EditMessage(ctx, agentActor(w.scout), abandoned.ID, "whole answer", true))
+	got, err := w.s.GetMessage(ctx, w.kai, room.ID, abandoned.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "whole answer", got.Text)
+	assert.False(t, got.Streaming)
+}
+
+func TestTurnWorking_ClosesNothing(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	sub := scoutSub(t, w)
+	defer sub.Close()
+	m, err := w.s.PostMessage(ctx, w.kai, room.ID, "first", ulid.Zero)
+	require.NoError(t, err)
+	early := streamed(t, w, room, "half")
+	require.NoError(t, w.s.TurnWorking(ctx, agentActor(w.scout), m.ID))
+	assert.True(t, isStreaming(t, w, room, early.ID))
+}
+
+func TestRoom_AgentWorking(t *testing.T) { // Review Focus 6
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	other, err := w.s.CreateRoom(ctx, w.kai, "Other", ids(w.scout))
+	require.NoError(t, err)
+	working := func(id ulid.ULID) bool {
+		r, err := w.s.GetRoom(ctx, w.kai, id)
+		require.NoError(t, err)
+		return r.Agents[0].Working
+	}
+	assert.False(t, working(room.ID))
+
+	sub := scoutSub(t, w)
+	defer sub.Close()
+	m, err := w.s.PostMessage(ctx, w.kai, room.ID, "first", ulid.Zero)
+	require.NoError(t, err)
+	require.Equal(t, bus.DeliveryDelivered, m.Deliveries[0].State)
+	assert.False(t, working(room.ID)) // delivered is not working
+
+	require.NoError(t, w.s.TurnWorking(ctx, agentActor(w.scout), m.ID))
+	assert.True(t, working(room.ID))
+	assert.False(t, working(other.ID)) // per room
+
+	rooms, err := w.s.ListRooms(ctx, w.kai)
+	require.NoError(t, err)
+	require.Len(t, rooms, 2)
+	for _, r := range rooms {
+		assert.Equal(t, r.ID == room.ID, r.Agents[0].Working)
+	}
+
+	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), m.ID))
+	assert.False(t, working(room.ID))
+}
+
+// Edits reach browsers at once but the row at most once a second, so the close
+// must keep what people last saw, not what was last stored.
+func TestTurnEnd_ClosesWithTheLastTextBroadcast(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	mID, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	reply := streamed(t, w, room, "half") // stored
+	require.NoError(t, w.s.EditMessage(ctx, agentActor(w.scout), reply.ID, "half and a bit more", false))
+	row, err := w.r.GetMessage(ctx, reply.ID.String())
+	require.NoError(t, err)
+	require.Equal(t, "half", row.Body) // the second edit came inside the throttle: broadcast, not stored
+
+	require.NoError(t, w.s.TurnFailed(ctx, agentActor(w.scout), mID))
+	got, err := w.s.GetMessage(ctx, w.kai, room.ID, reply.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "half and a bit more", got.Text)
+	assert.False(t, got.Streaming)
+}
+
+func TestTurnEnd_ClosesOnlyItsOwnAgentAndRoom(t *testing.T) {
+	w := newWorld(t)
+	room, scoutS, atlasS := connectedChannel(t, w)
+	defer scoutS.Close()
+	defer atlasS.Close()
+	dm := dmRoom(t, w)
+	turn, err := w.s.PostMessage(ctx, w.kai, room.ID, "@scout go", ulid.Zero)
+	require.NoError(t, err)
+	require.NoError(t, w.s.TurnWorking(ctx, agentActor(w.scout), turn.ID))
+	mine := streamed(t, w, room, "scout, in the turn's room")
+	elsewhere := streamed(t, w, dm, "scout, in another room")
+	theirs, err := w.s.PostMessage(ctx, agentActor(w.atlas), room.ID, "…", ulid.Zero)
+	require.NoError(t, err)
+	require.NoError(t, w.s.EditMessage(ctx, agentActor(w.atlas), theirs.ID, "atlas, in the turn's room", false))
+
+	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), turn.ID))
+	assert.False(t, isStreaming(t, w, room, mine.ID))
+	assert.True(t, isStreaming(t, w, dm, elsewhere.ID))
+	assert.True(t, isStreaming(t, w, room, theirs.ID))
+}
+
+func TestTurnEnd_ClosesAStreamInAPausedRoom(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	mID, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	reply := streamed(t, w, room, "half")
+	_, err := w.s.PauseRoom(ctx, w.kai, room.ID)
+	require.NoError(t, err)
+	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), mID)) // the plugin reports the stop as a finished turn
+	assert.False(t, isStreaming(t, w, room, reply.ID))
+}
+
+func TestEditMessage_NonFinalAfterTheCloseChangesNothing(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	mID, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	reply := streamed(t, w, room, "half")
+	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), mID))
+	require.NoError(t, w.s.EditMessage(ctx, agentActor(w.scout), reply.ID, "late", false))
+	got, err := w.s.GetMessage(ctx, w.kai, room.ID, reply.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "half", got.Text)
+	assert.False(t, got.Streaming)
 }

@@ -436,7 +436,9 @@ paths:
       tags: [messages]
       operationId: postMessage
       summary: Post a message.
-      description: In a paused room the message is accepted and queues.
+      description: |
+        In a paused room the message is accepted and queues. A post that
+        carries a `client_id` is safe to retry: see `ClientID`.
       requestBody:
         required: true
         content:
@@ -451,7 +453,9 @@ paths:
                   oneOf:
                     - $ref: "#/components/schemas/ID"
                     - type: "null"
+                client_id: { $ref: "#/components/schemas/ClientID" }
       responses:
+        "200": { $ref: "#/components/responses/MessageRepeated" }
         "201": { $ref: "#/components/responses/MessageCreated" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
@@ -573,6 +577,7 @@ paths:
       tags: [messages]
       operationId: steer
       summary: Redirect the agent's running turn with a new instruction.
+      description: A steer that carries a `client_id` is safe to retry, even after the turn has ended; see `ClientID`.
       requestBody:
         required: true
         content:
@@ -582,7 +587,9 @@ paths:
               required: [text]
               properties:
                 text: { $ref: "#/components/schemas/MessageText" }
+                client_id: { $ref: "#/components/schemas/ClientID" }
       responses:
+        "200": { $ref: "#/components/responses/MessageRepeated" }
         "201": { $ref: "#/components/responses/MessageCreated" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
@@ -1225,6 +1232,11 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Message" }
+    MessageRepeated:
+      description: A repeat of an earlier request with this `client_id`. The message that request made; nothing was changed.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Message" }
     ActivityCreated:
       description: The new activity.
       content:
@@ -1317,6 +1329,21 @@ components:
     MessageText:
       type: string
       description: 1 to 262,144 bytes, not blank, with no NUL character.
+    ClientID:
+      description: |
+        A key the client makes up for one post or steer, so the request can be
+        retried: a UUID or a ULID fits. Absent, `null`, and `""` all mean no
+        key. A request that repeats a key the same human already used in the
+        room, for a post or a steer, answers 200 with the message the first
+        request made and changes nothing; the repeat's own text is not used.
+        The lookup comes after the membership check and before every other,
+        so a retry gets its message back even when the room has since been
+        archived or paused, or the steered turn has ended.
+      oneOf:
+        - type: string
+          maxLength: 64
+          pattern: "^[A-Za-z0-9_-]*$"
+        - type: "null"
 
     Health:
       type: object
@@ -1401,11 +1428,17 @@ components:
       allOf:
         - $ref: "#/components/schemas/Agent"
         - type: object
-          required: [connected]
+          required: [connected, working]
           properties:
             connected:
               type: boolean
               description: Whether the agent has a live event stream right now.
+            working:
+              type: boolean
+              description: |
+                Whether the agent has a delivery in state `working` in this
+                room. Read when the room is loaded; a `delivery.changed` event
+                is how a client keeps it current.
 
     Flavor:
       type: string
@@ -1539,7 +1572,7 @@ components:
 
     Message:
       type: object
-      required: [id, room_id, author, text, reply_to_id, deliveries, created_at, prompt, attachments]
+      required: [id, room_id, author, text, reply_to_id, deliveries, created_at, prompt, attachments, client_id, streaming]
       properties:
         id: { $ref: "#/components/schemas/ID" }
         room_id: { $ref: "#/components/schemas/ID" }
@@ -1566,6 +1599,17 @@ components:
         attachments:
           type: array
           items: { $ref: "#/components/schemas/Attachment" }
+        client_id:
+          description: The key its human posted it with; `null` when there was none, and on every agent's message.
+          oneOf:
+            - type: string
+            - type: "null"
+        streaming:
+          type: boolean
+          description: |
+            Whether an agent is still writing it: a non-final edit is stored
+            and no final one. Always false on a human's message and on one an
+            agent posted in one piece.
 
     Activity:
       description: A remark or a tool call an agent made while working on a message.

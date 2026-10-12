@@ -28,6 +28,7 @@ const (
 type RoomAgent struct {
 	Agent     Agent
 	Connected bool // whether the agent has a live stream right now
+	Working   bool // whether the agent has a delivery in 'working' in this room
 }
 
 // Delivery is one agent's copy of a message: who it is for and how it sits.

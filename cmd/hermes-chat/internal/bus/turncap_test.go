@@ -90,7 +90,7 @@ func TestTurnCap_ASteerStartsTheCountAgain(t *testing.T) {
 	last, err := w.s.PostMessage(ctx, agentActor(w.scout), room.ID, "@atlas your turn", ulid.Zero)
 	require.NoError(t, err)
 	require.NoError(t, w.s.TurnWorking(ctx, agentActor(w.atlas), last.ID))
-	_, err = w.s.Steer(ctx, w.kai, room.ID, w.atlas.ID, "mind the budget")
+	_, _, err = w.s.Steer(ctx, w.kai, room.ID, w.atlas.ID, "", "mind the budget")
 	require.NoError(t, err)
 	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.atlas), last.ID))
 	for i := 0; i < bus.DefaultTurnCap; i++ {

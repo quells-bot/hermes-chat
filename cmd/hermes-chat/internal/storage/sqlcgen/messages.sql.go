@@ -40,7 +40,7 @@ func (q *Queries) GetLastMessageID(ctx context.Context, roomID string) (string, 
 }
 
 const getMessage = `-- name: GetMessage :one
-SELECT id, room_id, author_human_id, author_agent_id, reply_to_id, body, created_at, finalized_at FROM messages WHERE id = ?
+SELECT id, room_id, author_human_id, author_agent_id, reply_to_id, body, created_at, finalized_at, client_id, edited_at FROM messages WHERE id = ?
 `
 
 func (q *Queries) GetMessage(ctx context.Context, id string) (Message, error) {
@@ -55,12 +55,43 @@ func (q *Queries) GetMessage(ctx context.Context, id string) (Message, error) {
 		&i.Body,
 		&i.CreatedAt,
 		&i.FinalizedAt,
+		&i.ClientID,
+		&i.EditedAt,
+	)
+	return i, err
+}
+
+const getMessageByClientID = `-- name: GetMessageByClientID :one
+SELECT id, room_id, author_human_id, author_agent_id, reply_to_id, body, created_at, finalized_at, client_id, edited_at FROM messages
+WHERE room_id = ? AND author_human_id = ? AND client_id = ?
+`
+
+type GetMessageByClientIDParams struct {
+	RoomID        string
+	AuthorHumanID sql.NullString
+	ClientID      sql.NullString
+}
+
+func (q *Queries) GetMessageByClientID(ctx context.Context, arg GetMessageByClientIDParams) (Message, error) {
+	row := q.db.QueryRowContext(ctx, getMessageByClientID, arg.RoomID, arg.AuthorHumanID, arg.ClientID)
+	var i Message
+	err := row.Scan(
+		&i.ID,
+		&i.RoomID,
+		&i.AuthorHumanID,
+		&i.AuthorAgentID,
+		&i.ReplyToID,
+		&i.Body,
+		&i.CreatedAt,
+		&i.FinalizedAt,
+		&i.ClientID,
+		&i.EditedAt,
 	)
 	return i, err
 }
 
 const insertMessage = `-- name: InsertMessage :exec
-INSERT INTO messages (id, room_id, author_human_id, author_agent_id, reply_to_id, body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO messages (id, room_id, author_human_id, author_agent_id, reply_to_id, body, created_at, client_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type InsertMessageParams struct {
@@ -71,6 +102,7 @@ type InsertMessageParams struct {
 	ReplyToID     sql.NullString
 	Body          string
 	CreatedAt     int64
+	ClientID      sql.NullString
 }
 
 func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) error {
@@ -82,12 +114,13 @@ func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) er
 		arg.ReplyToID,
 		arg.Body,
 		arg.CreatedAt,
+		arg.ClientID,
 	)
 	return err
 }
 
 const listMessagesBefore = `-- name: ListMessagesBefore :many
-SELECT id, room_id, author_human_id, author_agent_id, reply_to_id, body, created_at, finalized_at FROM messages
+SELECT id, room_id, author_human_id, author_agent_id, reply_to_id, body, created_at, finalized_at, client_id, edited_at FROM messages
 WHERE room_id = ? AND id < ?
 ORDER BY id DESC LIMIT ?
 `
@@ -116,6 +149,8 @@ func (q *Queries) ListMessagesBefore(ctx context.Context, arg ListMessagesBefore
 			&i.Body,
 			&i.CreatedAt,
 			&i.FinalizedAt,
+			&i.ClientID,
+			&i.EditedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -131,7 +166,7 @@ func (q *Queries) ListMessagesBefore(ctx context.Context, arg ListMessagesBefore
 }
 
 const listNewestMessages = `-- name: ListNewestMessages :many
-SELECT id, room_id, author_human_id, author_agent_id, reply_to_id, body, created_at, finalized_at FROM messages
+SELECT id, room_id, author_human_id, author_agent_id, reply_to_id, body, created_at, finalized_at, client_id, edited_at FROM messages
 WHERE room_id = ?
 ORDER BY id DESC LIMIT ?
 `
@@ -159,6 +194,54 @@ func (q *Queries) ListNewestMessages(ctx context.Context, arg ListNewestMessages
 			&i.Body,
 			&i.CreatedAt,
 			&i.FinalizedAt,
+			&i.ClientID,
+			&i.EditedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStreamingMessages = `-- name: ListStreamingMessages :many
+SELECT id, room_id, author_human_id, author_agent_id, reply_to_id, body, created_at, finalized_at, client_id, edited_at FROM messages
+WHERE room_id = ? AND author_agent_id = ? AND id > ? AND edited_at IS NOT NULL AND finalized_at IS NULL
+ORDER BY id
+`
+
+type ListStreamingMessagesParams struct {
+	RoomID        string
+	AuthorAgentID sql.NullString
+	ID            string
+}
+
+func (q *Queries) ListStreamingMessages(ctx context.Context, arg ListStreamingMessagesParams) ([]Message, error) {
+	rows, err := q.db.QueryContext(ctx, listStreamingMessages, arg.RoomID, arg.AuthorAgentID, arg.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Message
+	for rows.Next() {
+		var i Message
+		if err := rows.Scan(
+			&i.ID,
+			&i.RoomID,
+			&i.AuthorHumanID,
+			&i.AuthorAgentID,
+			&i.ReplyToID,
+			&i.Body,
+			&i.CreatedAt,
+			&i.FinalizedAt,
+			&i.ClientID,
+			&i.EditedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -174,16 +257,17 @@ func (q *Queries) ListNewestMessages(ctx context.Context, arg ListNewestMessages
 }
 
 const setMessageBody = `-- name: SetMessageBody :execrows
-UPDATE messages SET body = ? WHERE id = ?
+UPDATE messages SET body = ?, edited_at = ? WHERE id = ?
 `
 
 type SetMessageBodyParams struct {
-	Body string
-	ID   string
+	Body     string
+	EditedAt sql.NullInt64
+	ID       string
 }
 
 func (q *Queries) SetMessageBody(ctx context.Context, arg SetMessageBodyParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, setMessageBody, arg.Body, arg.ID)
+	result, err := q.db.ExecContext(ctx, setMessageBody, arg.Body, arg.EditedAt, arg.ID)
 	if err != nil {
 		return 0, err
 	}

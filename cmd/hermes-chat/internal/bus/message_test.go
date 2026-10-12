@@ -233,3 +233,127 @@ func TestPostMessage_IDsFollowCommitOrder(t *testing.T) {
 		assert.Greater(t, events[i].SubjectID, events[i-1].SubjectID, "event %d", events[i].ID)
 	}
 }
+
+func TestPostMessageOnce_RepeatReturnsTheFirst(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	first, created, err := w.s.PostMessageOnce(ctx, w.kai, room.ID, "k1", "hello", ulid.Zero)
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.Equal(t, "k1", first.ClientID)
+	before := w.kinds(t, w.kai)
+
+	again, created, err := w.s.PostMessageOnce(ctx, w.kai, room.ID, "k1", "something else", ulid.Zero)
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, first.ID, again.ID)
+	assert.Equal(t, "hello", again.Text) // the first request wins
+	assert.Equal(t, "k1", again.ClientID)
+	assert.Equal(t, before, w.kinds(t, w.kai)) // no second event
+	msgs, err := w.s.ListMessages(ctx, w.kai, room.ID, ulid.Zero, 0)
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	assert.Len(t, msgs[0].Deliveries, 1)
+}
+
+func TestPostMessageOnce_NoKeyPostsEveryTime(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	a, created, err := w.s.PostMessageOnce(ctx, w.kai, room.ID, "", "hello", ulid.Zero)
+	require.NoError(t, err)
+	assert.True(t, created)
+	b, created, err := w.s.PostMessageOnce(ctx, w.kai, room.ID, "", "hello", ulid.Zero)
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.NotEqual(t, a.ID, b.ID)
+	assert.Equal(t, "", a.ClientID)
+	assert.Equal(t, "", b.ClientID)
+}
+
+func TestPostMessageOnce_KeyIsPerHumanAndPerRoom(t *testing.T) {
+	w := newWorld(t)
+	room := shared(t, w)
+	other, err := w.s.CreateRoom(ctx, w.kai, "Other", ids(w.scout))
+	require.NoError(t, err)
+	seen := map[ulid.ULID]bool{}
+	for _, post := range []struct {
+		who  bus.Actor
+		room ulid.ULID
+	}{{w.kai, room.ID}, {w.ada, room.ID}, {w.kai, other.ID}} {
+		m, created, err := w.s.PostMessageOnce(ctx, post.who, post.room, "k1", "hello", ulid.Zero)
+		require.NoError(t, err)
+		assert.True(t, created)
+		seen[m.ID] = true
+	}
+	assert.Len(t, seen, 3)
+}
+
+func TestPostMessageOnce_RepeatSurvivesArchiving(t *testing.T) { // Review Focus 1
+	w := newWorld(t)
+	room := shared(t, w)
+	first, _, err := w.s.PostMessageOnce(ctx, w.kai, room.ID, "k1", "hello", ulid.Zero)
+	require.NoError(t, err)
+	archived := true
+	_, err = w.s.UpdateRoom(ctx, w.kai, room.ID, bus.RoomUpdate{Archived: &archived})
+	require.NoError(t, err)
+
+	again, created, err := w.s.PostMessageOnce(ctx, w.kai, room.ID, "k1", "hello", ulid.Zero)
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, first.ID, again.ID)
+	_, _, err = w.s.PostMessageOnce(ctx, w.kai, room.ID, "k2", "hello", ulid.Zero)
+	assert.ErrorIs(t, err, bus.ErrRoomArchived)
+}
+
+func TestPostMessageOnce_RepeatByANonMemberIsNotFound(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w) // kai's; ada is not in it
+	_, _, err := w.s.PostMessageOnce(ctx, w.kai, room.ID, "k1", "hello", ulid.Zero)
+	require.NoError(t, err)
+	_, _, err = w.s.PostMessageOnce(ctx, w.ada, room.ID, "k1", "hello", ulid.Zero)
+	assert.ErrorIs(t, err, bus.ErrNotFound)
+}
+
+func TestPostMessageOnce_Validation(t *testing.T) { // Review Focus 4
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	for _, bad := range []string{strings.Repeat("a", bus.MaxClientIDBytes+1), "a b", "a/b", "é", " k1"} {
+		_, _, err := w.s.PostMessageOnce(ctx, w.kai, room.ID, bad, "hello", ulid.Zero)
+		var ve bus.ValidationError
+		require.ErrorAs(t, err, &ve, "%q", bad)
+		assert.Equal(t, `client_id must be at most 64 characters: letters, digits, "-" or "_"`, ve.Message)
+	}
+	msgs, err := w.s.ListMessages(ctx, w.kai, room.ID, ulid.Zero, 0)
+	require.NoError(t, err)
+	assert.Empty(t, msgs)
+	for _, good := range []string{strings.Repeat("a", bus.MaxClientIDBytes), "01JA-x_9"} {
+		_, created, err := w.s.PostMessageOnce(ctx, w.kai, room.ID, good, "hello", ulid.Zero)
+		require.NoError(t, err, "%q", good)
+		assert.True(t, created)
+	}
+}
+
+func TestPostMessageOnce_AgentIsForbidden(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	_, _, err := w.s.PostMessageOnce(ctx, agentActor(w.scout), room.ID, "k1", "hello", ulid.Zero)
+	assert.ErrorIs(t, err, bus.ErrForbidden)
+}
+
+func TestPostMessageOnce_RepeatDoesNotResetTheTurnCount(t *testing.T) {
+	w := newWorld(t)
+	room, _, _ := connectedChannel(t, w)
+	_, _, err := w.s.PostMessageOnce(ctx, w.kai, room.ID, "k1", "carry on", ulid.Zero) // wakes nobody; the count starts at 0
+	require.NoError(t, err)
+	for i := 0; i < bus.DefaultTurnCap; i++ {
+		require.Equal(t, bus.DeliveryDelivered, ping(t, w, room, w.scout, w.atlas).Deliveries[0].State, "turn %d", i+1)
+	}
+	_, created, err := w.s.PostMessageOnce(ctx, w.kai, room.ID, "k1", "carry on", ulid.Zero)
+	require.NoError(t, err)
+	require.False(t, created)
+
+	ping(t, w, room, w.scout, w.atlas) // one over the cap, had the repeat not reset the count
+	got, err := w.s.GetRoom(ctx, w.kai, room.ID)
+	require.NoError(t, err)
+	assert.Equal(t, bus.PauseTurnCap, got.PauseReason)
+}

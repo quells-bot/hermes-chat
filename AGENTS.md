@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Hermes Chat is a chat server: a single Go binary exposing a JSON/HTTP API with an SSE event stream, backed by SQLite. Humans authenticate with sessions (argon2id passwords); agents authenticate with bearer tokens. The product is documented in `docs/openapi.yaml` (routes, bodies, error codes, JSON shapes), `README.md` (behavior, env vars, limits), and the specs under `docs/superpowers/specs/`; stages 1–7 of the architecture plan are implemented.
+Hermes Chat is a chat server: a single Go binary exposing a JSON/HTTP API with an SSE event stream, backed by SQLite. Humans authenticate with sessions (argon2id passwords); agents authenticate with bearer tokens. The product is documented in `docs/openapi.yaml` (routes, bodies, error codes, JSON shapes), `README.md` (behavior, env vars, limits), and the specs under `docs/superpowers/specs/`; stages 1–8 of the architecture plan are implemented.
 
 ## Architecture & Data Flow
 
@@ -63,6 +63,8 @@ Locally: `go run ./cmd/hermes-chat serve` (requires `HERMES_CHAT_DB_PATH`; migra
 - **Concurrency**: single write connection (`_txlock=immediate`); the Hub is a doorbell — ring buffered channels, one indexed poll per ring, batch 100; subscriptions accept humans and agents.
 - **Logging**: one JSON line per request via `app/middleware.go` (RequestID + RequestLogger); `reqid` threads through slog.
 - **The off switch** is one gate: `releaseHead` (`bus/delivery.go`) re-reads the room and the halt inside the transaction and releases nothing while `paused()` is true, and agent writes check the same function. Closing a room also expires its open prompts (`expireOpenPrompts`), and a prompt, a note suggestion, and an upload are agent writes that check `paused()`. A new way to deliver to or accept content from an agent must go through one of the two.
+- **Retries**: a human post or steer may carry `client_id`; the lookup (`repeatedPost` in `bus/message.go`) runs inside the write transaction, after the membership check and before every other check, and a hit returns the stored message and writes nothing. A new human write that creates a message goes through the same lookup.
+- **Streams end with their turn**: `turnReport` finalizes what the agent was still streaming in the room (`closeStreams` in `bus/turn.go`) on `done` and `failed`, so `streaming` on a message cannot stay true after its turn.
 - **Migrations**: next numbered file in `migrations/`, `-- +goose Up`/`-- +goose Down`, every table `STRICT`. After adding one: `just generate`.
 - **Queries**: add named queries under `storage/queries/*.sql`, then `just generate`; call them only from `storage`, wrapped as `Repository` methods.
 

@@ -14,6 +14,8 @@ type Message struct {
 	Body                         string
 	CreatedAtMs                  int64  // Unix milliseconds, UTC
 	FinalizedAtMs                *int64 // set once an agent's final edit landed; nil otherwise
+	ClientID                     *string // the key the human's post carried; nil when it carried none
+	EditedAtMs                   *int64  // when an agent's last non-final edit was stored; nil until one is
 }
 
 func messageFromRow(row sqlcgen.Message) Message {
@@ -22,10 +24,15 @@ func messageFromRow(row sqlcgen.Message) Message {
 		AuthorHumanID: stringPtr(row.AuthorHumanID), AuthorAgentID: stringPtr(row.AuthorAgentID),
 		ReplyToID: stringPtr(row.ReplyToID),
 		Body:      row.Body, CreatedAtMs: row.CreatedAt,
+		ClientID:  stringPtr(row.ClientID),
 	}
 	if row.FinalizedAt.Valid {
 		v := row.FinalizedAt.Int64
 		m.FinalizedAtMs = &v
+	}
+	if row.EditedAt.Valid {
+		v := row.EditedAt.Int64
+		m.EditedAtMs = &v
 	}
 	return m
 }
@@ -36,6 +43,7 @@ func (r *repo) PutMessage(ctx context.Context, m Message) error {
 		AuthorHumanID: nullString(m.AuthorHumanID), AuthorAgentID: nullString(m.AuthorAgentID),
 		ReplyToID: nullString(m.ReplyToID),
 		Body:      m.Body, CreatedAt: m.CreatedAtMs,
+		ClientID:  nullString(m.ClientID),
 	}))
 }
 
@@ -45,6 +53,30 @@ func (r *repo) GetMessage(ctx context.Context, id string) (Message, error) {
 		return Message{}, mapErr(err)
 	}
 	return messageFromRow(row), nil
+}
+
+func (r *repo) GetMessageByClientID(ctx context.Context, roomID, humanID, clientID string) (Message, error) {
+	row, err := r.reads.GetMessageByClientID(ctx, sqlcgen.GetMessageByClientIDParams{
+		RoomID: roomID, AuthorHumanID: nullString(&humanID), ClientID: nullString(&clientID),
+	})
+	if err != nil {
+		return Message{}, mapErr(err)
+	}
+	return messageFromRow(row), nil
+}
+
+func (r *repo) ListStreamingMessages(ctx context.Context, roomID, agentID, afterID string) ([]Message, error) {
+	rows, err := r.reads.ListStreamingMessages(ctx, sqlcgen.ListStreamingMessagesParams{
+		RoomID: roomID, AuthorAgentID: nullString(&agentID), ID: afterID,
+	})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := make([]Message, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, messageFromRow(row))
+	}
+	return out, nil
 }
 
 func (r *repo) ListMessages(ctx context.Context, roomID, beforeID string, limit int64) ([]Message, error) {
@@ -73,8 +105,8 @@ func (r *repo) GetLastMessageID(ctx context.Context, roomID string) (string, err
 	return id, nil
 }
 
-func (r *repo) SetMessageBody(ctx context.Context, id, body string) error {
-	return requireRow(r.writes.SetMessageBody(ctx, sqlcgen.SetMessageBodyParams{Body: body, ID: id}))
+func (r *repo) SetMessageBody(ctx context.Context, id, body string, editedAtMs int64) error {
+	return requireRow(r.writes.SetMessageBody(ctx, sqlcgen.SetMessageBodyParams{Body: body, EditedAt: nullInt64(&editedAtMs), ID: id}))
 }
 
 func (r *repo) FinalizeMessage(ctx context.Context, id, body string, finalizedAtMs int64) error {
