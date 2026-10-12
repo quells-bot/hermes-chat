@@ -13,7 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const I = "github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal"
+const (
+	I = "github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal"
+	S = "github.com/quells-bot/hermes-chat/internal" // shared leaves; no rules apply to them
+)
 
 func TestCheckLayering_Violations(t *testing.T) {
 	cases := []pkgImports{
@@ -25,8 +28,6 @@ func TestCheckLayering_Violations(t *testing.T) {
 		{I + "/bus", []string{I + "/storage/sqlcgen"}},
 		{I + "/storage", []string{I + "/bus"}},
 		{I + "/storage/storagetest", []string{I + "/app"}},
-		{I + "/reqid", []string{I + "/bus"}},
-		{I + "/sse", []string{I + "/bus"}},
 		{I + "/bus", []string{I + "/storage/storagetest"}},
 		{I + "/cli", []string{I + "/storage/storagetest"}},
 		{"github.com/quells-bot/hermes-chat/cmd/hermes-chat", []string{I + "/storage/storagetest"}},
@@ -39,9 +40,9 @@ func TestCheckLayering_Violations(t *testing.T) {
 
 func TestCheckLayering_Allowed(t *testing.T) {
 	ok := []pkgImports{
-		{I + "/app", []string{I + "/bus", I + "/reqid", "github.com/gin-gonic/gin", "net/http", I + "/sse"}},
-		{I + "/bus", []string{I + "/storage", I + "/reqid"}},
-		{I + "/storage", []string{I + "/storage/sqlcgen", I + "/reqid"}},
+		{I + "/app", []string{I + "/bus", S + "/reqid", "github.com/gin-gonic/gin", "net/http", S + "/sse"}},
+		{I + "/bus", []string{I + "/storage", S + "/reqid"}},
+		{I + "/storage", []string{I + "/storage/sqlcgen", S + "/reqid"}},
 		{I + "/cli", []string{I + "/bus", I + "/storage"}},
 		{"github.com/quells-bot/hermes-chat/cmd/hermes-chat", []string{I + "/app", I + "/bus", I + "/storage"}},
 	}

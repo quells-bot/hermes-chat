@@ -27,7 +27,8 @@ not needed.
 - `just test`: run `go test ./...`.
 - `just build [goos] [goarch]`: build `bin/hermes-chat-<goos>-<goarch>` with
   `CGO_ENABLED=0`. Defaults to linux amd64.
-- `just check`: `check-generated`, `vet`, and `test`.
+- `just lint-scripts`: run `shellcheck` on `deploy/hermes-chat-upgrade` and `deploy/hermes-chat-admin`.
+- `just check`: `check-generated`, `vet`, `lint-scripts`, and `test`.
 
 ## Configuration
 
@@ -43,6 +44,11 @@ Set through environment variables. Only variables with the `HERMES_CHAT_` prefix
 | `HERMES_CHAT_COOKIE_SECURE` | `true` | The `Secure` attribute on the session cookie. Set `false` only for plain HTTP on a development machine. |
 | `HERMES_CHAT_TRUSTED_PROXIES` | empty | Comma-separated IPs or CIDRs whose `X-Forwarded-For` is believed. Needed only behind a reverse proxy; empty trusts none, so the client IP is the TCP peer. Checked when `serve` starts. |
 | `HERMES_CHAT_ATTACHMENTS_DIR` | `attachments` beside the database file | Where attachment bodies are stored. Created `0700` when `serve` starts. |
+| `HERMES_CHAT_TLS_MODE` | `autocert` | `autocert` or `off`; checked when `serve` starts. The default makes a host that forgets the setting fail instead of serving plain HTTP. |
+| `HERMES_CHAT_TLS_DOMAIN` | none | The one name certificates are issued for. Required when the mode is `autocert`, ignored when `off`. A lower-case DNS name with at least one dot: no scheme, port, path, wildcard, or IP address. |
+| `HERMES_CHAT_TLS_CACHE_DIR` | `certs` beside the database file | Where issued certificates and the account key are cached. |
+
+A development machine running `serve` on plain HTTP sets `HERMES_CHAT_TLS_MODE=off` and `HERMES_CHAT_COOKIE_SECURE=false`. A production environment file sets `HERMES_CHAT_HTTP_ADDR=:443`.
 
 Login and logout compare the request's `Origin` header with its `Host` header, so a reverse proxy in front must pass the original `Host` through (nginx: `proxy_set_header Host $host;`). Otherwise every login returns 403.
 
@@ -70,11 +76,20 @@ print the token once; it cannot be shown again.
 
 A human created before passwords existed needs `user passwd` before logging in.
 
+## Deploying
+
+`docs/deploy.md` is the runbook for a Debian 13 host: preparing it, the first start with a Let's Encrypt certificate, creating people and agents, upgrading, and rolling back. The files it installs are under `deploy/`:
+
+- `hermes-chat.service`: the systemd unit.
+- `hermes-chat.env.example`: the environment file, installed as `/etc/hermes-chat/env`.
+- `hermes-chat-upgrade`: installs a new binary on the host, with a database copy and automatic rollback.
+- `hermes-chat-admin`: runs `hermes-chat user ...` and `agent ...` as the service user with the service's environment.
+
 ## HTTP API
 
 | Route | Auth | Purpose |
 |---|---|---|
-| `GET /healthz` | none | Reports whether storage is reachable. |
+| `GET /healthz` | none | Reports whether storage is reachable. `HEAD` gets the same status with no body. |
 | `POST /api/login` | none, same-origin | Body `{"username":"…","password":"…"}`. Replies `{"id":"…","username":"…"}` and sets the `hermes_session` cookie (90 days, `HttpOnly`, `SameSite=Lax`, `Secure` unless configured off). |
 | `POST /api/logout` | session cookie, same-origin | Ends the session and clears the cookie. Replies 204. |
 | `GET /api/me` | session cookie | Replies `{"id":"…","username":"…"}`. |
@@ -485,8 +500,9 @@ an agent gets 403. Downloads support byte ranges.
   query. That is fine for two humans and a few tabs.
 - The event log is never pruned, and a client that reconnects with a very old
   cursor is sent everything since.
-- Over plain HTTP/1.1 a browser allows six streams per origin. Stage 7
-  checks HTTP/2.
+- Over plain HTTP/1.1 a browser allows six streams per origin. TLS mode
+  `autocert` negotiates HTTP/2, so the limit applies only to TLS mode `off`
+  without an HTTP/2 proxy in front.
 - A turn that never reports `done` or `failed` holds its agent's queue in that
   room forever, by design; `stop` exists for the human, and the plugin reports
   the stop as a finished turn.
@@ -535,6 +551,20 @@ For example, `00001_humans.sql`:
 ## Layering
 
 Code under `cmd/hermes-chat/internal` is layered `app` to `bus` to `storage`:
-each layer may import only the one below it, and `reqid` and `sse` are leaves that
-import none of them. Only `storage` may import its generated `sqlcgen` package;
-`TestLayering_ThisRepository` checks this against the real import graph.
+each layer may import only the one below it. Only `storage` may import its
+generated `sqlcgen` package; `TestLayering_ThisRepository` checks this against
+the real import graph.
+
+The repository-root `internal/` holds packages that are not tied to the server:
+`reqid`, `sse`, and `fakeagent`. They import none of the layers, by convention.
+
+## Fake agent
+
+`cmd/fakeagent` connects to a server as one agent, for trying it by hand:
+
+    FAKEAGENT_URL=https://chat.example.com FAKEAGENT_TOKEN=hca_… go run ./cmd/fakeagent
+
+It prints each event as a JSON line on standard output, answers every
+`delivery` with `echo: <text>` (working, reply, done), and reopens a dropped
+stream from its cursor, logging how long the stream stayed open. Status goes to
+standard error. It is not the Hermes plugin.

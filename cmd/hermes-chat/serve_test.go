@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/cli"
-	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/sse"
+	"github.com/quells-bot/hermes-chat/internal/sse"
 )
 
 // startServe runs serve on two 127.0.0.1:0 listeners and returns their base URLs,
@@ -100,6 +100,18 @@ func TestServe_EndToEnd(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("serve did not return after cancel")
 	}
+}
+
+// Uptime monitors and curl -I probe with HEAD.
+func TestServe_HealthzAnswersHEAD(t *testing.T) {
+	api, _, _, _ := startServe(t)
+	resp, err := http.Head(api + "/healthz")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Empty(t, body)
 }
 
 func TestServe_AddressInUse(t *testing.T) {

@@ -18,7 +18,7 @@ import (
 
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/app"
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/bus"
-	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/reqid"
+	"github.com/quells-bot/hermes-chat/internal/reqid"
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/storage/storagetest"
 )
 

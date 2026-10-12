@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# Install a new hermes-chat binary on this host: check it, stop the service,
+# copy the database aside, swap the binary, start, and roll back if the new
+# version does not answer its health check.
+set -euo pipefail
+
+ENV_FILE="${HERMES_CHAT_ENV_FILE:-/etc/hermes-chat/env}"
+BIN="${HERMES_CHAT_BIN:-/usr/local/bin/hermes-chat}"
+UNIT="${HERMES_CHAT_UNIT:-hermes-chat}"
+TIMEOUT="${HERMES_CHAT_HEALTH_TIMEOUT:-60}" # seconds
+
+die() {
+	echo "$1" >&2
+	exit 1
+}
+
+if [ "$#" -ne 1 ]; then
+	echo "usage: hermes-chat-upgrade CANDIDATE" >&2
+	exit 2
+fi
+candidate="$1"
+
+# The tools this script cannot work without.
+for tool in curl systemctl; do
+	command -v "$tool" >/dev/null 2>&1 || die "$tool not found on PATH"
+done
+# A bare name would be looked up on PATH to run but taken from the working
+# directory to copy; make it unambiguous.
+case "$candidate" in
+*/*) ;;
+*) candidate="./$candidate" ;;
+esac
+
+# 2. The candidate must run here and behave like hermes-chat with no arguments.
+rc=0
+cand_err="$("$candidate" 2>&1 >/dev/null)" || rc=$?
+first_line="$(printf '%s\n' "$cand_err" | head -n 1)"
+if [ "$rc" -ne 2 ] || [ "$first_line" != "usage: hermes-chat <command>" ]; then
+	die "candidate does not run on this host"
+fi
+
+# 3. Settings from the environment file, read without sourcing: last NAME= wins.
+[ -f "$ENV_FILE" ] || die "environment file $ENV_FILE not found"
+env_get() {
+	local line
+	line="$(grep "^$1=" "$ENV_FILE" | tail -n 1 || true)"
+	printf '%s' "${line#"$1="}"
+}
+db_path="$(env_get HERMES_CHAT_DB_PATH)"
+case "$db_path" in
+/*) ;;
+*) die "HERMES_CHAT_DB_PATH in $ENV_FILE must be set to an absolute path" ;;
+esac
+tls_mode="$(env_get HERMES_CHAT_TLS_MODE)"
+tls_mode="${tls_mode:-autocert}"
+tls_domain="$(env_get HERMES_CHAT_TLS_DOMAIN)"
+http_addr="$(env_get HERMES_CHAT_HTTP_ADDR)"
+http_addr="${http_addr:-:8080}"
+port="${http_addr##*:}"
+if [ "$tls_mode" = "autocert" ]; then
+	[ -n "$tls_domain" ] || die "HERMES_CHAT_TLS_DOMAIN is not set in $ENV_FILE"
+	health_url="https://$tls_domain:$port/healthz"
+else
+	health_url="http://127.0.0.1:$port/healthz"
+fi
+
+case "$TIMEOUT" in
+"" | *[!0-9]*) die "HERMES_CHAT_HEALTH_TIMEOUT must be a positive integer" ;;
+esac
+[ "$TIMEOUT" -gt 0 ] || die "HERMES_CHAT_HEALTH_TIMEOUT must be a positive integer"
+
+# phase records how far the upgrade got, so the exit trap can undo exactly that:
+#   none -> stopped -> swapping -> started -> finished
+phase=none
+backup_dir=""
+had_bin=0
+moved_previous=0
+db_dir="$(dirname "$db_path")"
+db_name="$(basename "$db_path")"
+
+# start_unit clears a start limit left by a crash loop (reset-failed may find
+# nothing to reset, which is fine), then starts the unit.
+start_unit() {
+	systemctl reset-failed "$UNIT" 2>/dev/null || true
+	systemctl start "$UNIT"
+}
+
+# recover puts the host back as it was before the upgrade, as far as it got,
+# and prints one line saying what state it is in. It never fails. If a file
+# could not be put back it says so and starts nothing.
+recover() {
+	local reason="$1" at="$phase" suffix result started=0 restore_failed=0
+	# Recovery must run to completion: ignore further signals from here on.
+	trap - EXIT
+	trap '' HUP INT TERM
+	phase=finished
+	set +e
+	rm -f "$BIN.new"
+	case "$at" in
+	stopped) ;;
+	*)
+		systemctl stop "$UNIT" || true
+		if [ "$moved_previous" -eq 1 ]; then
+			mv -f "$BIN.previous" "$BIN" || restore_failed=1
+		fi
+		if [ "$at" = "started" ] && [ -n "$backup_dir" ]; then
+			for suffix in "" "-wal" "-shm"; do
+				if [ -f "$backup_dir/$db_name$suffix" ]; then
+					cp -p "$backup_dir/$db_name$suffix" "$db_dir/$db_name$suffix" || restore_failed=1
+				else
+					rm -f "$db_dir/$db_name$suffix" || restore_failed=1
+				fi
+			done
+		fi
+		;;
+	esac
+	if [ "$restore_failed" -eq 1 ]; then
+		echo "$reason; could not restore the previous version: check $BIN.previous and ${backup_dir:-$db_dir/backups}" >&2
+		return
+	fi
+	if [ "$had_bin" -eq 1 ]; then
+		if start_unit && systemctl is-active --quiet "$UNIT"; then
+			started=1
+		fi
+		result="rolled back to the previous version"
+		if [ "$started" -eq 0 ]; then
+			result="$result, but it did not start: check systemctl status $UNIT"
+		fi
+	else
+		result="nothing to roll back to"
+	fi
+	if [ "$at" = "stopped" ] && [ "$had_bin" -eq 1 ]; then
+		if [ "$started" -eq 1 ]; then
+			result="restarted the previous version"
+		else
+			result="the previous version did not start: check systemctl status $UNIT"
+		fi
+	fi
+	echo "$reason; $result" >&2
+}
+
+# shellcheck disable=SC2329 # invoked through the EXIT trap
+on_exit() {
+	local rc=$?
+	if [ "$phase" != none ] && [ "$phase" != finished ]; then
+		recover "upgrade failed"
+	fi
+	exit "$rc"
+}
+trap on_exit EXIT
+trap 'exit 1' HUP INT TERM
+
+# 4. Stop the service.
+if [ -f "$BIN" ]; then
+	had_bin=1
+fi
+phase=stopped
+systemctl stop "$UNIT"
+
+# 5. Copy the database aside.
+if [ -f "$db_path" ]; then
+	stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+	backup_dir="$db_dir/backups/$stamp"
+	mkdir -p "$backup_dir"
+	for f in "$db_path" "$db_path-wal" "$db_path-shm"; do
+		if [ -f "$f" ]; then
+			cp -p "$f" "$backup_dir/"
+		fi
+	done
+fi
+
+# 6. Swap the binary, keeping the old one.
+mkdir -p "$(dirname "$BIN")"
+cp "$candidate" "$BIN.new"
+chmod 0755 "$BIN.new"
+phase=swapping
+if [ "$had_bin" -eq 1 ]; then
+	mv -f "$BIN" "$BIN.previous"
+	moved_previous=1
+fi
+mv -f "$BIN.new" "$BIN"
+
+# check_health asks the new version for /healthz once, keeping curl's complaint.
+check_health() {
+	if [ "$tls_mode" = "autocert" ]; then
+		curl_err="$(curl -fsS -o /dev/null --max-time 5 --resolve "$tls_domain:$port:127.0.0.1" "$health_url" 2>&1)"
+	else
+		curl_err="$(curl -fsS -o /dev/null --max-time 5 "$health_url" 2>&1)"
+	fi
+}
+
+# 7. Start and wait for the health check, for TIMEOUT seconds on the clock or
+# until the unit has given up restarting (its start limit).
+phase=started
+healthy=0
+curl_err=""
+began=$SECONDS
+if start_unit; then
+	while :; do
+		if check_health; then
+			healthy=1
+			break
+		fi
+		if systemctl is-failed --quiet "$UNIT"; then
+			break
+		fi
+		[ "$((SECONDS - began))" -lt "$TIMEOUT" ] || break
+		sleep 1
+	done
+fi
+
+# 9. Not healthy (or did not start): say why, undo, and report.
+if [ "$healthy" -ne 1 ]; then
+	if [ -n "$curl_err" ]; then
+		echo "last health check error: $curl_err" >&2
+	fi
+	recover "new version failed its health check"
+	exit 1
+fi
+
+# 8. Healthy.
+phase=finished
+trap - EXIT HUP INT TERM
+if [ "$moved_previous" -eq 1 ]; then
+	echo "upgraded; previous binary kept at $BIN.previous"
+else
+	echo "installed"
+fi
+
+# Prune old backups only now that the service is up; a failure here is harmless.
+set +e
+stamps=""
+for d in "$db_dir"/backups/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z; do
+	if [ -d "$d" ]; then
+		stamps="$stamps$d"$'\n'
+	fi
+done
+old="$(printf '%s' "$stamps" | sort -r | tail -n +6)"
+if [ -n "$old" ]; then
+	printf '%s\n' "$old" | while IFS= read -r d; do
+		rm -rf "${d:?}"
+	done
+fi
+exit 0

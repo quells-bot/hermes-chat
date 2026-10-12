@@ -260,6 +260,40 @@ stands.
 ### 6.6 Small extras *(Claude's calls)*
 
 An unauthenticated `GET /healthz` that returns 200 once the database answers.
+`HEAD /healthz` gets the same status with no body.
+
+### 6.7 Deploy
+
+The target is one Debian 13 host, run under systemd. The runbook is
+`docs/deploy.md`.
+
+- **Layout** *(Claude's call, accepted by Kai)*. Binary
+  `/usr/local/bin/hermes-chat`, the previous one beside it as
+  `hermes-chat.previous`, environment file `/etc/hermes-chat/env`, state in
+  `/var/lib/hermes-chat` (`chat.db`, `attachments/`, `certs/`, `backups/`),
+  system user and group `hermes-chat`, unit `hermes-chat.service`, and the
+  scripts `/usr/local/sbin/hermes-chat-upgrade` and
+  `/usr/local/sbin/hermes-chat-admin`.
+- **No deploy command** *(Kai)*. There is no `just deploy`. The operator builds,
+  copies the binary with `scp`, and runs `hermes-chat-upgrade` on the host.
+- **The repository names no instance** *(Kai)*. Committed files use
+  `chat.example.com` and `203.0.113.10`.
+- **Upgrade.** `serve` applies migrations at start, so an upgrade is: check the
+  candidate, stop the unit, copy the database aside, swap the binary, start,
+  and wait for `/healthz`. A failed health check restores the old binary and
+  the database as it was. The newest five database copies are kept.
+- **Restart policy** *(Claude's call)*. The unit restarts the server when it
+  fails (`Restart=on-failure`, `RestartSec=2`) and gives up after five failed
+  starts in a minute (`StartLimitIntervalSec=60`, `StartLimitBurst=5`), which
+  leaves the unit failed instead of restarting for ever. `hermes-chat-upgrade`
+  clears that limit (`systemctl reset-failed`) before each start, and stops
+  waiting for `/healthz` as soon as the unit has given up.
+- **TLS.** autocert answers the TLS-ALPN challenge on 443. There is no port-80
+  listener and no redirect (section 6.4).
+- **Host firewall.** ufw allows 22 and 443 and nothing else; turning it on is a
+  step in the runbook.
+- **Backups.** Scheduled off-host backups are out of scope for stage 7. The
+  runbook says what to copy by hand.
 
 ## 7. Storage
 
@@ -403,7 +437,10 @@ produced. This is cheap because the bottom is SQLite.
 - `app` tests build repository → service → controller → gin engine and drive
   it with `httptest`.
 - End-to-end tests in `cmd/hermes-chat` use the fake agent client from the
-  product spec.
+  product spec. *(Kai, 2026-10-12)* The client, `reqid`, and `sse` live in the
+  repository-root `internal/` because they are reusable, and `cmd/fakeagent`
+  wraps the client as a command. A comment, not the layering test, says the
+  server must not import the client.
 
 **testify** is allowed as a test-only dependency *(Kai)*.
 
@@ -482,7 +519,7 @@ and `wait -n`, among other things. Also avoid GNU-only flags to `sed`, `date`,
 ### To verify before relying on it
 
 A reviewer checked the first three on the development machine on 2026-10-11;
-the fourth is still open.
+the fourth was confirmed in stage 7.
 
 - `modernc.org/sqlite` accepts `_pragma` and `_txlock` in the connection
   string. Confirmed by reading the driver source (versions 1.38 to 1.55), not
@@ -491,9 +528,9 @@ the fourth is still open.
   migration files. Confirmed by generating code from a throwaway project.
 - gin's response writer works with `http.ResponseController`. Confirmed: gin
   1.11 and 1.12 define `Unwrap()` on it.
-- **Not checked:** that HTTP/2 is negotiated on the autocert listener when it
-  is passed to `http.Server.Serve` through grace. Without it, browsers cap SSE
-  streams at six per origin. Check this in the first task that stands up TLS.
+- HTTP/2 is negotiated on the autocert listener when it is passed to
+  `http.Server.Serve` through grace. Without it, browsers cap SSE streams at
+  six per origin. Confirmed in stage 7 by `TestServe_AutocertNegotiatesHTTP2`.
 
 ## 13. Edits to the product spec
 

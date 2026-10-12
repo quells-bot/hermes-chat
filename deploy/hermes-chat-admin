@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Run a hermes-chat admin command as the service user with the service's
+# environment, for example: hermes-chat-admin user add kai
+set -euo pipefail
+
+ENV_FILE="${HERMES_CHAT_ENV_FILE:-/etc/hermes-chat/env}"
+BIN="${HERMES_CHAT_BIN:-/usr/local/bin/hermes-chat}"
+SERVICE_USER="${HERMES_CHAT_USER:-hermes-chat}"
+
+if [ "$#" -eq 0 ]; then
+	echo "usage: hermes-chat-admin COMMAND [ARGS...]" >&2
+	echo "  hermes-chat-admin user add NAME" >&2
+	echo "  hermes-chat-admin agent add HANDLE NAME" >&2
+	echo "Runs hermes-chat COMMAND as $SERVICE_USER with the settings in $ENV_FILE." >&2
+	exit 2
+fi
+if [ "$1" = "serve" ]; then
+	echo "use systemctl to run the server" >&2
+	exit 2
+fi
+
+[ -f "$ENV_FILE" ] || {
+	echo "environment file $ENV_FILE not found" >&2
+	exit 1
+}
+
+# Export every HERMES_CHAT_* line without sourcing the file; the last one wins.
+while IFS= read -r line || [ -n "$line" ]; do
+	# shellcheck disable=SC2163 # the line is a NAME=value assignment to export
+	case "$line" in
+	HERMES_CHAT_*=*) export "$line" ;;
+	esac
+done <"$ENV_FILE"
+
+# Anything this command creates in the state directory is private to the service.
+umask 0077
+exec runuser -u "$SERVICE_USER" -- "$BIN" "$@"

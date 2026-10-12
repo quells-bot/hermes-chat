@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/app"
-	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/reqid"
+	"github.com/quells-bot/hermes-chat/internal/reqid"
 )
 
 func TestRequestID_HeaderGinAndGoContextAgree(t *testing.T) {

@@ -1,0 +1,44 @@
+[Unit]
+Description=Hermes Chat
+Documentation=https://github.com/quells-bot/hermes-chat
+After=network-online.target
+Wants=network-online.target
+# Give up after five failed starts in a minute; hermes-chat-upgrade clears the limit before it starts the unit.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=hermes-chat
+Group=hermes-chat
+EnvironmentFile=/etc/hermes-chat/env
+ExecStart=/usr/local/bin/hermes-chat serve
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+LimitNOFILE=65536
+
+StateDirectory=hermes-chat
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/hermes-chat
+UMask=0077
+
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

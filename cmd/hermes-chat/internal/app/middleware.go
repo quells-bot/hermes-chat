@@ -9,7 +9,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/bus"
-	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/reqid"
+	"github.com/quells-bot/hermes-chat/internal/reqid"
 )
 
 // RequestID generates a fresh ULID for every request, ignoring any inbound

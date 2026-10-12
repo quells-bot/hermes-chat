@@ -30,9 +30,13 @@ func serve(ctx context.Context, cfg Config, log *slog.Logger, ln listeners) erro
 	}
 	routes(e, w.App, log)
 
+	apiLn, err := apiListener(cfg, ln.api)
+	if err != nil {
+		return err
+	}
 	apiOpts := []httpserver.Option{httpserver.WithLogger(log), httpserver.WithLoggerLabel("api")}
-	if ln.api != nil {
-		apiOpts = append(apiOpts, httpserver.WithListener(ln.api))
+	if apiLn != nil {
+		apiOpts = append(apiOpts, httpserver.WithListener(apiLn))
 	}
 	debugOpts := []httpserver.Option{
 		httpserver.WithLogger(log), httpserver.WithLoggerLabel("debug"),

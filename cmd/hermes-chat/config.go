@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/kelseyhightower/envconfig"
 )
@@ -21,6 +22,10 @@ type Config struct {
 	CookieSecure   bool     `split_words:"true" default:"true"` // HERMES_CHAT_COOKIE_SECURE
 	TrustedProxies []string `split_words:"true"`                // HERMES_CHAT_TRUSTED_PROXIES, comma-separated IPs or CIDRs; empty trusts none
 	AttachmentsDir string   `split_words:"true"`                // HERMES_CHAT_ATTACHMENTS_DIR; "" means "attachments" beside the database file
+
+	TLSMode     string `split_words:"true" default:"autocert"` // HERMES_CHAT_TLS_MODE: autocert | off
+	TLSDomain   string `split_words:"true"`                    // HERMES_CHAT_TLS_DOMAIN; the one name certificates are issued for, required for autocert
+	TLSCacheDir string `split_words:"true"`                    // HERMES_CHAT_TLS_CACHE_DIR; "" means "certs" beside the database file
 }
 
 func loadConfig() (Config, error) {
@@ -53,6 +58,15 @@ func (c Config) validateForServe() error {
 			return fmt.Errorf("HERMES_CHAT_TRUSTED_PROXIES entry %q is neither an IP address nor a CIDR", p)
 		}
 	}
+	switch c.TLSMode {
+	case "autocert":
+		if err := checkTLSDomain(c.TLSDomain); err != nil {
+			return fmt.Errorf("HERMES_CHAT_TLS_DOMAIN %q: %w", c.TLSDomain, err)
+		}
+	case "off":
+	default:
+		return fmt.Errorf("HERMES_CHAT_TLS_MODE %q must be one of autocert, off", c.TLSMode)
+	}
 	return nil
 }
 
@@ -82,6 +96,40 @@ func (c Config) attachmentsDir() string {
 		return c.AttachmentsDir
 	}
 	return filepath.Join(filepath.Dir(c.DBPath), "attachments")
+}
+
+// tlsCacheDir returns where certificates are cached: the configured
+// directory, or one named certs beside the database file.
+func (c Config) tlsCacheDir() string {
+	if c.TLSCacheDir != "" {
+		return c.TLSCacheDir
+	}
+	return filepath.Join(filepath.Dir(c.DBPath), "certs")
+}
+
+// checkTLSDomain requires one lower-case DNS name with at least one dot: no
+// scheme, port, path, wildcard, whitespace, or IP address.
+func checkTLSDomain(d string) error {
+	if d == "" {
+		return fmt.Errorf("must be set when HERMES_CHAT_TLS_MODE is autocert")
+	}
+	if net.ParseIP(d) != nil {
+		return fmt.Errorf("must be a DNS name, not an IP address")
+	}
+	if !strings.Contains(d, ".") {
+		return fmt.Errorf("must contain at least one dot")
+	}
+	for _, label := range strings.Split(d, ".") {
+		if label == "" || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return fmt.Errorf("must be a DNS name")
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+				return fmt.Errorf("must be one lower-case DNS name, with no scheme, port, path, or wildcard")
+			}
+		}
+	}
+	return nil
 }
 
 // checkLoopback requires addr to name a loopback host, so pprof is never public.
