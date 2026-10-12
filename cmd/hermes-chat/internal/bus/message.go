@@ -33,6 +33,7 @@ type Message struct {
 	Author     *Author // nil when the human who wrote it has been removed
 	Text       string
 	ReplyToID  ulid.ULID // zero when not a reply
+	ReplyTo    *Message  // the message this one replies to, when any; set only on an agent delivery
 	CreatedAt  time.Time
 	Deliveries []Delivery // each agent's copy, in handle order; never nil after a load from storage
 }

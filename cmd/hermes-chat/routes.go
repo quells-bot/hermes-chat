@@ -39,4 +39,13 @@ func routes(e *gin.Engine, ctrl app.Controller, log *slog.Logger) {
 	// Agent API: bearer token.
 	agent := e.Group("/agent", ctrl.AgentAuth)
 	agent.GET("/me", ctrl.AgentMe)
+	agent.GET("/rooms", ctrl.AgentRooms)
+	agent.POST("/rooms/:room/messages", ctrl.AgentPostMessage)
+	agent.PUT("/messages/:message", ctrl.AgentEditMessage)
+	agent.POST("/deliveries/:message/working", ctrl.AgentTurnWorking)
+	agent.POST("/deliveries/:message/done", ctrl.AgentTurnDone)
+	agent.POST("/deliveries/:message/failed", ctrl.AgentTurnFailed)
+	agent.POST("/deliveries/:message/remarks", ctrl.AgentRemark)
+	agent.POST("/deliveries/:message/tools", ctrl.AgentStartTool)
+	agent.PUT("/activities/:activity", ctrl.AgentFinishTool)
 }

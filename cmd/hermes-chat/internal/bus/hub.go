@@ -315,6 +315,9 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 			return Event{}, false, err
 		}
 		e.Message = &msgs[0]
+		if err := loadReplyTo(ctx, r, e.Message); err != nil {
+			return Event{}, false, err
+		}
 		roomRow, err := r.GetRoom(ctx, row.RoomID)
 		if errors.Is(err, storage.ErrNotFound) {
 			return Event{}, false, nil
@@ -343,6 +346,27 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 		return Event{}, false, fmt.Errorf("unknown kind %q", row.Kind)
 	}
 	return e, true, nil
+}
+
+// loadReplyTo sets m.ReplyTo to the message m replies to, when it has one. A
+// reply-to that is gone (its message row was deleted) loads as nil.
+func loadReplyTo(ctx context.Context, r storage.Repository, m *Message) error {
+	if m.ReplyToID.IsZero() {
+		return nil
+	}
+	row, err := r.GetMessage(ctx, m.ReplyToID.String())
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get reply-to: %w", err)
+	}
+	msgs, err := messagesFromRows(ctx, r, []storage.Message{row})
+	if err != nil {
+		return err
+	}
+	m.ReplyTo = &msgs[0]
+	return nil
 }
 
 // trimContext keeps the newest messages whose text fits within textBytes,

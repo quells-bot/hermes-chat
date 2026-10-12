@@ -28,6 +28,8 @@ var errorTable = []errorRow{
 	{bus.ErrNotFound, http.StatusNotFound, "not_found", "not found"},
 	{bus.ErrConflict, http.StatusConflict, "conflict", "already exists"},
 	{bus.ErrRoomArchived, http.StatusConflict, "room_archived", "room is archived"},
+	{bus.ErrNoTurn, http.StatusConflict, "no_turn", "no turn is running"},
+	{bus.ErrNothingWaiting, http.StatusConflict, "nothing_waiting", "no waiting delivery for this message"},
 	{bus.ErrUnavailable, http.StatusServiceUnavailable, "unavailable", "shutting down; try again shortly"},
 	{bus.ErrThrottled, http.StatusTooManyRequests, "throttled", "too many attempts; try again later"},
 }

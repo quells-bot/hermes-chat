@@ -100,6 +100,26 @@ func TestCreateRoom(t *testing.T) {
 	assert.Equal(t, []string{"room.changed", "room.changed"}, w.kinds(t, w.kai))
 }
 
+// ListRooms is the actor's rooms for an agent too, without the human read marker.
+func TestListRooms_AgentView(t *testing.T) {
+	w := newWorld(t)
+	room, err := w.s.CreateRoom(ctx, w.kai, "Trip", ids(w.scout))
+	require.NoError(t, err)
+	dm, _, err := w.s.OpenDM(ctx, w.kai, w.atlas.ID)
+	require.NoError(t, err)
+
+	scout, err := w.s.ListRooms(ctx, bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID})
+	require.NoError(t, err)
+	require.Len(t, scout, 1)
+	assert.Equal(t, room.ID, scout[0].ID)
+	assert.Zero(t, scout[0].LastReadMessageID, "an agent sees no read marker")
+
+	atlas, err := w.s.ListRooms(ctx, bus.Actor{Kind: bus.ActorAgent, ID: w.atlas.ID})
+	require.NoError(t, err)
+	require.Len(t, atlas, 1)
+	assert.Equal(t, dm.ID, atlas[0].ID)
+}
+
 func TestCreateRoom_Validation(t *testing.T) {
 	w := newWorld(t)
 	for _, topic := range []string{"", "   ", "line\nbreak", strings.Repeat("é", 201)} {

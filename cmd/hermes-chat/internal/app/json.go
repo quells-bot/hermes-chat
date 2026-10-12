@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -50,6 +51,45 @@ type messageBody struct {
 	CreatedAt time.Time   `json:"created_at"`
 }
 
+type agentRoomBody struct {
+	ID     ulid.ULID   `json:"id"`
+	Flavor string      `json:"flavor"`
+	Topic  string      `json:"topic"`
+	Humans []humanBody `json:"humans"`
+}
+
+type agentAuthorBody struct {
+	Kind  bus.ActorKind `json:"kind"`
+	ID    ulid.ULID     `json:"id"`
+	Name  string        `json:"name"`
+	IsBot bool          `json:"is_bot"`
+}
+
+type agentMessageBody struct {
+	ID                ulid.ULID        `json:"id"`
+	RoomID            ulid.ULID        `json:"room_id"`
+	Author            *agentAuthorBody `json:"author"`
+	Text              string           `json:"text"`
+	ReplyToMessageID  *ulid.ULID       `json:"reply_to_message_id"`
+	ReplyToText       *string          `json:"reply_to_text"`
+	ReplyToAuthorName *string          `json:"reply_to_author_name"`
+	CreatedAt         time.Time        `json:"created_at"`
+}
+
+type activityBody struct {
+	ID         ulid.ULID        `json:"id"`
+	MessageID  ulid.ULID        `json:"message_id"`
+	Agent      agentBody        `json:"agent"`
+	Kind       bus.ActivityKind `json:"kind"`
+	Text       string           `json:"text"`
+	Tool       string           `json:"tool"`
+	Preview    string           `json:"preview"`
+	Arguments  string           `json:"arguments"`
+	DurationMs *int64           `json:"duration_ms"`
+	Succeeded  *bool            `json:"succeeded"`
+	CreatedAt  time.Time        `json:"created_at"`
+}
+
 // optionalID is nil for a zero ID, which JSON writes as null.
 func optionalID(id ulid.ULID) *ulid.ULID {
 	if id.IsZero() {
@@ -89,6 +129,51 @@ func messageJSON(m bus.Message) any {
 		out.Author = &authorBody{Kind: m.Author.Kind, ID: m.Author.ID, Name: m.Author.Name}
 	}
 	return out
+}
+
+// agentRoomJSON is the room as an agent sees it: members, flavor, and topic.
+// Its arrays are never null.
+func agentRoomJSON(r bus.Room) any {
+	out := agentRoomBody{ID: r.ID, Flavor: string(r.Flavor), Topic: r.Topic, Humans: make([]humanBody, 0, len(r.Humans))}
+	for _, h := range r.Humans {
+		out.Humans = append(out.Humans, humanJSON(h))
+	}
+	return out
+}
+
+// agentMessageJSON is the message an agent sees. is_bot is true exactly when the
+// author is an agent; the reply fields come from the replied-to message, and
+// the author is null once the human who wrote it was removed.
+func agentMessageJSON(m bus.Message) any {
+	out := agentMessageBody{
+		ID: m.ID, RoomID: m.RoomID, Text: m.Text, CreatedAt: m.CreatedAt,
+		ReplyToMessageID: optionalID(m.ReplyToID),
+	}
+	if m.Author != nil {
+		out.Author = &agentAuthorBody{Kind: m.Author.Kind, ID: m.Author.ID, Name: m.Author.Name, IsBot: m.Author.Kind == bus.ActorAgent}
+	}
+	if m.ReplyTo != nil {
+		text := m.ReplyTo.Text
+		out.ReplyToText = &text
+		if m.ReplyTo.Author != nil {
+			name := m.ReplyTo.Author.Name
+			out.ReplyToAuthorName = &name
+		}
+	}
+	return out
+}
+
+// activityJSON builds the activity body, resolving the agent that made it.
+func (h *controller) activityJSON(ctx context.Context, a bus.Activity) (any, error) {
+	agent, err := h.svc.GetAgent(ctx, a.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	return activityBody{
+		ID: a.ID, MessageID: a.MessageID, Agent: agentJSON(agent), Kind: a.Kind,
+		Text: a.Text, Tool: a.Tool, Preview: a.Preview, Arguments: a.Arguments,
+		DurationMs: a.DurationMs, Succeeded: a.Succeeded, CreatedAt: a.CreatedAt,
+	}, nil
 }
 
 // badRequest answers 400 bad_request with message and aborts.

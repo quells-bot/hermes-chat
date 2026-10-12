@@ -31,12 +31,12 @@ type Activity struct {
 	AgentID    ulid.ULID
 	MessageID  ulid.ULID // the delivered message whose turn this belongs to
 	Kind       ActivityKind
-	Text       string   // remark
-	Tool       string   // tool: name
-	Preview    string   // tool: short preview
-	Arguments  string   // tool: full arguments
-	DurationMs *int64   // tool: nil while running
-	Succeeded  *bool    // tool: nil while running
+	Text       string // remark
+	Tool       string // tool: name
+	Preview    string // tool: short preview
+	Arguments  string // tool: full arguments
+	DurationMs *int64 // tool: nil while running
+	Succeeded  *bool  // tool: nil while running
 	CreatedAt  time.Time
 }
 
@@ -216,12 +216,13 @@ func (s *service) TurnFailed(ctx context.Context, actor Actor, messageID ulid.UL
 }
 
 // ReportRemark records a short between-step update the agent made while
-// working on the delivered message.
-func (s *service) ReportRemark(ctx context.Context, actor Actor, messageID ulid.ULID, text string) error {
+// working on the delivered message, and returns the activity it created.
+func (s *service) ReportRemark(ctx context.Context, actor Actor, messageID ulid.ULID, text string) (Activity, error) {
 	if !validMessageText(text) {
-		return errRemarkText
+		return Activity{}, errRemarkText
 	}
 	at := s.now()
+	var created Activity
 	err := s.record(ctx, func(r storage.Repository) error {
 		d, err := requireTurnDelivery(ctx, r, actor.ID, messageID)
 		if err != nil {
@@ -238,12 +239,17 @@ func (s *service) ReportRemark(ctx context.Context, actor Actor, messageID ulid.
 		if err := putEvent(ctx, r, EventActivityPosted, d.RoomID, id.String(), at); err != nil {
 			return err
 		}
+		a, er := activityFromRow(act)
+		if er != nil {
+			return er
+		}
+		created = a
 		return nil
 	})
 	if err != nil {
-		return wrapOp("report remark", err)
+		return Activity{}, wrapOp("report remark", err)
 	}
-	return nil
+	return created, nil
 }
 
 // StartTool records a tool call the agent started while working on the

@@ -30,9 +30,9 @@ const (
 type Room struct {
 	ID                ulid.ULID
 	Flavor            RoomFlavor
-	Topic             string    // "" for a DM
-	CreatedAt         time.Time // UTC, millisecond precision
-	ArchivedAt        time.Time // zero while live
+	Topic             string      // "" for a DM
+	CreatedAt         time.Time   // UTC, millisecond precision
+	ArchivedAt        time.Time   // zero while live
 	Humans            []Human     // ordered by username
 	Agents            []RoomAgent // ordered by handle
 	LastMessageID     ulid.ULID   // zero when the room has no messages
@@ -320,23 +320,45 @@ func (s *service) OpenDM(ctx context.Context, actor Actor, agentID ulid.ULID) (R
 }
 
 // ListRooms returns the actor's rooms ordered by id, archived ones included.
+// A human sees read markers; an agent sees connection flags and no markers. A
+// kind that cannot be a room member is ErrForbidden.
 func (s *service) ListRooms(ctx context.Context, actor Actor) ([]Room, error) {
-	if actor.Kind != ActorHuman {
+	switch actor.Kind {
+	case ActorHuman:
+		rows, err := s.repo.ListRoomsByHuman(ctx, actor.ID.String())
+		if err != nil {
+			return nil, fmt.Errorf("list rooms: %w", err)
+		}
+		out := make([]Room, 0, len(rows))
+		for _, row := range rows {
+			room, err := s.loadRoom(ctx, s.repo, row, actor.ID)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, room)
+		}
+		return out, nil
+	case ActorAgent:
+		ids, err := s.repo.ListAgentRoomIDs(ctx, actor.ID.String())
+		if err != nil {
+			return nil, fmt.Errorf("list rooms: %w", err)
+		}
+		out := make([]Room, 0, len(ids))
+		for _, id := range ids {
+			row, err := s.repo.GetRoom(ctx, id)
+			if err != nil {
+				return nil, fmt.Errorf("get room: %w", err)
+			}
+			room, err := s.loadRoomForAgent(ctx, s.repo, row)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, room)
+		}
+		return out, nil
+	default:
 		return nil, ErrForbidden
 	}
-	rows, err := s.repo.ListRoomsByHuman(ctx, actor.ID.String())
-	if err != nil {
-		return nil, fmt.Errorf("list rooms: %w", err)
-	}
-	out := make([]Room, 0, len(rows))
-	for _, row := range rows {
-		room, err := s.loadRoom(ctx, s.repo, row, actor.ID)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, room)
-	}
-	return out, nil
 }
 
 // GetRoom returns a room the actor is a member of.

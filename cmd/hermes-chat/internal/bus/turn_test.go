@@ -46,7 +46,7 @@ func TestTurnReports_StateMachine(t *testing.T) {
 	post := func(text string) bus.Message {
 		m, err := w.s.PostMessage(ctx, w.kai, room.ID, text, ulid.Zero)
 		require.NoError(t, err)
-		drain(t, sub)   // the delivery event
+		drain(t, sub)      // the delivery event
 		drain(t, humanSub) // message.posted
 		return m
 	}
@@ -124,7 +124,9 @@ func TestTurnDone_ReleasesNextHead(t *testing.T) {
 
 	sub2 := scoutSub(t, w)
 	defer sub2.Close()
-	sweep := w.s.(interface{ ReleaseSweepForTest(context.Context, ulid.ULID) error })
+	sweep := w.s.(interface {
+		ReleaseSweepForTest(context.Context, ulid.ULID) error
+	})
 	require.NoError(t, sweep.ReleaseSweepForTest(ctx, w.scout.ID))
 	evs := drain(t, sub2)
 	require.Len(t, evs, 1, "the sweep hands out m2, never m3")
@@ -211,7 +213,11 @@ func TestActivity_ReportsAndListing(t *testing.T) {
 	assert.Empty(t, drain(t, sub))
 
 	// a remark
-	require.NoError(t, w.s.ReportRemark(ctx, scoutActor, mID, "checking the weather"))
+	remark, err := w.s.ReportRemark(ctx, scoutActor, mID, "checking the weather")
+	require.NoError(t, err)
+	assert.Equal(t, "checking the weather", remark.Text)
+	assert.Equal(t, mID, remark.MessageID)
+	assert.Equal(t, bus.ActivityRemark, remark.Kind)
 	evs := drain(t, humanSub)
 	require.Len(t, evs, 1)
 	assert.Equal(t, bus.EventActivityPosted, evs[0].Kind)
@@ -269,7 +275,7 @@ func TestActivity_ReportsAndListing(t *testing.T) {
 
 	// validation
 	var ve bus.ValidationError
-	err = w.s.ReportRemark(ctx, scoutActor, mID, "   ")
+	_, err = w.s.ReportRemark(ctx, scoutActor, mID, "   ")
 	require.ErrorAs(t, err, &ve)
 	assert.Equal(t, "remark text must be 1 to 262144 bytes, not blank, with no NUL character", ve.Message)
 	_, err = w.s.StartTool(ctx, scoutActor, mID, strings.Repeat("a", 65), "p", "a")
