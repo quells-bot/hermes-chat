@@ -277,22 +277,41 @@ Small, and part of this project:
 No change to the JSON API is expected. If the builder finds one is needed, it
 is raised with Kai before it is made.
 
-## 8. Stages
+## 8. Build slices
 
-*(Claude's call; Kai said to use whatever order is best.)* Each stage ends in
-something usable and gets its own implementation plan.
+Six slices *(Claude's proposal, agreed by Kai on 2026-10-12)*. Each ends in
+something that can be deployed and used, and each gets its own implementation
+plan, written only once the slice before it is merged. Slices 1 to 4 together
+are enough for daily use; 5 and 6 are the rest.
 
-1. **Daily use.** The build and embed, the security header, login, the event
-   stream and store, the room list with groups, badges, the Unread row and
-   page, generated icons, the room with feed, streaming, activity block,
-   prompt card, composer with queue and steer, stop, pause and resume, stop
-   everything, and a minimal new room / open DM form.
-2. **The rest.** The note, room settings, search, @mention completion,
-   keyboard shortcuts, message download, the home-screen manifest, and the
-   desktop sidebar layout.
+1. **Skeleton and login.** The Svelte project under `web/`, the embed, the
+   server serving it with the security header, and the build wired into
+   `just`. Ends with a deployed binary that shows a login screen and, once
+   logged in, the person's username. This slice settles the plumbing most
+   likely to surprise: building without Node installed, the content security
+   policy, and caching.
+2. **Live room list.** The API client, the event stream with reconnect, and
+   the in-memory store. On top of them, the room list: two collapsible groups,
+   alphabetical order, badges, unread dots, generated icons, stop everything,
+   and the new room / open DM form. Rooms do not open yet.
+3. **Reading a room.** The message feed with paging, markdown rendering and
+   sanitizing, streaming replies, delivery states, reply quotes, attachments,
+   and the activity block. The read marker moves here, so the Unread row, the
+   Unread page, and mark all read land in this slice too.
+4. **Acting in a room.** The composer with retry-safe posting, reply-to, and
+   queue versus steer; cancel, stop, pause and resume; answering prompt cards.
+5. **Note and room settings.** The note with its quarantine queue, and the
+   settings screen for topic, members, turn cap, and archive.
+6. **Power-user layer.** Search, @mention completion, keyboard shortcuts,
+   message download, the home-screen manifest, and the desktop sidebar layout.
 
-Stage 1 ships the phone layout, which on a desktop browser appears as a single
-centred column. *(Claude's call)*
+The unfamiliar parts come first (embedding, the security header, the event
+stream), and reading is separated from acting because reading alone is already
+useful for checking on a research run. Slice 3 is the largest; if its plan
+comes out too big, the activity block is the piece to split off.
+
+Until slice 6, the phone layout is the only layout, and on a desktop browser
+it appears as a single centred column. *(Claude's call)*
 
 ## 9. Left to the builder
 
