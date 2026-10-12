@@ -1,6 +1,7 @@
 package app_test
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"mime"
@@ -16,7 +17,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/app"
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/bus"
+	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/storage/storagetest"
 )
 
 var png = "\x89PNG\r\n\x1a\n" + strings.Repeat("\x00", 32)
@@ -144,4 +147,57 @@ func TestAttachments_SlowUploadOutlivesTheWriteTimeout(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, 201, resp.StatusCode)
+}
+
+// countFiles counts what is in a file store, so the test can prove a
+// deadline-aborted upload committed nothing.
+type countFiles struct {
+	bus.FileStore
+	live map[string]bool
+}
+
+func (c countFiles) Create(ctx context.Context, id string, r io.Reader) (int64, error) {
+	n, err := c.FileStore.Create(ctx, id, r)
+	if err == nil {
+		c.live[id] = true
+	}
+	return n, err
+}
+
+// A transfer that drips past the transfer deadline is cut off while the body
+// is still being read: the upload never commits, so nothing is left on disk.
+func TestAttachments_SlowDrippedUploadCommitsNothing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	files := countFiles{FileStore: storagetest.NewFiles(t), live: map[string]bool{}}
+	svc := bus.NewService(storagetest.NewRepo(t), time.Now, bus.WithFiles(files))
+	e, _ := newEngine(t, svc)
+	ctrl := app.NewController(svc, app.Options{TransferTimeout: 200 * time.Millisecond})
+	agent := e.Group("/agent", ctrl.AgentAuth)
+	agent.POST("/rooms/:room/attachments", ctrl.AgentUploadAttachment)
+	kai, err := svc.CreateHuman(ctx, "kai", pw)
+	require.NoError(t, err)
+	scout, scoutT, err := svc.CreateAgent(ctx, "scout", "Scout")
+	require.NoError(t, err)
+	room, _, err := svc.OpenDM(ctx, bus.Actor{Kind: bus.ActorHuman, ID: kai.ID}, scout.ID)
+	require.NoError(t, err)
+
+	srv := httptest.NewUnstartedServer(e)
+	srv.Start()
+	defer srv.Close()
+
+	pr, pw := io.Pipe()
+	go func() {
+		_, _ = pw.Write([]byte(png[:8]))
+		time.Sleep(400 * time.Millisecond) // well past the transfer deadline
+		_, _ = pw.Write([]byte(png[8:]))
+		pw.Close()
+	}()
+	req, _ := http.NewRequest("POST", srv.URL+"/agent/rooms/"+room.ID.String()+"/attachments?name=cat.png", pr)
+	req.Header.Set("Authorization", "Bearer "+scoutT)
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil {
+		defer resp.Body.Close()
+		assert.NotEqual(t, 201, resp.StatusCode, "the transfer deadline must abort the drip")
+	}
+	assert.Empty(t, files.live, "a cut-off upload leaves nothing on disk")
 }

@@ -26,12 +26,18 @@ func (h *controller) AgentUploadAttachment(c *gin.Context) {
 		writeError(c, bus.ErrTooLarge)
 		return
 	}
-	// A transfer gets its own deadline: the server's write timeout counts from
-	// the request's headers, which a slow upload outlives. A writer without
-	// deadline support (a test recorder) cannot bound the transfer, so there
-	// is nothing to bound it against either: skip it.
+	// A transfer gets its own read and write deadline: the server's timeouts
+	// count from the request's headers, which a slow upload outlives, and the
+	// read must finish inside the transfer window or the upload never commits.
+	// Writers without deadline support (test recorders) cannot bound the
+	// transfer, so there is nothing to bound it against either: skip them.
 	rc := http.NewResponseController(c.Writer)
-	derr := rc.SetWriteDeadline(time.Now().Add(h.opts.TransferTimeout))
+	derr := rc.SetReadDeadline(time.Now().Add(h.opts.TransferTimeout))
+	if derr != nil && !errors.Is(derr, http.ErrNotSupported) {
+		writeError(c, fmt.Errorf("upload: set read deadline: %w", derr))
+		return
+	}
+	derr = rc.SetWriteDeadline(time.Now().Add(h.opts.TransferTimeout))
 	if derr != nil && !errors.Is(derr, http.ErrNotSupported) {
 		writeError(c, fmt.Errorf("upload: set write deadline: %w", derr))
 		return
