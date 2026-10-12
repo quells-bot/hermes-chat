@@ -500,6 +500,15 @@ an agent gets 403. Downloads support byte ranges.
   with the text of its last stored edit.
 - Stop everything writes one `room.changed` per room and one `pause` per agent
   per room.
+- A prompt nobody answers and its agent never expires stays open, with its
+  badge, until the room is paused or archived.
+- An answer an agent had not read when its room was paused is not sent again
+  on resume.
+- Note changes write no event: another open tab sees a new suggestion only
+  when it next loads the note.
+- An upload that is never posted, and the files of a room deleted with its
+  human, stay on disk; nothing sweeps the attachments directory yet.
+- Humans cannot upload yet (v1.5); the table already has the column for it.
 
 ## Adding a migration
 

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -233,6 +234,109 @@ func (c *Client) EditMessage(ctx context.Context, messageID, text string, final 
 		return decodeError(status, raw)
 	}
 	return nil
+}
+
+// Prompt posts the agent's question as a prompt message and returns its id.
+func (c *Client) Prompt(ctx context.Context, roomID, kind, text string, choices []string) (string, error) {
+	cs := "null"
+	if choices != nil {
+		var parts []string
+		for _, ch := range choices {
+			parts = append(parts, jq(ch))
+		}
+		cs = "[" + strings.Join(parts, ",") + "]"
+	}
+	body := `{"kind":` + jq(kind) + `,"text":` + jq(text) + `,"choices":` + cs + `}`
+	status, raw, err := c.do(ctx, "POST", "/agent/rooms/"+roomID+"/prompts", body)
+	if err != nil {
+		return "", err
+	}
+	if status != http.StatusCreated {
+		return "", decodeError(status, raw)
+	}
+	msg, err := decodeJSON("post prompt", raw)
+	if err != nil {
+		return "", err
+	}
+	return msg["id"].(string), nil
+}
+
+// ExpirePrompt closes a prompt the asking agent gave up on.
+func (c *Client) ExpirePrompt(ctx context.Context, messageID string) error {
+	status, raw, err := c.do(ctx, "POST", "/agent/prompts/"+messageID+"/expire", "")
+	if err != nil {
+		return err
+	}
+	if status != http.StatusNoContent {
+		return decodeError(status, raw)
+	}
+	return nil
+}
+
+// SuggestNote suggests an entry for the note of the human who wrote the
+// delivered message. Both 200 (already suggested) and 201 (fresh) succeed.
+func (c *Client) SuggestNote(ctx context.Context, messageID, text string) (string, error) {
+	body := `{"text":` + jq(text) + `}`
+	status, raw, err := c.do(ctx, "POST", "/agent/deliveries/"+messageID+"/note-entries", body)
+	if err != nil {
+		return "", err
+	}
+	if status != http.StatusCreated && status != http.StatusOK {
+		return "", decodeError(status, raw)
+	}
+	entry, err := decodeJSON("suggest note", raw)
+	if err != nil {
+		return "", err
+	}
+	return entry["id"].(string), nil
+}
+
+// Upload stores one file the agent uploads to a room and returns its id. The
+// body is a reader, not JSON, so it cannot use do.
+func (c *Client) Upload(ctx context.Context, roomID, name string, body io.Reader) (string, error) {
+	req, err := http.NewRequest("POST", c.BaseURL+"/agent/rooms/"+roomID+"/attachments?name="+url.QueryEscape(name), body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	resp, err := c.client().Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusCreated {
+		return "", decodeError(resp.StatusCode, raw)
+	}
+	att, err := decodeJSON("upload", raw)
+	if err != nil {
+		return "", err
+	}
+	return att["id"].(string), nil
+}
+
+// PostMessageWith posts a message carrying the given attachment ids.
+func (c *Client) PostMessageWith(ctx context.Context, roomID, text string, attachmentIDs []string) (string, error) {
+	var parts []string
+	for _, id := range attachmentIDs {
+		parts = append(parts, jq(id))
+	}
+	body := `{"text":` + jq(text) + `,"attachment_ids":[` + strings.Join(parts, ",") + `]}`
+	status, raw, err := c.do(ctx, "POST", "/agent/rooms/"+roomID+"/messages", body)
+	if err != nil {
+		return "", err
+	}
+	if status != http.StatusCreated {
+		return "", decodeError(status, raw)
+	}
+	msg, err := decodeJSON("post message with attachments", raw)
+	if err != nil {
+		return "", err
+	}
+	return msg["id"].(string), nil
 }
 
 // turnReport runs one of the turn reports, which take no body.
