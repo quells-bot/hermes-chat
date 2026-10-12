@@ -34,6 +34,10 @@ func routes(e *gin.Engine, ctrl app.Controller, log *slog.Logger) {
 	human.GET("/rooms/:room/messages", ctrl.ListMessages)
 	human.POST("/rooms/:room/messages", ctrl.PostMessage)
 	human.GET("/rooms/:room/messages/:message", ctrl.GetMessage)
+	human.POST("/rooms/:room/messages/:message/cancel", ctrl.CancelMessage)
+	human.GET("/rooms/:room/messages/:message/activity", ctrl.ListActivity)
+	human.POST("/rooms/:room/agents/:agent/stop", ctrl.StopTurn)
+	human.POST("/rooms/:room/agents/:agent/steer", ctrl.Steer)
 	human.GET("/events", ctrl.Events)
 
 	// Agent API: bearer token.

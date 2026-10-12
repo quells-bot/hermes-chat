@@ -107,3 +107,47 @@ func (h *controller) GetMessage(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, messageJSON(msg))
 }
+
+// CancelMessage stops a message's waiting copies ever reaching their agents.
+func (h *controller) CancelMessage(c *gin.Context) {
+	roomID, ok := pathID(c, "room")
+	if !ok {
+		return
+	}
+	messageID, ok := pathID(c, "message")
+	if !ok {
+		return
+	}
+	if err := h.svc.CancelMessage(c.Request.Context(), actorFrom(c), roomID, messageID); err != nil {
+		writeError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// ListActivity lists a delivered message's activity log, oldest first.
+func (h *controller) ListActivity(c *gin.Context) {
+	roomID, ok := pathID(c, "room")
+	if !ok {
+		return
+	}
+	messageID, ok := pathID(c, "message")
+	if !ok {
+		return
+	}
+	acts, err := h.svc.ListActivity(c.Request.Context(), actorFrom(c), roomID, messageID)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	out := make([]any, 0, len(acts))
+	for _, a := range acts {
+		act, err := h.activityJSON(c.Request.Context(), a)
+		if err != nil {
+			writeError(c, err)
+			return
+		}
+		out = append(out, act)
+	}
+	c.JSON(http.StatusOK, gin.H{"activities": out})
+}

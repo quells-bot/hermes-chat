@@ -223,6 +223,35 @@ func ended(d *sse.Decoder) bool {
 	}
 }
 
+// frameQueue reads a stream's frames, holding any that do not match the frame
+// the caller is looking for in a buffer so none are lost to reordering. Paced
+// want calls keep each event's payload at its own state even though the reader
+// does not drive the stream.
+type frameQueue struct {
+	t   *testing.T
+	d   *sse.Decoder
+	buf []sse.Frame
+}
+
+func newFrameQueue(t *testing.T, d *sse.Decoder) *frameQueue { return &frameQueue{t: t, d: d} }
+
+// want returns the next frame matching check, buffering any frames it passes over.
+func (q *frameQueue) want(check func(sse.Frame) bool) sse.Frame {
+	for i, f := range q.buf {
+		if check(f) {
+			q.buf = append(q.buf[:i], q.buf[i+1:]...)
+			return f
+		}
+	}
+	for {
+		f := next(q.t, q.d)
+		if check(f) {
+			return f
+		}
+		q.buf = append(q.buf, f)
+	}
+}
+
 // eventually polls cond every 10 ms for up to 5 seconds.
 func eventually(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
@@ -253,8 +282,8 @@ func TestEvents_ReadyThenLive(t *testing.T) {
 	f := next(t, d)
 	assert.Equal(t, "3", f.ID)
 	assert.Equal(t, "message.posted", f.Event)
-	assert.JSONEq(t, fmt.Sprintf(`{"message":{"id":%q,"room_id":%q,"author":{"kind":"human","id":%q,"name":"kai"},"text":"after","reply_to_id":null,"created_at":%q}}`,
-		m.ID, r.room.ID, r.kai.ID, stamp(m.CreatedAt)), f.Data)
+	assert.JSONEq(t, fmt.Sprintf(`{"message":{"id":%q,"room_id":%q,"author":{"kind":"human","id":%q,"name":"kai"},"text":"after","reply_to_id":null,"deliveries":[{"agent":{"id":%q,"handle":"scout","display_name":"Scout","revoked":false},"state":"waiting"}],"created_at":%q}}`,
+		m.ID, r.room.ID, r.kai.ID, r.scout.ID, stamp(m.CreatedAt)), f.Data)
 
 	_, err := r.svc.UpdateRoom(ctx, r.kai, r.room.ID, bus.RoomUpdate{Topic: ptr("Renamed")})
 	require.NoError(t, err)
@@ -265,6 +294,64 @@ func TestEvents_ReadyThenLive(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(f.Data), &body))
 	assert.Equal(t, "Renamed", body.Room["topic"])
 	assert.Equal(t, m.ID.String(), body.Room["last_read_message_id"])
+}
+
+// One full turn over the bus reaches the human stream in commit order: the
+// message with its deliveries, each delivery and activity, the agent's reply
+// with its edits, the done transition, and the agent's presence across the run.
+// A frameQueue paces the reads so each event's payload keeps its own state, and
+// tolerates a live final:false edit arriving at any point.
+func TestEvents_NewFrames(t *testing.T) {
+	r := newRig(t, app.Options{}, nil)
+	scout := r.scoutActor()
+	_, d := r.open(t, r.cookie, "")
+	assert.Equal(t, "ready", next(t, d).Event)
+	q := newFrameQueue(t, d)
+
+	// kai posts while scout is offline: the copy waits, shown on the message.
+	m, err := r.svc.PostMessage(ctx, r.kai, r.room.ID, "plan the trip", ulid.Zero)
+	require.NoError(t, err)
+	f := q.want(func(f sse.Frame) bool { return f.Event == "message.posted" && strings.Contains(f.Data, m.ID.String()) })
+	assert.Contains(t, f.Data, `"deliveries":[{"agent":`)
+	assert.Contains(t, f.Data, `"state":"waiting"`)
+
+	// scout connects: presence on, then the sweep hands the waiting copy over.
+	resp, _ := r.openAgent(t, r.scoutToken, "")
+	defer resp.Body.Close()
+	f = q.want(func(f sse.Frame) bool { return f.Event == "agent.presence" && strings.Contains(f.Data, `"connected":true`) })
+	f = q.want(func(f sse.Frame) bool { return f.Event == "delivery.changed" && strings.Contains(f.Data, `"state":"delivered"`) })
+
+	require.NoError(t, r.svc.TurnWorking(ctx, scout, m.ID))
+	f = q.want(func(f sse.Frame) bool { return f.Event == "delivery.changed" && strings.Contains(f.Data, `"state":"working"`) })
+
+	_, err = r.svc.ReportRemark(ctx, scout, m.ID, "checking the weather")
+	require.NoError(t, err)
+	q.want(func(f sse.Frame) bool { return f.Event == "activity.posted" && strings.Contains(f.Data, `"kind":"remark"`) && strings.Contains(f.Data, "checking the weather") })
+
+	tool, err := r.svc.StartTool(ctx, scout, m.ID, "web_search", "searching", `{"q":"x"}`)
+	require.NoError(t, err)
+	q.want(func(f sse.Frame) bool { return f.Event == "activity.posted" && strings.Contains(f.Data, `"kind":"tool"`) && strings.Contains(f.Data, tool.ID.String()) })
+
+	_, err = r.svc.FinishTool(ctx, scout, tool.ID, 123, true)
+	require.NoError(t, err)
+	q.want(func(f sse.Frame) bool { return f.Event == "activity.posted" && strings.Contains(f.Data, `"kind":"tool"`) && strings.Contains(f.Data, `"duration_ms":123`) })
+
+	// the agent posts its reply, then edits live and finalizes it.
+	reply, err := r.svc.PostMessage(ctx, scout, r.room.ID, "first draft", m.ID)
+	require.NoError(t, err)
+	q.want(func(f sse.Frame) bool { return f.Event == "message.posted" && strings.Contains(f.Data, reply.ID.String()) })
+
+	require.NoError(t, r.svc.EditMessage(ctx, scout, reply.ID, "second draft", false))
+	require.NoError(t, r.svc.EditMessage(ctx, scout, reply.ID, "final copy", true))
+	require.NoError(t, r.svc.TurnDone(ctx, scout, m.ID))
+	resp.Body.Close() // the agent's client leaves
+
+	// The tail arrives in any order: the finalized frame, at least one live
+	// final:false edit, the done transition, and presence off.
+	q.want(func(f sse.Frame) bool { return f.Event == "message.edited" && strings.Contains(f.Data, `"message"`) && strings.Contains(f.Data, "final copy") })
+	q.want(func(f sse.Frame) bool { return f.Event == "message.edited" && strings.Contains(f.Data, `"final":false`) })
+	q.want(func(f sse.Frame) bool { return f.Event == "delivery.changed" && strings.Contains(f.Data, `"state":"done"`) })
+	q.want(func(f sse.Frame) bool { return f.Event == "agent.presence" && strings.Contains(f.Data, `"connected":false`) })
 }
 
 // Review Focus 1.

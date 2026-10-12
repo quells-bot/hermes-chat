@@ -100,3 +100,97 @@ func TestMessages_RemovedAuthorIsNull(t *testing.T) {
 	assert.Equal(t, "from ada", m["text"])
 	assert.Equal(t, 401, c.call(c.ada, "GET", "/api/rooms", "").Code) // and her session went with her
 }
+
+// The message object carries each agent's copy of it, and the array is never null.
+func TestMessageJSON_ShowsDeliveries(t *testing.T) {
+	c := newChat(t)
+	room := "/api/rooms/" + obj(t, c.call(c.kai, "POST", "/api/rooms", `{"topic":"T","agent_ids":["`+c.scout.ID.String()+`"]}`))["id"].(string)
+	w := c.call(c.kai, "POST", room+"/messages", `{"text":"hi scout"}`) // scout is offline: the copy waits
+	require.Equal(t, 201, w.Code, w.Body.String())
+	m := obj(t, w)
+	assert.Equal(t, []any{map[string]any{
+		"agent": map[string]any{"id": c.scout.ID.String(), "handle": "scout", "display_name": "Scout", "revoked": false},
+		"state": "waiting",
+	}}, m["deliveries"])
+	// GET agrees with POST
+	assert.JSONEq(t, w.Body.String(), c.call(c.kai, "GET", room+"/messages/"+m["id"].(string), "").Body.String())
+}
+
+func TestCancelMessage(t *testing.T) {
+	c := newChat(t)
+	room := "/api/rooms/" + obj(t, c.call(c.kai, "POST", "/api/rooms", `{"topic":"T","agent_ids":["`+c.scout.ID.String()+`"]}`))["id"].(string)
+	post := func(text string) map[string]any {
+		w := c.call(c.kai, "POST", room+"/messages", `{"text":"`+text+`"}`)
+		require.Equal(t, 201, w.Code, w.Body.String())
+		return obj(t, w)
+	}
+
+	// a message waiting for the offline agent cancels
+	m := post("hold that")
+	w := c.call(c.kai, "POST", room+"/messages/"+m["id"].(string)+"/cancel", "")
+	require.Equal(t, 204, w.Code)
+	assert.Empty(t, w.Body.String())
+	got := obj(t, c.call(c.kai, "GET", room+"/messages/"+m["id"].(string), ""))
+	assert.Equal(t, "cancelled", got["deliveries"].([]any)[0].(map[string]any)["state"])
+
+	// a second cancel finds nothing waiting
+	w = c.call(c.kai, "POST", room+"/messages/"+m["id"].(string)+"/cancel", "")
+	require.Equal(t, 409, w.Code)
+	assert.JSONEq(t, `{"error":{"code":"nothing_waiting","message":"no waiting delivery for this message"}}`, w.Body.String())
+
+	// a member who is not the author is forbidden
+	c.call(c.kai, "POST", room+"/humans", `{"human_id":"`+c.adaH.ID.String()+`"}`)
+	m2 := post("not yours")
+	w = c.call(c.ada, "POST", room+"/messages/"+m2["id"].(string)+"/cancel", "")
+	require.Equal(t, 403, w.Code)
+	assert.JSONEq(t, forbidden, w.Body.String())
+
+	// a message that addressed nobody is neither waitable nor cancellable
+	channel := "/api/rooms/" + obj(t, c.call(c.kai, "POST", "/api/rooms", `{"topic":"C","agent_ids":["`+c.scout.ID.String()+`","`+c.atlas.ID.String()+`"]}`))["id"].(string)
+	m3 := obj(t, c.call(c.kai, "POST", channel+"/messages", `{"text":"no one mentioned"}`))
+	w = c.call(c.kai, "POST", channel+"/messages/"+m3["id"].(string)+"/cancel", "")
+	require.Equal(t, 409, w.Code)
+	assert.JSONEq(t, `{"error":{"code":"nothing_waiting","message":"no waiting delivery for this message"}}`, w.Body.String())
+}
+
+// The activity log lists a delivered turn's remarks and tool calls, oldest first.
+func TestListActivity(t *testing.T) {
+	c := newChat(t)
+	room, _, err := c.svc.OpenDM(ctx, bus.Actor{Kind: bus.ActorHuman, ID: c.kaiH.ID}, c.scout.ID)
+	require.NoError(t, err)
+	scout := bus.Actor{Kind: bus.ActorAgent, ID: c.scout.ID}
+	sub, err := c.svc.Subscribe(ctx, scout, bus.FromNow) // connect scout
+	require.NoError(t, err)
+	defer sub.Close()
+	m, err := c.svc.PostMessage(ctx, bus.Actor{Kind: bus.ActorHuman, ID: c.kaiH.ID}, room.ID, "your turn", ulid.Zero)
+	require.NoError(t, err)
+	require.NoError(t, c.svc.TurnWorking(ctx, scout, m.ID))
+	remark, err := c.svc.ReportRemark(ctx, scout, m.ID, "checking the weather")
+	require.NoError(t, err)
+	tool, err := c.svc.StartTool(ctx, scout, m.ID, "web_search", "searching", `{"q":"x"}`)
+	require.NoError(t, err)
+	_, err = c.svc.FinishTool(ctx, scout, tool.ID, 123, true)
+	require.NoError(t, err)
+
+	w := c.call(c.kai, "GET", "/api/rooms/"+room.ID.String()+"/messages/"+m.ID.String()+"/activity", "")
+	require.Equal(t, 200, w.Code, w.Body.String())
+	acts := obj(t, w)["activities"].([]any)
+	require.Len(t, acts, 2)
+	first := acts[0].(map[string]any)
+	assert.Equal(t, remark.ID.String(), first["id"])
+	assert.Equal(t, "remark", first["kind"])
+	assert.Equal(t, "checking the weather", first["text"])
+	assert.Equal(t, m.ID.String(), first["message_id"])
+	assert.Equal(t, c.scout.ID.String(), first["agent"].(map[string]any)["id"])
+	second := acts[1].(map[string]any)
+	assert.Equal(t, tool.ID.String(), second["id"])
+	assert.Equal(t, "tool", second["kind"])
+	assert.Equal(t, "web_search", second["tool"])
+	assert.Equal(t, float64(123), second["duration_ms"])
+	assert.Equal(t, true, second["succeeded"])
+	assert.NotContains(t, w.Body.String(), "connected") // the activity agent is the plain shape
+
+	// a non-member, and a message outside the room, look missing
+	assert.Equal(t, 404, c.call(c.ada, "GET", "/api/rooms/"+room.ID.String()+"/messages/"+m.ID.String()+"/activity", "").Code)
+	assert.Equal(t, 404, c.call(c.kai, "GET", "/api/rooms/"+room.ID.String()+"/messages/"+ulid.Make().String()+"/activity", "").Code)
+}

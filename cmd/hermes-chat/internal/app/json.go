@@ -24,16 +24,24 @@ type agentBody struct {
 	Revoked     bool      `json:"revoked"`
 }
 
+// roomAgentBody is one agent in a room, as a human sees it: the agent plus its
+// live-stream connection state. agentBody itself stays plain for the agent
+// listings and activities that carry no presence.
+type roomAgentBody struct {
+	agentBody
+	Connected bool `json:"connected"`
+}
+
 type roomBody struct {
-	ID                ulid.ULID   `json:"id"`
-	Flavor            string      `json:"flavor"`
-	Topic             string      `json:"topic"`
-	Archived          bool        `json:"archived"`
-	CreatedAt         time.Time   `json:"created_at"`
-	Humans            []humanBody `json:"humans"`
-	Agents            []agentBody `json:"agents"`
-	LastMessageID     *ulid.ULID  `json:"last_message_id"`
-	LastReadMessageID *ulid.ULID  `json:"last_read_message_id"`
+	ID                ulid.ULID       `json:"id"`
+	Flavor            string          `json:"flavor"`
+	Topic             string          `json:"topic"`
+	Archived          bool            `json:"archived"`
+	CreatedAt         time.Time       `json:"created_at"`
+	Humans            []humanBody     `json:"humans"`
+	Agents            []roomAgentBody `json:"agents"`
+	LastMessageID     *ulid.ULID      `json:"last_message_id"`
+	LastReadMessageID *ulid.ULID      `json:"last_read_message_id"`
 }
 
 type authorBody struct {
@@ -42,13 +50,20 @@ type authorBody struct {
 	Name string        `json:"name"`
 }
 
+// deliveryBody is one agent's copy of a message, in the message object.
+type deliveryBody struct {
+	Agent agentBody `json:"agent"`
+	State string    `json:"state"`
+}
+
 type messageBody struct {
-	ID        ulid.ULID   `json:"id"`
-	RoomID    ulid.ULID   `json:"room_id"`
-	Author    *authorBody `json:"author"`
-	Text      string      `json:"text"`
-	ReplyToID *ulid.ULID  `json:"reply_to_id"`
-	CreatedAt time.Time   `json:"created_at"`
+	ID         ulid.ULID      `json:"id"`
+	RoomID     ulid.ULID      `json:"room_id"`
+	Author     *authorBody    `json:"author"`
+	Text       string         `json:"text"`
+	ReplyToID  *ulid.ULID     `json:"reply_to_id"`
+	Deliveries []deliveryBody `json:"deliveries"` // never null; [] for an agent's own messages
+	CreatedAt  time.Time      `json:"created_at"`
 }
 
 type agentRoomBody struct {
@@ -110,23 +125,29 @@ func agentJSON(a bus.Agent) agentBody {
 func roomJSON(r bus.Room) any {
 	out := roomBody{
 		ID: r.ID, Flavor: string(r.Flavor), Topic: r.Topic, Archived: r.Archived(), CreatedAt: r.CreatedAt,
-		Humans: make([]humanBody, 0, len(r.Humans)), Agents: make([]agentBody, 0, len(r.Agents)),
+		Humans: make([]humanBody, 0, len(r.Humans)), Agents: make([]roomAgentBody, 0, len(r.Agents)),
 		LastMessageID: optionalID(r.LastMessageID), LastReadMessageID: optionalID(r.LastReadMessageID),
 	}
 	for _, h := range r.Humans {
 		out.Humans = append(out.Humans, humanJSON(h))
 	}
 	for _, ra := range r.Agents {
-		out.Agents = append(out.Agents, agentJSON(ra.Agent))
+		out.Agents = append(out.Agents, roomAgentBody{agentBody: agentJSON(ra.Agent), Connected: ra.Connected})
 	}
 	return out
 }
 
 // messageJSON is the message object; author is null once its human was removed.
+// The deliveries array is never nil: an agent's own messages and any message
+// with no waiting copies carry [].
 func messageJSON(m bus.Message) any {
-	out := messageBody{ID: m.ID, RoomID: m.RoomID, Text: m.Text, ReplyToID: optionalID(m.ReplyToID), CreatedAt: m.CreatedAt}
+	out := messageBody{ID: m.ID, RoomID: m.RoomID, Text: m.Text, ReplyToID: optionalID(m.ReplyToID), CreatedAt: m.CreatedAt,
+		Deliveries: make([]deliveryBody, 0, len(m.Deliveries))}
 	if m.Author != nil {
 		out.Author = &authorBody{Kind: m.Author.Kind, ID: m.Author.ID, Name: m.Author.Name}
+	}
+	for _, d := range m.Deliveries {
+		out.Deliveries = append(out.Deliveries, deliveryBody{Agent: agentJSON(d.Agent), State: string(d.State)})
 	}
 	return out
 }
