@@ -65,7 +65,8 @@ type rig struct {
 	scoutToken string // scout's bearer token
 }
 
-// newRig builds a rig. tune, if not nil, adjusts the server before it starts.
+// newRig builds a rig. tune, if not nil, adjusts the server before it starts;
+// setting EnableHTTP2 there makes the server speak TLS with HTTP/2.
 func newRig(t *testing.T, opts app.Options, tune func(*httptest.Server)) rig {
 	t.Helper()
 	return newFaultyRig(t, opts, tune, nil, nil)
@@ -117,7 +118,11 @@ func newFaultyRig(t *testing.T, opts app.Options, tune func(*httptest.Server), w
 	if tune != nil {
 		tune(r.srv)
 	}
-	r.srv.Start()
+	if r.srv.EnableHTTP2 {
+		r.srv.StartTLS() // its Client trusts the certificate and negotiates HTTP/2
+	} else {
+		r.srv.Start()
+	}
 	t.Cleanup(r.srv.Close) // waits for the handlers; the streams' own cleanups run first
 	return r
 }
@@ -446,6 +451,63 @@ func TestEvents_HeartbeatsAndOutlivesTheServerWriteTimeout(t *testing.T) {
 	time.Sleep(400 * time.Millisecond) // four times the server's write timeout
 	r.post(t, "still here")
 	assert.Contains(t, next(t, d).Data, "still here")
+}
+
+// http2Rig is a rig over TLS with HTTP/2, whose streams idle for three write
+// timeouts between heartbeats.
+func http2Rig(t *testing.T) rig {
+	t.Helper()
+	opts := app.Options{StreamWriteTimeout: 100 * time.Millisecond, HeartbeatInterval: 300 * time.Millisecond}
+	return newRig(t, opts, func(s *httptest.Server) { s.EnableHTTP2 = true })
+}
+
+// idlesThenHeartbeats reads ready, then two heartbeats, each after an idle
+// longer than the write timeout, then an event.
+func idlesThenHeartbeats(t *testing.T, r rig, resp *http.Response, d *sse.Decoder, event string) {
+	t.Helper()
+	require.Equal(t, 200, resp.StatusCode)
+	require.Equal(t, 2, resp.ProtoMajor, "got %s", resp.Proto)
+	f, err := d.Next()
+	require.NoError(t, err)
+	assert.Equal(t, "ready", f.Event)
+	for range 2 {
+		f, err = d.Next()
+		require.NoError(t, err, "the idle stream was reset before its heartbeat")
+		assert.Equal(t, sse.Frame{Comment: "hb"}, f)
+	}
+	r.post(t, "still here")
+	f = next(t, d)
+	assert.Equal(t, event, f.Event)
+	assert.Contains(t, f.Data, "still here")
+}
+
+// Over HTTP/2 a write deadline is a timer that resets the stream when it fires,
+// whether or not a write is in progress, so it must not be left set while idle.
+func TestEvents_IdleStreamOutlivesTheWriteTimeoutOverHTTP2(t *testing.T) {
+	r := http2Rig(t)
+	resp, d := r.open(t, r.cookie, "")
+	idlesThenHeartbeats(t, r, resp, d, "message.posted")
+}
+
+func TestAgentEvents_IdleStreamOutlivesTheWriteTimeoutOverHTTP2(t *testing.T) {
+	r := http2Rig(t)
+	resp, d := r.openAgent(t, r.scoutToken, "")
+	idlesThenHeartbeats(t, r, resp, d, "delivery")
+}
+
+// Over HTTP/2 a client that stops reading is still dropped: the write blocks on
+// flow control and the write deadline resets the stream.
+func TestEvents_AClientThatStopsReadingIsDroppedOverHTTP2(t *testing.T) {
+	r := newRig(t, app.Options{StreamWriteTimeout: 100 * time.Millisecond}, func(s *httptest.Server) { s.EnableHTTP2 = true })
+	resp, _ := r.open(t, r.cookie, "") // never read
+	require.Equal(t, 2, resp.ProtoMajor, "got %s", resp.Proto)
+	eventually(t, func() bool { return strings.Contains(r.log.String(), `"msg":"stream opened"`) }, "the stream opened")
+	big := strings.Repeat("a", bus.MaxMessageBytes)
+	for range 100 {
+		_, err := r.svc.PostMessage(ctx, r.kai, r.room.ID, big, ulid.Zero)
+		require.NoError(t, err)
+	}
+	eventually(t, func() bool { return strings.Contains(r.log.String(), `"msg":"request"`) }, "the stalled stream was dropped")
 }
 
 // Review Focus 2.

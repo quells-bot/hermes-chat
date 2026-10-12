@@ -141,13 +141,20 @@ func (h *controller) Events(c *gin.Context) {
 
 	// Each write gets its own deadline, replacing the server's for the whole
 	// response: the stream outlives that one, and a client that stops reading
-	// is dropped.
+	// is dropped. The deadline is cleared after each flush: over HTTP/2 it is
+	// a timer that resets the stream when it fires, written to or not.
 	rc := http.NewResponseController(c.Writer)
 	write := func(f sse.Frame) error {
 		if err := rc.SetWriteDeadline(time.Now().Add(h.opts.StreamWriteTimeout)); err != nil {
 			return err
 		}
 		return sse.Write(c.Writer, f)
+	}
+	flush := func() error {
+		if err := rc.Flush(); err != nil {
+			return err
+		}
+		return rc.SetWriteDeadline(time.Time{})
 	}
 	if err := rc.SetWriteDeadline(time.Now().Add(h.opts.StreamWriteTimeout)); err != nil {
 		writeError(c, fmt.Errorf("events: set write deadline: %w", err))
@@ -161,7 +168,7 @@ func (h *controller) Events(c *gin.Context) {
 	slog.InfoContext(ctx, "stream opened", "actor", actor.String(), "cursor", sub.Cursor())
 
 	cursor := strconv.FormatInt(sub.Cursor(), 10)
-	if write(sse.Frame{ID: cursor, Event: "ready", Data: `{"cursor":` + cursor + `}`}) != nil || rc.Flush() != nil {
+	if write(sse.Frame{ID: cursor, Event: "ready", Data: `{"cursor":` + cursor + `}`}) != nil || flush() != nil {
 		return
 	}
 
@@ -193,7 +200,7 @@ func (h *controller) Events(c *gin.Context) {
 					return
 				}
 			}
-			if rc.Flush() != nil {
+			if flush() != nil {
 				return
 			}
 		}
@@ -207,7 +214,7 @@ func (h *controller) Events(c *gin.Context) {
 			// a live edit, pushed in memory so it reaches the browser at once
 			f := sse.Frame{ID: strconv.FormatInt(sub.Cursor(), 10), Event: "message.edited",
 				Data: fmt.Sprintf(`{"message_id":%q,"text":%s,"final":false}`, ed.MessageID.String(), jsonString(ed.Text))}
-			if write(f) != nil || rc.Flush() != nil {
+			if write(f) != nil || flush() != nil {
 				return
 			}
 		case <-heartbeat.C:
@@ -222,7 +229,7 @@ func (h *controller) Events(c *gin.Context) {
 			if current != actor {
 				return
 			}
-			if write(sse.Frame{Comment: "hb"}) != nil || rc.Flush() != nil {
+			if write(sse.Frame{Comment: "hb"}) != nil || flush() != nil {
 				return
 			}
 		case <-ctx.Done():
@@ -257,12 +264,19 @@ func (h *controller) AgentEvents(c *gin.Context) {
 		}
 	}()
 
+	// As in Events: a deadline per write, cleared after each flush.
 	rc := http.NewResponseController(c.Writer)
 	write := func(f sse.Frame) error {
 		if err := rc.SetWriteDeadline(time.Now().Add(h.opts.StreamWriteTimeout)); err != nil {
 			return err
 		}
 		return sse.Write(c.Writer, f)
+	}
+	flush := func() error {
+		if err := rc.Flush(); err != nil {
+			return err
+		}
+		return rc.SetWriteDeadline(time.Time{})
 	}
 	if err := rc.SetWriteDeadline(time.Now().Add(h.opts.StreamWriteTimeout)); err != nil {
 		writeError(c, fmt.Errorf("agent events: set write deadline: %w", err))
@@ -276,7 +290,7 @@ func (h *controller) AgentEvents(c *gin.Context) {
 	slog.InfoContext(ctx, "stream opened", "actor", actor.String(), "cursor", sub.Cursor())
 
 	cursor := strconv.FormatInt(sub.Cursor(), 10)
-	if write(sse.Frame{ID: cursor, Event: "ready", Data: `{"cursor":` + cursor + `}`}) != nil || rc.Flush() != nil {
+	if write(sse.Frame{ID: cursor, Event: "ready", Data: `{"cursor":` + cursor + `}`}) != nil || flush() != nil {
 		return
 	}
 
@@ -308,7 +322,7 @@ func (h *controller) AgentEvents(c *gin.Context) {
 					return
 				}
 			}
-			if rc.Flush() != nil {
+			if flush() != nil {
 				return
 			}
 		}
@@ -330,7 +344,7 @@ func (h *controller) AgentEvents(c *gin.Context) {
 			if current != actor {
 				return
 			}
-			if write(sse.Frame{Comment: "hb"}) != nil || rc.Flush() != nil {
+			if write(sse.Frame{Comment: "hb"}) != nil || flush() != nil {
 				return
 			}
 		case <-ctx.Done():
