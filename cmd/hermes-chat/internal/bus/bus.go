@@ -121,10 +121,13 @@ type Service interface {
 var _ Service = (*service)(nil)
 
 // editWrites throttles non-final message edits: per message, when its body was
-// last written, so a non-final edit touches the row only once a second.
+// last written, so a non-final edit touches the row only once a second. It
+// also keeps the text of the newest non-final edit, which the row may not have
+// yet, for the turn that ends without a final one (closeStreams).
 type editWrites struct {
 	mu   sync.Mutex
 	last map[string]time.Time // keyed by message id
+	text map[string]string    // keyed by message id; the newest non-final text
 }
 
 // FileStore keeps attachment bodies, each under its attachment's id. *storage.Files is one.
@@ -156,7 +159,7 @@ type service struct {
 func NewService(repo storage.Repository, clock Clock, opts ...Option) *service {
 	s := &service{
 		repo: repo, clock: clock, throttle: newThrottle(), argon: newArgonLimiter(), hub: newHub(),
-		editWrites: editWrites{last: map[string]time.Time{}},
+		editWrites: editWrites{last: map[string]time.Time{}, text: map[string]string{}},
 	}
 	for _, opt := range opts {
 		opt(s)

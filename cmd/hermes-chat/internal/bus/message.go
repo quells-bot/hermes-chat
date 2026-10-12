@@ -572,6 +572,11 @@ func (s *service) EditMessage(ctx context.Context, actor Actor, messageID ulid.U
 			}
 			s.editWrites.mu.Lock()
 			delete(s.editWrites.last, messageID.String())
+			delete(s.editWrites.text, messageID.String())
+			s.editWrites.mu.Unlock()
+		} else {
+			s.editWrites.mu.Lock()
+			s.editWrites.text[messageID.String()] = text
 			s.editWrites.mu.Unlock()
 		}
 		return nil

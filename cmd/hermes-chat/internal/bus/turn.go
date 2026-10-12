@@ -214,7 +214,7 @@ func (s *service) turnReport(ctx context.Context, actor Actor, messageID ulid.UL
 			return err
 		}
 		if target == DeliveryDone || target == DeliveryFailed {
-			closed, err = closeStreams(ctx, r, d.RoomID, actor.ID, messageID, at)
+			closed, err = s.closeStreams(ctx, r, d.RoomID, actor.ID, messageID, at)
 			if err != nil {
 				return err
 			}
@@ -238,24 +238,34 @@ func (s *service) turnReport(ctx context.Context, actor Actor, messageID ulid.UL
 	s.editWrites.mu.Lock()
 	for _, id := range closed {
 		delete(s.editWrites.last, id)
+		delete(s.editWrites.text, id)
 	}
 	s.editWrites.mu.Unlock()
 	return nil
 }
 
 // closeStreams finalizes every message the agent was still streaming in the
-// room that is newer than the turn's message, with the text it last stored,
-// and writes one message.edited event for each. A turn that ends without its
-// final edit would otherwise leave its reply streaming for ever. It returns
-// the ids it closed.
-func closeStreams(ctx context.Context, r storage.Repository, roomID string, agentID, turnMessageID ulid.ULID, at time.Time) ([]string, error) {
+// room that is newer than the turn's message, and writes one message.edited
+// event for each. The text is the newest non-final edit, which browsers have
+// already seen and the throttled row may not hold; after a restart that is
+// forgotten, and the stored text stands. A turn that ends without its final
+// edit would otherwise leave its reply streaming for ever. It cannot tell a
+// turn's reply from another stream the agent began in the room during the
+// turn, so that one is closed too. It returns the ids it closed.
+func (s *service) closeStreams(ctx context.Context, r storage.Repository, roomID string, agentID, turnMessageID ulid.ULID, at time.Time) ([]string, error) {
 	open, err := r.ListStreamingMessages(ctx, roomID, agentID.String(), turnMessageID.String())
 	if err != nil {
 		return nil, fmt.Errorf("list streaming messages: %w", err)
 	}
 	ids := make([]string, 0, len(open))
 	for _, m := range open {
-		if err := r.FinalizeMessage(ctx, m.ID, m.Body, at.UnixMilli()); err != nil {
+		s.editWrites.mu.Lock()
+		text, ok := s.editWrites.text[m.ID]
+		s.editWrites.mu.Unlock()
+		if !ok {
+			text = m.Body
+		}
+		if err := r.FinalizeMessage(ctx, m.ID, text, at.UnixMilli()); err != nil {
 			return nil, fmt.Errorf("finalize message: %w", err)
 		}
 		if err := putEvent(ctx, r, EventMessageEdited, roomID, m.ID, at); err != nil {

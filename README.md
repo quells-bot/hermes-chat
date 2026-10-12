@@ -166,7 +166,7 @@ is finalized, so a browser that loads a room mid-stream knows more text is
 coming; the logged `message.edited` carries `streaming:false`. When a turn
 ends (`done` or `failed`) without a final edit, the server finalizes the
 messages that agent was still streaming in the room since the turn's message,
-with the text last stored, and writes `message.edited` for each.
+with the text of their newest edit, and writes `message.edited` for each.
 
 Each of a room's `agents` carries `working`: whether that agent has a delivery
 in state `working` in that room. It is read when the room is loaded and no
@@ -398,8 +398,10 @@ an agent gets 403. Downloads support byte ranges.
 - A revoked or removed agent's open deliveries stall in `delivered`/`working`;
   nothing cancels another actor's turn.
 - A message an agent was streaming outside a turn (a scheduled report) stays
-  `streaming` until its final edit arrives; one streamed during a turn is
-  closed when the turn ends.
+  `streaming` until its final edit arrives. The server cannot tell which turn
+  a message belongs to, so a report the agent begins in a room while it has a
+  turn running there is closed when that turn ends: it stops at the text it
+  had, its later non-final edits are ignored, and its final edit still lands.
 - Stop everything writes one `room.changed` per room and one `pause` per agent
   per room.
 - A prompt nobody answers and its agent never expires stays open, with its

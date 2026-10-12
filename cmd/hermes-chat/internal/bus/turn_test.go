@@ -664,3 +664,70 @@ func TestRoom_AgentWorking(t *testing.T) { // Review Focus 6
 	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), m.ID))
 	assert.False(t, working(room.ID))
 }
+
+// Edits reach browsers at once but the row at most once a second, so the close
+// must keep what people last saw, not what was last stored.
+func TestTurnEnd_ClosesWithTheLastTextBroadcast(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	mID, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	reply := streamed(t, w, room, "half") // stored
+	require.NoError(t, w.s.EditMessage(ctx, agentActor(w.scout), reply.ID, "half and a bit more", false))
+	row, err := w.r.GetMessage(ctx, reply.ID.String())
+	require.NoError(t, err)
+	require.Equal(t, "half", row.Body) // the second edit came inside the throttle: broadcast, not stored
+
+	require.NoError(t, w.s.TurnFailed(ctx, agentActor(w.scout), mID))
+	got, err := w.s.GetMessage(ctx, w.kai, room.ID, reply.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "half and a bit more", got.Text)
+	assert.False(t, got.Streaming)
+}
+
+func TestTurnEnd_ClosesOnlyItsOwnAgentAndRoom(t *testing.T) {
+	w := newWorld(t)
+	room, scoutS, atlasS := connectedChannel(t, w)
+	defer scoutS.Close()
+	defer atlasS.Close()
+	dm := dmRoom(t, w)
+	turn, err := w.s.PostMessage(ctx, w.kai, room.ID, "@scout go", ulid.Zero)
+	require.NoError(t, err)
+	require.NoError(t, w.s.TurnWorking(ctx, agentActor(w.scout), turn.ID))
+	mine := streamed(t, w, room, "scout, in the turn's room")
+	elsewhere := streamed(t, w, dm, "scout, in another room")
+	theirs, err := w.s.PostMessage(ctx, agentActor(w.atlas), room.ID, "…", ulid.Zero)
+	require.NoError(t, err)
+	require.NoError(t, w.s.EditMessage(ctx, agentActor(w.atlas), theirs.ID, "atlas, in the turn's room", false))
+
+	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), turn.ID))
+	assert.False(t, isStreaming(t, w, room, mine.ID))
+	assert.True(t, isStreaming(t, w, dm, elsewhere.ID))
+	assert.True(t, isStreaming(t, w, room, theirs.ID))
+}
+
+func TestTurnEnd_ClosesAStreamInAPausedRoom(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	mID, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	reply := streamed(t, w, room, "half")
+	_, err := w.s.PauseRoom(ctx, w.kai, room.ID)
+	require.NoError(t, err)
+	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), mID)) // the plugin reports the stop as a finished turn
+	assert.False(t, isStreaming(t, w, room, reply.ID))
+}
+
+func TestEditMessage_NonFinalAfterTheCloseChangesNothing(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	mID, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	reply := streamed(t, w, room, "half")
+	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), mID))
+	require.NoError(t, w.s.EditMessage(ctx, agentActor(w.scout), reply.ID, "late", false))
+	got, err := w.s.GetMessage(ctx, w.kai, room.ID, reply.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "half", got.Text)
+	assert.False(t, got.Streaming)
+}

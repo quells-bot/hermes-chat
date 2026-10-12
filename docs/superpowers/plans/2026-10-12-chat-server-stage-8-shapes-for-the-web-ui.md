@@ -32,8 +32,8 @@
 
 - The message JSON gains `streaming` (bool): true exactly when an agent's non-final edit has been stored for the message and the message is not finalized. A human message, and an agent message posted in one piece, are never streaming.
 - `messages.edited_at` records the time of the last stored non-final edit (null until there is one).
-- **When a turn ends (`done` or `failed`), the server finalizes every message the agent was still streaming in that room that is newer than the turn's message**: it sets `finalized_at`, keeps the stored text, and writes one `message.edited` event per message. A real final edit arriving later still lands (finalizing twice is allowed today).
-- A stream outside any turn (a scheduled report) is closed only by its own final edit.
+- **When a turn ends (`done` or `failed`), the server finalizes every message the agent was still streaming in that room that is newer than the turn's message**: it sets `finalized_at`, stores the text of the newest non-final edit (which browsers have seen and the throttled row may lack), and writes one `message.edited` event per message. A real final edit arriving later still lands (finalizing twice is allowed today).
+- A stream outside any turn (a scheduled report) is closed only by its own final edit. *(Amended after review: the server cannot tell which turn a message belongs to, so a report begun in a room while the agent has a turn running there is closed with that turn. Accepted and documented in README "Known limits".)*
 
 ## Global Constraints
 
