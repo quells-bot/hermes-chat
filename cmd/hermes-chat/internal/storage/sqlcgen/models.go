@@ -17,11 +17,51 @@ type Agent struct {
 	CreatedAt   int64
 }
 
+type Event struct {
+	ID        int64
+	RoomID    string
+	Kind      string
+	SubjectID string
+	CreatedAt int64
+}
+
 type Human struct {
 	ID           string
 	Username     string
 	CreatedAt    int64
 	PasswordHash string
+}
+
+type Message struct {
+	ID            string
+	RoomID        string
+	AuthorHumanID sql.NullString
+	AuthorAgentID sql.NullString
+	ReplyToID     sql.NullString
+	Body          string
+	CreatedAt     int64
+}
+
+type Room struct {
+	ID         string
+	Topic      string
+	DmHumanID  sql.NullString
+	DmAgentID  sql.NullString
+	CreatedAt  int64
+	ArchivedAt sql.NullInt64
+}
+
+type RoomAgent struct {
+	RoomID   string
+	AgentID  string
+	JoinedAt int64
+}
+
+type RoomHuman struct {
+	RoomID            string
+	HumanID           string
+	JoinedAt          int64
+	LastReadMessageID string
 }
 
 type Session struct {

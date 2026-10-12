@@ -22,6 +22,14 @@ type Human struct {
 	CreatedAt time.Time // UTC, millisecond precision
 }
 
+func humanFromRow(row storage.Human) (Human, error) {
+	id, err := ulid.ParseStrict(row.ID)
+	if err != nil {
+		return Human{}, fmt.Errorf("stored human %q has an invalid id: %w", row.Username, err)
+	}
+	return Human{ID: id, Username: row.Username, CreatedAt: time.UnixMilli(row.CreatedAtMs).UTC()}, nil
+}
+
 // normalizeUsername trims and lowercases username and reports whether the
 // result is a valid username.
 func normalizeUsername(username string) (string, bool) {
@@ -67,7 +75,7 @@ func (s *service) GetHuman(ctx context.Context, id ulid.ULID) (Human, error) {
 	if err != nil {
 		return Human{}, fmt.Errorf("get human: %w", err)
 	}
-	return Human{ID: id, Username: row.Username, CreatedAt: time.UnixMilli(row.CreatedAtMs).UTC()}, nil
+	return humanFromRow(row)
 }
 
 // SetHumanPassword replaces a user's password and ends all of that user's
@@ -133,11 +141,11 @@ func (s *service) ListHumans(ctx context.Context) ([]Human, error) {
 	}
 	out := make([]Human, 0, len(rows))
 	for _, r := range rows {
-		id, err := ulid.ParseStrict(r.ID)
+		h, err := humanFromRow(r)
 		if err != nil {
-			return nil, fmt.Errorf("stored human %q has an invalid id: %w", r.Username, err)
+			return nil, err
 		}
-		out = append(out, Human{ID: id, Username: r.Username, CreatedAt: time.UnixMilli(r.CreatedAtMs).UTC()})
+		out = append(out, h)
 	}
 	return out, nil
 }

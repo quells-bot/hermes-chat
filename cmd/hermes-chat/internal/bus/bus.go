@@ -18,6 +18,9 @@ var (
 
 	ErrUnauthenticated = errors.New("unauthenticated")
 	ErrForbidden       = errors.New("forbidden")
+
+	// ErrUnavailable reports that the server is shutting down.
+	ErrUnavailable = errors.New("unavailable")
 )
 
 // ValidationError reports invalid input. Its text is the message alone;
@@ -51,6 +54,25 @@ type Service interface {
 	Login(ctx context.Context, username, password, ip string) (Session, error) // ErrInvalidCredentials, ThrottledError
 	Logout(ctx context.Context, token string) error                            // an unknown or empty token is not an error
 	ResolveSession(ctx context.Context, token string) (Actor, error)           // ErrUnauthenticated: empty, unknown, or expired
+
+	CreateRoom(ctx context.Context, actor Actor, topic string, agentIDs []ulid.ULID) (Room, error)   // ErrValidation
+	OpenDM(ctx context.Context, actor Actor, agentID ulid.ULID) (room Room, created bool, err error) // ErrValidation: no such agent
+	ListRooms(ctx context.Context, actor Actor) ([]Room, error)                                      // the actor's rooms, ordered by id; archived included
+	GetRoom(ctx context.Context, actor Actor, roomID ulid.ULID) (Room, error)                        // ErrNotFound
+	UpdateRoom(ctx context.Context, actor Actor, roomID ulid.ULID, u RoomUpdate) (Room, error)       // ErrNotFound, ErrValidation, ErrRoomArchived
+	InviteHuman(ctx context.Context, actor Actor, roomID, humanID ulid.ULID) (Room, error)           // the same three
+	AddRoomAgent(ctx context.Context, actor Actor, roomID, agentID ulid.ULID) (Room, error)          // the same three
+	RemoveRoomAgent(ctx context.Context, actor Actor, roomID, agentID ulid.ULID) (Room, error)       // the same three
+
+	PostMessage(ctx context.Context, actor Actor, roomID ulid.ULID, text string, replyTo ulid.ULID) (Message, error) // ErrNotFound, ErrValidation, ErrRoomArchived
+	GetMessage(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) (Message, error)                       // ErrNotFound, also for a message in another room
+	// ListMessages returns up to limit messages older than before (zero: the newest), oldest first.
+	// A limit under 1 means DefaultPageSize; one over MaxPageSize means MaxPageSize.
+	ListMessages(ctx context.Context, actor Actor, roomID, before ulid.ULID, limit int) ([]Message, error) // ErrNotFound
+	MarkRoomRead(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) error                      // ErrNotFound, ErrValidation
+
+	// Subscribe opens a stream of the actor's events after the given event ID; FromNow starts at the end of the log.
+	Subscribe(ctx context.Context, actor Actor, after int64) (*Subscription, error) // ErrForbidden, ErrValidation, ErrUnavailable
 }
 
 var _ Service = (*service)(nil)
@@ -60,11 +82,12 @@ type service struct {
 	clock    Clock
 	throttle *throttle
 	argon    argonLimiter
+	hub      *Hub
 }
 
 // NewService returns a Service backed by repo, reading time from clock.
 func NewService(repo storage.Repository, clock Clock) *service {
-	return &service{repo: repo, clock: clock, throttle: newThrottle(), argon: newArgonLimiter()}
+	return &service{repo: repo, clock: clock, throttle: newThrottle(), argon: newArgonLimiter(), hub: newHub()}
 }
 
 // Health reports whether storage is reachable.

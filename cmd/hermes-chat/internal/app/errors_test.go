@@ -28,6 +28,8 @@ func TestWriteError_Table(t *testing.T) {
 		{fmt.Errorf("agent %q: %w", "secret-handle", bus.ErrNotFound), 404, `{"error":{"code":"not_found","message":"not found"}}`},
 		{fmt.Errorf("username %q is already taken: %w", "kai", bus.ErrConflict), 409, `{"error":{"code":"conflict","message":"already exists"}}`},
 		{bus.ThrottledError{RetryAfter: 1500 * time.Millisecond}, 429, `{"error":{"code":"throttled","message":"too many attempts; try again later"}}`},
+		{bus.ErrRoomArchived, 409, `{"error":{"code":"room_archived","message":"room is archived"}}`},
+		{fmt.Errorf("subscribe: %w", bus.ErrUnavailable), 503, `{"error":{"code":"unavailable","message":"shutting down; try again shortly"}}`},
 		{errors.New("disk on fire"), 500, `{"error":{"code":"internal","message":"internal error"}}`},
 		{fmt.Errorf("x: %w", storage.ErrNotFound), 500, `{"error":{"code":"internal","message":"internal error"}}`}, // a storage sentinel that leaked is a bug, not a 404
 	}

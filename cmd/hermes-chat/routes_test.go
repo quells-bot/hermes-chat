@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -76,4 +77,24 @@ func TestRoutes_MiddlewareChain(t *testing.T) {
 	r.Header.Set("Origin", "https://evil.test")
 	e.ServeHTTP(w, r)
 	assert.Equal(t, 403, w.Code)
+}
+
+func TestRoutes_Table(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	routes(e, app.NewController(bus.NewService(storagetest.NewRepo(t), nil), app.Options{}), newLogger(io.Discard, -4))
+	var got []string
+	for _, r := range e.Routes() {
+		got = append(got, r.Method+" "+r.Path)
+	}
+	sort.Strings(got)
+	assert.Equal(t, []string{
+		"DELETE /api/rooms/:room/agents/:agent",
+		"GET /agent/me", "GET /api/agents", "GET /api/events", "GET /api/humans", "GET /api/me", "GET /api/rooms",
+		"GET /api/rooms/:room", "GET /api/rooms/:room/messages", "GET /api/rooms/:room/messages/:message", "GET /healthz",
+		"PATCH /api/rooms/:room",
+		"POST /api/dms", "POST /api/login", "POST /api/logout", "POST /api/rooms", "POST /api/rooms/:room/agents",
+		"POST /api/rooms/:room/humans", "POST /api/rooms/:room/messages",
+		"PUT /api/rooms/:room/read",
+	}, got)
 }

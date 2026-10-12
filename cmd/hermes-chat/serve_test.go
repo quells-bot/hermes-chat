@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,8 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/sse"
 )
 
 // startServe runs serve on two 127.0.0.1:0 listeners and returns their base URLs,
@@ -186,4 +189,166 @@ func TestServe_TrustedProxyForwardedForIsHonored(t *testing.T) {
 		resp := login(t, http.DefaultClient, api, fmt.Sprintf("user%d", i), "", "X-Forwarded-For", fmt.Sprintf("203.0.113.%d", i))
 		require.Equal(t, 401, resp.StatusCode, i)
 	}
+}
+
+// apiCall sends a JSON request with Origin set to api and returns the status
+// and the decoded object (nil for an empty body).
+func apiCall(t *testing.T, client *http.Client, method, api, path, body string) (int, map[string]any) {
+	t.Helper()
+	var rd io.Reader
+	if body != "" {
+		rd = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method, api+path, rd)
+	require.NoError(t, err)
+	req.Header.Set("Origin", api)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	if len(raw) == 0 {
+		return resp.StatusCode, nil
+	}
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(raw, &out), string(raw))
+	return resp.StatusCode, out
+}
+
+// openEvents opens GET /api/events with an optional Last-Event-ID and registers
+// cleanup that closes it.
+func openEvents(t *testing.T, client *http.Client, api, lastEventID string) (*http.Response, *sse.Decoder) {
+	t.Helper()
+	req, err := http.NewRequest("GET", api+"/api/events", nil)
+	require.NoError(t, err)
+	if lastEventID != "" {
+		req.Header.Set("Last-Event-ID", lastEventID)
+	}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { resp.Body.Close() })
+	require.Equal(t, 200, resp.StatusCode)
+	return resp, sse.NewDecoder(resp.Body)
+}
+
+// nextEvent returns the next frame that is not a comment, failing the test
+// after 5 seconds.
+func nextEvent(t *testing.T, d *sse.Decoder) sse.Frame {
+	t.Helper()
+	type result struct {
+		f   sse.Frame
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		for {
+			f, err := d.Next()
+			if err != nil || f.Comment == "" || f.Event != "" || f.Data != "" || f.ID != "" {
+				ch <- result{f, err}
+				return
+			}
+		}
+	}()
+	select {
+	case r := <-ch:
+		require.NoError(t, r.err)
+		return r.f
+	case <-time.After(5 * time.Second):
+		t.Fatal("no event within 5 seconds")
+		return sse.Frame{}
+	}
+}
+
+// The whole stage across the CLI and a running server: two humans, one agent, one room, one stream each.
+func TestServe_RoomsAndStreamEndToEnd(t *testing.T) {
+	migrated(t)
+	t.Setenv("HERMES_CHAT_COOKIE_SECURE", "false")
+	runCmdIn(t, pw+"\n", "user", "add", "kai")
+	runCmdIn(t, pw+"\n", "user", "add", "ada")
+	runCmd(t, "agent", "add", "scout", "Scout")
+	api, _, _, _ := startServeWithEnv(t)
+	client := func(name string) *http.Client {
+		jar, err := cookiejar.New(nil)
+		require.NoError(t, err)
+		c := &http.Client{Jar: jar}
+		require.Equal(t, 200, login(t, c, api, name, pw).StatusCode)
+		return c
+	}
+	kai, ada := client("kai"), client("ada")
+
+	_, agents := apiCall(t, kai, "GET", api, "/api/agents", "")
+	scout := agents["agents"].([]any)[0].(map[string]any)["id"].(string)
+	_, humans := apiCall(t, kai, "GET", api, "/api/humans", "")
+	adaID := humans["humans"].([]any)[0].(map[string]any)["id"].(string)
+
+	_, mine := openEvents(t, kai, api, "")
+	ready := nextEvent(t, mine)
+	assert.Equal(t, "ready", ready.Event)
+	_, hers := openEvents(t, ada, api, "")
+	nextEvent(t, hers)
+
+	code, room := apiCall(t, kai, "POST", api, "/api/rooms", `{"topic":"Trip","agent_ids":["`+scout+`"]}`)
+	require.Equal(t, 201, code)
+	path := "/api/rooms/" + room["id"].(string)
+	assert.Equal(t, "room.changed", nextEvent(t, mine).Event)
+	code, _ = apiCall(t, ada, "GET", api, path, "")
+	assert.Equal(t, 404, code)
+
+	code, _ = apiCall(t, kai, "POST", api, path+"/humans", `{"human_id":"`+adaID+`"}`)
+	require.Equal(t, 200, code)
+	assert.Equal(t, "room.changed", nextEvent(t, mine).Event)
+	assert.Equal(t, "room.changed", nextEvent(t, hers).Event) // the room's creation, now hers to see
+	assert.Equal(t, "room.changed", nextEvent(t, hers).Event) // and the invitation
+
+	code, msg := apiCall(t, ada, "POST", api, path+"/messages", `{"text":"hello from ada"}`)
+	require.Equal(t, 201, code)
+	for _, d := range []*sse.Decoder{mine, hers} {
+		f := nextEvent(t, d)
+		assert.Equal(t, "message.posted", f.Event)
+		assert.Contains(t, f.Data, msg["id"].(string))
+		assert.Contains(t, f.Data, "hello from ada")
+	}
+	_, list := apiCall(t, kai, "GET", api, path+"/messages", "")
+	assert.Len(t, list["messages"], 1)
+
+	_, again := openEvents(t, kai, api, ready.ID) // a reconnect replays what the first stream saw, in order
+	assert.Equal(t, ready.ID, nextEvent(t, again).ID)
+	for _, want := range []string{"room.changed", "room.changed", "message.posted"} {
+		assert.Equal(t, want, nextEvent(t, again).Event)
+	}
+
+	code, _, _ = runCmd(t, "user", "remove", "ada") // Review Focus 4, while the server is running
+	require.Equal(t, 0, code)
+	_, list = apiCall(t, kai, "GET", api, path+"/messages", "")
+	m := list["messages"].([]any)[0].(map[string]any)
+	assert.Nil(t, m["author"])
+	assert.Equal(t, "hello from ada", m["text"])
+}
+
+func TestServe_ShutdownClosesOpenStreams(t *testing.T) {
+	migrated(t)
+	t.Setenv("HERMES_CHAT_COOKIE_SECURE", "false")
+	runCmdIn(t, pw+"\n", "user", "add", "kai")
+	api, _, cancel, done := startServeWithEnv(t)
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	client := &http.Client{Jar: jar}
+	require.Equal(t, 200, login(t, client, api, "kai", pw).StatusCode)
+	_, d := openEvents(t, client, api, "")
+	nextEvent(t, d)
+
+	start := time.Now()
+	cancel()
+	select {
+	case err := <-done:
+		assert.NoError(t, err)
+		assert.Less(t, time.Since(start), 3*time.Second, "the stream must not hold shutdown for the whole grace period")
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not return")
+	}
+	_, err = d.Next() // the stream is over
+	assert.Error(t, err)
 }
