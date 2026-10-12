@@ -122,6 +122,11 @@ type Repository interface {
 	SetNoteEntryText(ctx context.Context, id, text string) error                      // ErrNotFound
 	SetNoteEntryApprovedAt(ctx context.Context, id string, approvedAtMs *int64) error // ErrNotFound; nil returns it to quarantine
 	DeleteNoteEntry(ctx context.Context, id string) error                             // ErrNotFound
+
+	PutAttachment(ctx context.Context, a Attachment) error                                            // ErrConflict on duplicate id; MessageID is not written: a new attachment is on no message
+	GetAttachment(ctx context.Context, id string) (Attachment, error)                                 // ErrNotFound
+	AttachToMessage(ctx context.Context, id, messageID string) error                                  // ErrNotFound when it is missing or already on a message
+	ListAttachmentsInRange(ctx context.Context, roomID, firstID, lastID string) ([]Attachment, error) // those on messages in the id range; by message id, then id; empty, not nil
 }
 
 type repo struct {

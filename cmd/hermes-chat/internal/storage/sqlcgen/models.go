@@ -32,6 +32,18 @@ type Agent struct {
 	CreatedAt   int64
 }
 
+type Attachment struct {
+	ID              string
+	RoomID          string
+	MessageID       sql.NullString
+	UploaderHumanID sql.NullString
+	UploaderAgentID sql.NullString
+	Name            string
+	ContentType     string
+	Size            int64
+	CreatedAt       int64
+}
+
 type Delivery struct {
 	RoomID    string
 	AgentID   string

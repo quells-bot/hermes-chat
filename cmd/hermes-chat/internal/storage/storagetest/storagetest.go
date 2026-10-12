@@ -33,3 +33,13 @@ func NewRepo(t testing.TB) storage.Repository {
 	t.Helper()
 	return storage.NewRepo(Open(t))
 }
+
+// NewFiles returns a file store over a temp directory.
+func NewFiles(t testing.TB) *storage.Files {
+	t.Helper()
+	f, err := storage.OpenFiles(t.TempDir())
+	if err != nil {
+		t.Fatalf("open files: %v", err)
+	}
+	return f
+}
