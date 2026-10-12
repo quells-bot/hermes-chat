@@ -129,9 +129,12 @@ func TestOffSwitchE2E_TurnCapStopsAPingPong(t *testing.T) {
 	_, err = atlas.PostMessage(bg, roomID, "@scout four", "")
 	assert.ErrorContains(t, err, "409 paused")
 	_, list := apiCall(t, w.human, "GET", w.api, "/api/rooms/"+roomID+"/messages", "")
+	found := false
 	for _, m := range list["messages"].([]any) {
 		if mm := m.(map[string]any); mm["id"] == three {
+			found = true
 			assert.Equal(t, "waiting", mm["deliveries"].([]any)[0].(map[string]any)["state"])
 		}
 	}
+	require.True(t, found, "message three is in the list")
 }

@@ -419,6 +419,19 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 		// There is nothing to load: the event's subject is the room itself,
 		// already set on e.RoomID.
 	case EventControlSteer:
+		// A closed room hands an agent no human text, even a steer written
+		// before the pause that the agent missed while its stream was down.
+		// The skipped steer is dropped: resuming the room does not send it.
+		roomRow, err := r.GetRoom(ctx, row.RoomID)
+		if errors.Is(err, storage.ErrNotFound) {
+			return Event{}, false, nil
+		}
+		if err != nil {
+			return Event{}, false, fmt.Errorf("get room: %w", err)
+		}
+		if closed, err := paused(ctx, r, roomRow); err != nil || closed {
+			return Event{}, false, err
+		}
 		msgRow, err := r.GetMessage(ctx, row.SubjectID)
 		if errors.Is(err, storage.ErrNotFound) {
 			return Event{}, false, nil

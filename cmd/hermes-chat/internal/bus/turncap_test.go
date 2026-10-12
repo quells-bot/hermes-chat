@@ -164,3 +164,24 @@ func TestUpdateRoom_TurnCap(t *testing.T) {
 	_, err = w.s.UpdateRoom(ctx, w.kai, room.ID, bus.RoomUpdate{Archived: ptr(true), TurnCap: ptr(3)})
 	assert.ErrorIs(t, err, bus.ErrRoomArchived)
 }
+
+func TestTurnCap_FiresWhenTurnDoneReleasesAQueuedAgentMessage(t *testing.T) {
+	w := newWorld(t)
+	room, _, _ := connectedChannel(t, w)
+	_, err := w.s.UpdateRoom(ctx, w.kai, room.ID, bus.RoomUpdate{TurnCap: ptr(1)})
+	require.NoError(t, err)
+	first, err := w.s.PostMessage(ctx, agentActor(w.scout), room.ID, "@atlas one", ulid.Zero)
+	require.NoError(t, err)
+	require.Equal(t, bus.DeliveryDelivered, first.Deliveries[0].State) // the count is now at the cap
+	queued, err := w.s.PostMessage(ctx, agentActor(w.scout), room.ID, "@atlas two", ulid.Zero)
+	require.NoError(t, err)
+	require.Equal(t, bus.DeliveryWaiting, queued.Deliveries[0].State) // behind a busy atlas
+	got, _ := w.s.GetRoom(ctx, w.kai, room.ID)
+	require.False(t, got.Paused())
+
+	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.atlas), first.ID))
+	assert.Equal(t, bus.DeliveryWaiting, stateOf(t, w, room, queued.ID, w.atlas))
+	got, _ = w.s.GetRoom(ctx, w.kai, room.ID)
+	assert.True(t, got.Paused())
+	assert.Equal(t, bus.PauseTurnCap, got.PauseReason)
+}

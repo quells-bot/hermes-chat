@@ -291,3 +291,46 @@ func TestResume_AnAgentThatReconnectedWithACursorIsStillHandedIt(t *testing.T) {
 	assert.Equal(t, m.ID, got[0].Message.ID)
 	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), m.ID))
 }
+
+func TestPause_AStreamThatDroppedIsNotHandedASteerWrittenBeforeThePause(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	_, sub := startedTurn(t, w, room)
+	drain(t, sub)
+	cursor := sub.Cursor()
+	sub.Close() // the stream drops mid-turn
+
+	_, err := w.s.Steer(ctx, w.kai, room.ID, w.scout.ID, "faster")
+	require.NoError(t, err)
+	_, err = w.s.PauseRoom(ctx, w.kai, room.ID)
+	require.NoError(t, err)
+
+	back, err := w.s.Subscribe(ctx, agentActor(w.scout), cursor)
+	require.NoError(t, err)
+	defer back.Close()
+	evs := drain(t, back)
+	assert.Empty(t, of(evs, bus.EventControlSteer), "a paused room hands the agent no human text")
+	assert.Len(t, of(evs, bus.EventControlPause), 1)
+}
+
+func TestUnarchiveAndResume_ReleaseNothingWhileTheOtherClosureHolds(t *testing.T) {
+	w := newWorld(t)
+	room := convRoom(t, w)
+	agentSub(t, w, w.scout)
+	_, err := w.s.PauseRoom(ctx, w.kai, room.ID)
+	require.NoError(t, err)
+	m, err := w.s.PostMessage(ctx, w.kai, room.ID, "held", ulid.Zero)
+	require.NoError(t, err)
+	_, err = w.s.UpdateRoom(ctx, w.kai, room.ID, bus.RoomUpdate{Archived: ptr(true)})
+	require.NoError(t, err)
+
+	_, err = w.s.UpdateRoom(ctx, w.kai, room.ID, bus.RoomUpdate{Archived: ptr(false)})
+	require.NoError(t, err)
+	assert.Equal(t, bus.DeliveryWaiting, stateOf(t, w, room, m.ID, w.scout), "unarchiving a paused room releases nothing")
+
+	_, err = w.s.UpdateRoom(ctx, w.kai, room.ID, bus.RoomUpdate{Archived: ptr(true)})
+	require.NoError(t, err)
+	_, err = w.s.ResumeRoom(ctx, w.kai, room.ID)
+	require.NoError(t, err)
+	assert.Equal(t, bus.DeliveryWaiting, stateOf(t, w, room, m.ID, w.scout), "resuming an archived room releases nothing")
+}

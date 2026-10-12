@@ -100,6 +100,14 @@ func (s *service) resumeDeliveries(ctx context.Context, r storage.Repository, ro
 		if !s.hub.agentConnected(a.ID) {
 			continue
 		}
+		// An earlier agent's release can have paused the room for the turn cap.
+		cur, err := r.GetRoom(ctx, roomID)
+		if err != nil {
+			return fmt.Errorf("get room: %w", err)
+		}
+		if closed, err := paused(ctx, r, cur); err != nil || closed {
+			return err
+		}
 		d, err := r.GetDeliveredDelivery(ctx, roomID, a.ID.String())
 		if err == nil {
 			if err := putAgentEvent(ctx, r, EventDelivery, roomID, d.MessageID, a.ID, at); err != nil {

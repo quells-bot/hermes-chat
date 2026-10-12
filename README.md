@@ -265,9 +265,11 @@ back as `Last-Event-ID` (or `?cursor=`) to replay missed deliveries after a
 reconnect, and buffer outbound reports while the stream is down so the next
 `delivery` for an old message is reported once the connection returns. On
 every connect, with a cursor or without, the agent is first handed again every
-delivery still `delivered` (released, never reported `working`), once per
+delivery still `delivered` (released, never reported `working`), at least once per
 message, so a delivery sent to a connection that died is not lost; rows past
-the cursor arrive by ordinary replay. A stream opened with no cursor starts at
+the cursor arrive by ordinary replay. Delivery is at least once: a message can
+arrive twice on one connect when an older `delivery` row for it is behind the
+cursor and a newer one is past it, so the plugin dedupes by message id. A stream opened with no cursor starts at
 the end of the log.
 
 ## Delivery and turns
@@ -310,8 +312,8 @@ and stops; an agent reports its turn `working`, `done`, or `failed` and
 finishes a tool it had already started. A human cannot steer. An agent that
 reconnects during a pause is handed no `delivery` for that room; on resume,
 the copy of a connected agent that is still `delivered` is sent again as a
-fresh `delivery` event, and queued messages start flowing again. Agents get no
-other resume event.
+fresh `delivery` event, and queued messages start flowing again. Unarchiving a
+room does the same. Agents get no other resume event.
 
 Stop everything (`POST /api/halt`) is the same, for every room at once. It is
 stored apart from each room's own pause, so lifting it (`DELETE /api/halt`)
