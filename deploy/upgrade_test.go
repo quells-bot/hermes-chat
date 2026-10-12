@@ -28,6 +28,9 @@ func newBox(t *testing.T) *box {
 	b := &box{t: t, dir: t.TempDir(), script: script}
 	b.write("bin/systemctl", `#!/bin/sh
 echo "$*" >> "$(dirname "$0")/../calls.log"
+if [ "$1" = stop ] && [ -n "$STUB_HUP_ON_SECOND_STOP" ] && [ "$(grep -c '^stop' "$(dirname "$0")/../calls.log")" = 2 ]; then
+  kill -HUP "$PPID"
+fi
 if [ "$1" = start ] && grep -q STARTFAIL "$HERMES_CHAT_BIN" 2>/dev/null; then
   exit 1
 fi
@@ -99,7 +102,7 @@ func (b *box) run(candidate string) (int, string) {
 	return b.runIn("", candidate, b.path("bin"))
 }
 
-func (b *box) runIn(dir, candidate, stubPath string) (int, string) {
+func (b *box) runIn(dir, candidate, stubPath string, extraEnv ...string) (int, string) {
 	b.t.Helper()
 	cmd := exec.Command("bash", b.script, candidate)
 	cmd.Dir = dir
@@ -111,6 +114,7 @@ func (b *box) runIn(dir, candidate, stubPath string) (int, string) {
 		"HERMES_CHAT_HEALTH_TIMEOUT=2",
 		"STUB_DB="+b.path("state/chat.db"),
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	err := cmd.Run()
@@ -266,4 +270,17 @@ func TestUpgrade_BareNameCandidateIsTheFileInTheWorkingDirectory(t *testing.T) {
 	assert.Contains(t, stderr, "candidate does not run on this host")
 	assert.Empty(t, b.calls())
 	assert.Contains(t, b.read("installed/hermes-chat"), "v1")
+}
+
+func TestUpgrade_RecoveryFinishesWhenSignalledDuringRollback(t *testing.T) {
+	b := newBox(t)
+	b.install("v1")
+	b.write("state/chat.db", "rows")
+	// The rollback's stop (the second one) sends the script a HUP before returning.
+	code, stderr := b.runIn("", b.candidate("BROKEN"), b.path("bin"), "STUB_HUP_ON_SECOND_STOP=1")
+	assert.Equal(t, 1, code)
+	assert.Contains(t, stderr, "rolled back to the previous version")
+	assert.Contains(t, b.read("installed/hermes-chat"), "v1")
+	assert.Equal(t, "rows", b.read("state/chat.db"))
+	assert.Equal(t, []string{"stop hermes-chat", "start hermes-chat", "stop hermes-chat", "start hermes-chat"}, b.calls())
 }

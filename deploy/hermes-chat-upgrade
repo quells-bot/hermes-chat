@@ -72,7 +72,9 @@ db_name="$(basename "$db_path")"
 # and prints one line saying what state it is in. It never fails.
 recover() {
 	local reason="$1" at="$phase" suffix result
-	trap - EXIT HUP INT TERM
+	# Recovery must run to completion: ignore further signals from here on.
+	trap - EXIT
+	trap '' HUP INT TERM
 	phase=finished
 	set +e
 	rm -f "$BIN.new"
