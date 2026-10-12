@@ -68,10 +68,17 @@ moved_previous=0
 db_dir="$(dirname "$db_path")"
 db_name="$(basename "$db_path")"
 
+# start_unit clears a start limit left by a crash loop (reset-failed may find
+# nothing to reset, which is fine), then starts the unit.
+start_unit() {
+	systemctl reset-failed "$UNIT" 2>/dev/null || true
+	systemctl start "$UNIT"
+}
+
 # recover puts the host back as it was before the upgrade, as far as it got,
 # and prints one line saying what state it is in. It never fails.
 recover() {
-	local reason="$1" at="$phase" suffix result
+	local reason="$1" at="$phase" suffix result started=0
 	# Recovery must run to completion: ignore further signals from here on.
 	trap - EXIT
 	trap '' HUP INT TERM
@@ -97,13 +104,22 @@ recover() {
 		;;
 	esac
 	if [ "$had_bin" -eq 1 ]; then
-		systemctl start "$UNIT" || true
+		if start_unit && systemctl is-active --quiet "$UNIT"; then
+			started=1
+		fi
 		result="rolled back to the previous version"
+		if [ "$started" -eq 0 ]; then
+			result="$result, but it did not start: check systemctl status $UNIT"
+		fi
 	else
 		result="nothing to roll back to"
 	fi
 	if [ "$at" = "stopped" ] && [ "$had_bin" -eq 1 ]; then
-		result="restarted the previous version"
+		if [ "$started" -eq 1 ]; then
+			result="restarted the previous version"
+		else
+			result="the previous version did not start: check systemctl status $UNIT"
+		fi
 	fi
 	echo "$reason; $result" >&2
 }
@@ -153,7 +169,7 @@ mv -f "$BIN.new" "$BIN"
 phase=started
 healthy=0
 elapsed=0
-if systemctl start "$UNIT"; then
+if start_unit; then
 	while :; do
 		if [ "$tls_mode" = "autocert" ]; then
 			if curl -fsS -o /dev/null --max-time 5 --resolve "$tls_domain:$port:127.0.0.1" "$health_url" 2>/dev/null; then

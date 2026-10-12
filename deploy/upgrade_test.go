@@ -27,16 +27,39 @@ func newBox(t *testing.T) *box {
 	require.NoError(t, err)
 	b := &box{t: t, dir: t.TempDir(), script: script}
 	b.write("bin/systemctl", `#!/bin/sh
-echo "$*" >> "$(dirname "$0")/../calls.log"
-if [ "$1" = stop ] && [ -n "$STUB_HUP_ON_SECOND_STOP" ] && [ "$(grep -c '^stop' "$(dirname "$0")/../calls.log")" = 2 ]; then
-  kill -HUP "$PPID"
-fi
-if [ "$1" = start ] && grep -q STARTFAIL "$HERMES_CHAT_BIN" 2>/dev/null; then
-  exit 1
-fi
-if [ "$1" = start ] && grep -q BROKEN "$HERMES_CHAT_BIN" 2>/dev/null; then
-  echo migrated >> "$STUB_DB"
-fi
+# Models a unit: "active" exists while the last start succeeded; when
+# STUB_START_LIMIT is set, starting a BROKEN binary trips a start limit that
+# refuses every start until a reset-failed call.
+d="$(dirname "$0")/.."
+echo "$*" >> "$d/calls.log"
+case "$1" in
+stop)
+  rm -f "$d/active"
+  if [ -n "$STUB_HUP_ON_SECOND_STOP" ] && [ "$(grep -c '^stop' "$d/calls.log")" = 2 ]; then
+    kill -HUP "$PPID"
+  fi
+  ;;
+reset-failed)
+  rm -f "$d/limited"
+  ;;
+is-active)
+  [ -f "$d/active" ]
+  exit $?
+  ;;
+start)
+  if [ -f "$d/limited" ] || grep -q STARTFAIL "$HERMES_CHAT_BIN" 2>/dev/null; then
+    rm -f "$d/active"
+    exit 1
+  fi
+  touch "$d/active"
+  if grep -q BROKEN "$HERMES_CHAT_BIN" 2>/dev/null; then
+    echo migrated >> "$STUB_DB"
+    if [ -n "$STUB_START_LIMIT" ]; then
+      touch "$d/limited"
+    fi
+  fi
+  ;;
+esac
 exit 0
 `)
 	b.write("bin/curl", `#!/bin/sh
@@ -133,7 +156,7 @@ func TestUpgrade_FirstInstall(t *testing.T) {
 	assert.Contains(t, b.read("installed/hermes-chat"), "v1")
 	assert.NoFileExists(t, b.path("installed/hermes-chat.previous"))
 	assert.NoDirExists(t, b.path("state/backups"))
-	assert.Equal(t, []string{"stop hermes-chat", "start hermes-chat"}, b.calls())
+	assert.Equal(t, []string{"stop hermes-chat", "reset-failed hermes-chat", "start hermes-chat"}, b.calls())
 }
 
 func TestUpgrade_KeepsPreviousBinaryAndCopiesDatabase(t *testing.T) {
@@ -161,7 +184,7 @@ func TestUpgrade_RollsBackBinaryAndDatabase(t *testing.T) {
 	assert.Contains(t, stderr, "rolled back to the previous version")
 	assert.Contains(t, b.read("installed/hermes-chat"), "v1")
 	assert.Equal(t, "rows", b.read("state/chat.db")) // the stub's "migrated" line is gone
-	assert.Equal(t, []string{"stop hermes-chat", "start hermes-chat", "stop hermes-chat", "start hermes-chat"}, b.calls())
+	assert.Equal(t, []string{"stop hermes-chat", "reset-failed hermes-chat", "start hermes-chat", "stop hermes-chat", "reset-failed hermes-chat", "start hermes-chat", "is-active --quiet hermes-chat"}, b.calls())
 }
 
 func TestUpgrade_FailedFirstInstallLeavesTheUnitStopped(t *testing.T) {
@@ -240,7 +263,7 @@ func TestUpgrade_RollsBackWhenTheServiceWillNotStart(t *testing.T) {
 	assert.Contains(t, stderr, "rolled back to the previous version")
 	assert.Contains(t, b.read("installed/hermes-chat"), "v1")
 	assert.Equal(t, "rows", b.read("state/chat.db"))
-	assert.Equal(t, []string{"stop hermes-chat", "start hermes-chat", "stop hermes-chat", "start hermes-chat"}, b.calls())
+	assert.Equal(t, []string{"stop hermes-chat", "reset-failed hermes-chat", "start hermes-chat", "stop hermes-chat", "reset-failed hermes-chat", "start hermes-chat", "is-active --quiet hermes-chat"}, b.calls())
 }
 
 func TestUpgrade_RestartsTheOldVersionWhenSetupFailsAfterStop(t *testing.T) {
@@ -254,7 +277,7 @@ func TestUpgrade_RestartsTheOldVersionWhenSetupFailsAfterStop(t *testing.T) {
 	assert.Equal(t, "upgrade failed; restarted the previous version", lines[len(lines)-1])
 	assert.Contains(t, stderr, "restarted the previous version")
 	assert.Contains(t, b.read("installed/hermes-chat"), "v1")
-	assert.Equal(t, []string{"stop hermes-chat", "start hermes-chat"}, b.calls())
+	assert.Equal(t, []string{"stop hermes-chat", "reset-failed hermes-chat", "start hermes-chat", "is-active --quiet hermes-chat"}, b.calls())
 }
 
 func TestUpgrade_BareNameCandidateIsTheFileInTheWorkingDirectory(t *testing.T) {
@@ -282,5 +305,40 @@ func TestUpgrade_RecoveryFinishesWhenSignalledDuringRollback(t *testing.T) {
 	assert.Contains(t, stderr, "rolled back to the previous version")
 	assert.Contains(t, b.read("installed/hermes-chat"), "v1")
 	assert.Equal(t, "rows", b.read("state/chat.db"))
-	assert.Equal(t, []string{"stop hermes-chat", "start hermes-chat", "stop hermes-chat", "start hermes-chat"}, b.calls())
+	assert.Equal(t, []string{"stop hermes-chat", "reset-failed hermes-chat", "start hermes-chat", "stop hermes-chat", "reset-failed hermes-chat", "start hermes-chat", "is-active --quiet hermes-chat"}, b.calls())
+}
+
+func TestUpgrade_RollbackClearsTheStartLimit(t *testing.T) {
+	b := newBox(t)
+	b.install("v1")
+	b.write("state/chat.db", "rows")
+	code, stderr := b.runIn("", b.candidate("BROKEN"), b.path("bin"), "STUB_START_LIMIT=1")
+	assert.Equal(t, 1, code)
+	assert.Contains(t, stderr, "new version failed its health check; rolled back to the previous version")
+	assert.NotContains(t, stderr, "did not start")
+	assert.Contains(t, b.read("installed/hermes-chat"), "v1")
+	assert.FileExists(t, b.path("active")) // the old version is running again
+	assert.NoFileExists(t, b.path("limited"))
+}
+
+func TestUpgrade_ReportsARollbackThatDidNotStart(t *testing.T) {
+	b := newBox(t)
+	b.install("v1 STARTFAIL") // the previous version cannot start either
+	b.write("state/chat.db", "rows")
+	code, stderr := b.run(b.candidate("BROKEN"))
+	assert.Equal(t, 1, code)
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	assert.Equal(t, "new version failed its health check; rolled back to the previous version, but it did not start: check systemctl status hermes-chat", lines[len(lines)-1])
+	assert.Contains(t, b.read("installed/hermes-chat"), "v1")
+}
+
+func TestUpgrade_ReportsARestartThatDidNotStart(t *testing.T) {
+	b := newBox(t)
+	b.install("v1 STARTFAIL")
+	b.write("state/backups", "in the way") // fails after the stop, before the swap
+	b.write("state/chat.db", "rows")
+	code, stderr := b.run(b.candidate("v2"))
+	assert.Equal(t, 1, code)
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	assert.Equal(t, "upgrade failed; the previous version did not start: check systemctl status hermes-chat", lines[len(lines)-1])
 }
