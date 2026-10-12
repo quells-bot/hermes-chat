@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# Install a new hermes-chat binary on this host: check it, stop the service,
+# copy the database aside, swap the binary, start, and roll back if the new
+# version does not answer its health check.
+set -euo pipefail
+
+ENV_FILE="${HERMES_CHAT_ENV_FILE:-/etc/hermes-chat/env}"
+BIN="${HERMES_CHAT_BIN:-/usr/local/bin/hermes-chat}"
+UNIT="${HERMES_CHAT_UNIT:-hermes-chat}"
+TIMEOUT="${HERMES_CHAT_HEALTH_TIMEOUT:-60}"
+
+die() {
+	echo "$1" >&2
+	exit 1
+}
+
+if [ "$#" -ne 1 ]; then
+	echo "usage: hermes-chat-upgrade CANDIDATE" >&2
+	exit 2
+fi
+candidate="$1"
+
+# 2. The candidate must run here and behave like hermes-chat with no arguments.
+rc=0
+cand_err="$("$candidate" 2>&1 >/dev/null)" || rc=$?
+first_line="$(printf '%s\n' "$cand_err" | head -n 1)"
+if [ "$rc" -ne 2 ] || [ "$first_line" != "usage: hermes-chat <command>" ]; then
+	die "candidate does not run on this host"
+fi
+
+# 3. Settings from the environment file, read without sourcing: last NAME= wins.
+[ -f "$ENV_FILE" ] || die "environment file $ENV_FILE not found"
+env_get() {
+	local line
+	line="$(grep "^$1=" "$ENV_FILE" | tail -n 1 || true)"
+	printf '%s' "${line#"$1="}"
+}
+db_path="$(env_get HERMES_CHAT_DB_PATH)"
+case "$db_path" in
+/*) ;;
+*) die "HERMES_CHAT_DB_PATH in $ENV_FILE must be set to an absolute path" ;;
+esac
+tls_mode="$(env_get HERMES_CHAT_TLS_MODE)"
+tls_mode="${tls_mode:-autocert}"
+tls_domain="$(env_get HERMES_CHAT_TLS_DOMAIN)"
+http_addr="$(env_get HERMES_CHAT_HTTP_ADDR)"
+http_addr="${http_addr:-:8080}"
+port="${http_addr##*:}"
+if [ "$tls_mode" = "autocert" ]; then
+	[ -n "$tls_domain" ] || die "HERMES_CHAT_TLS_DOMAIN is not set in $ENV_FILE"
+	health_url="https://$tls_domain:$port/healthz"
+else
+	health_url="http://127.0.0.1:$port/healthz"
+fi
+
+# 4. Stop the service.
+systemctl stop "$UNIT"
+
+# 5. Copy the database aside and prune old backups.
+db_dir="$(dirname "$db_path")"
+db_name="$(basename "$db_path")"
+backup_dir=""
+if [ -f "$db_path" ]; then
+	stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+	backup_dir="$db_dir/backups/$stamp"
+	mkdir -p "$backup_dir"
+	for f in "$db_path" "$db_path-wal" "$db_path-shm"; do
+		if [ -f "$f" ]; then
+			cp -p "$f" "$backup_dir/"
+		fi
+	done
+	stamps=""
+	for d in "$db_dir"/backups/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z; do
+		if [ -d "$d" ]; then
+			stamps="$stamps$d"$'\n'
+		fi
+	done
+	old="$(printf '%s' "$stamps" | sort -r | tail -n +6)"
+	if [ -n "$old" ]; then
+		printf '%s\n' "$old" | while IFS= read -r d; do
+			rm -rf "${d:?}"
+		done
+	fi
+fi
+
+# 6. Swap the binary, keeping the old one.
+had_previous=0
+mkdir -p "$(dirname "$BIN")"
+cp "$candidate" "$BIN.new"
+chmod 0755 "$BIN.new"
+if [ -f "$BIN" ]; then
+	mv -f "$BIN" "$BIN.previous"
+	had_previous=1
+fi
+mv -f "$BIN.new" "$BIN"
+
+# 7. Start and wait for the health check.
+systemctl start "$UNIT"
+healthy=0
+elapsed=0
+while :; do
+	if [ "$tls_mode" = "autocert" ]; then
+		if curl -fsS -o /dev/null --max-time 5 --resolve "$tls_domain:$port:127.0.0.1" "$health_url" 2>/dev/null; then
+			healthy=1
+			break
+		fi
+	else
+		if curl -fsS -o /dev/null --max-time 5 "$health_url" 2>/dev/null; then
+			healthy=1
+			break
+		fi
+	fi
+	elapsed=$((elapsed + 1))
+	[ "$elapsed" -lt "$TIMEOUT" ] || break
+	sleep 1
+done
+
+# 8. Healthy.
+if [ "$healthy" -eq 1 ]; then
+	if [ "$had_previous" -eq 1 ]; then
+		echo "upgraded; previous binary kept at $BIN.previous"
+	else
+		echo "installed"
+	fi
+	exit 0
+fi
+
+# 9. Not healthy.
+systemctl stop "$UNIT"
+if [ "$had_previous" -eq 0 ]; then
+	die "new version failed its health check; nothing to roll back to"
+fi
+mv -f "$BIN.previous" "$BIN"
+if [ -n "$backup_dir" ]; then
+	for suffix in "" "-wal" "-shm"; do
+		if [ -f "$backup_dir/$db_name$suffix" ]; then
+			cp -p "$backup_dir/$db_name$suffix" "$db_dir/$db_name$suffix"
+		else
+			rm -f "$db_dir/$db_name$suffix"
+		fi
+	done
+fi
+systemctl start "$UNIT"
+die "new version failed its health check; rolled back to the previous version"

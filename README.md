@@ -27,7 +27,8 @@ not needed.
 - `just test`: run `go test ./...`.
 - `just build [goos] [goarch]`: build `bin/hermes-chat-<goos>-<goarch>` with
   `CGO_ENABLED=0`. Defaults to linux amd64.
-- `just check`: `check-generated`, `vet`, and `test`.
+- `just lint-scripts`: run `shellcheck` on the scripts under `deploy/`.
+- `just check`: `check-generated`, `vet`, `lint-scripts`, and `test`.
 
 ## Configuration
 
