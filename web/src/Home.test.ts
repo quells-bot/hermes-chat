@@ -17,6 +17,8 @@ vi.mock('./lib/store.svelte', () => ({
   connect: vi.fn(),
   disconnect: vi.fn(),
   load: vi.fn(),
+  stopAll: vi.fn(),
+  resumeAll: vi.fn(),
 }));
 vi.mock('./lib/route.svelte', () => ({
   route: { path: '/' },
@@ -104,4 +106,14 @@ test('the new-room route shows its own header and no list', () => {
   expect(screen.getByRole('heading', { name: 'New room' })).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'Back' })).toHaveAttribute('href', '#/');
   expect(screen.queryByRole('navigation')).toBeNull();
+});
+
+test('the halt control is in the header on the list and on #/new', () => {
+  const { unmount } = render(Home);
+  expect(screen.getByRole('button', { name: 'Stop all' })).toBeInTheDocument();
+  unmount();
+
+  route.path = '/new';
+  render(Home);
+  expect(screen.getByRole('button', { name: 'Stop all' })).toBeInTheDocument();
 });

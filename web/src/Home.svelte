@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import HaltControl from './HaltControl.svelte';
   import Header from './Header.svelte';
   import RoomList from './RoomList.svelte';
   import { route, startRouting } from './lib/route.svelte';
@@ -19,7 +20,9 @@
 </script>
 
 {#if route.path === '/new'}
-  <Header title="New room" back="#/" />
+  <Header title="New room" back="#/">
+    <HaltControl />
+  </Header>
   <main></main>
 {:else}
   <Header>
@@ -27,6 +30,7 @@
       <span class="link">reconnecting</span>
     {/if}
     <a class="new" href="#/new" aria-label="New room">+</a>
+    <HaltControl />
   </Header>
 
   <main>
