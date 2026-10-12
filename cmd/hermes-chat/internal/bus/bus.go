@@ -88,6 +88,8 @@ type Service interface {
 
 	// Subscribe opens a stream of the actor's events after the given event ID; FromNow starts at the end of the log.
 	Subscribe(ctx context.Context, actor Actor, after int64) (*Subscription, error) // ErrForbidden, ErrValidation, ErrUnavailable
+	// AgentGone records that the agent's last stream closed: one agent.presence event per room, connected=false.
+	AgentGone(ctx context.Context, actor Actor) error // ErrForbidden for a human
 }
 
 var _ Service = (*service)(nil)

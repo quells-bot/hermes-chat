@@ -159,9 +159,11 @@ func (s *Subscription) Edits() <-chan LiveEdit { return s.edits }
 
 // Subscribe opens a stream of the events the actor may see, starting after the
 // event with the given ID. FromNow, or an ID beyond the end of the log, starts
-// at the end. Nothing committed after Subscribe returns is missed. A second
-// subscription for the same agent replaces the first: the old one's wake
-// channel is closed, so its handler returns.
+// at the end. Nothing committed after Subscribe returns is missed. Registering
+// the stream first makes the agent count as connected, so the presence sweep
+// that follows releases its waiting queue; the presence rows and the releases
+// commit together, one ring. A second subscription for the same agent replaces
+// the first: the old one's wake channel is closed, so its handler returns.
 func (s *service) Subscribe(ctx context.Context, actor Actor, after int64) (*Subscription, error) {
 	if after < FromNow {
 		return nil, ValidationError{Message: "cursor must not be negative"}
@@ -173,8 +175,8 @@ func (s *service) Subscribe(ctx context.Context, actor Actor, after int64) (*Sub
 	if after == FromNow || after > last {
 		after = last
 	}
-	// The cursor was read before registering. An event committed in between
-	// rings nobody here, but it lies past the cursor, so the first Poll reads it.
+	// The cursor was read before the presence sweep, so the events it commits
+	// lie past it and the first Poll reads them.
 	var edits chan LiveEdit // agents get no live edits
 	if actor.Kind == ActorHuman {
 		edits = make(chan LiveEdit, editsBuffer)
@@ -183,7 +185,83 @@ func (s *service) Subscribe(ctx context.Context, actor Actor, after int64) (*Sub
 	if !s.hub.add(sub) {
 		return nil, ErrUnavailable
 	}
+	if actor.Kind == ActorAgent {
+		if err := s.record(ctx, func(r storage.Repository) error {
+			roomIDs, err := r.ListAgentRoomIDs(ctx, actor.ID.String())
+			if err != nil {
+				return fmt.Errorf("list agent rooms: %w", err)
+			}
+			at := s.now()
+			for _, roomID := range roomIDs {
+				if err := putEvent(ctx, r, EventAgentPresence, roomID, actor.ID.String(), at); err != nil {
+					return err
+				}
+			}
+			return s.releaseSweep(ctx, r, actor.ID, at)
+		}); err != nil {
+			sub.Close()
+			return nil, err
+		}
+	}
 	return sub, nil
+}
+
+// releaseSweep releases every releasable delivery head for the agent. Call it
+// inside a record transaction; at stamps the events it writes.
+func (s *service) releaseSweep(ctx context.Context, r storage.Repository, agentID ulid.ULID, at time.Time) error {
+	rows, err := r.ReleasableDeliveries(ctx, agentID.String())
+	if err != nil {
+		return fmt.Errorf("list releasable: %w", err)
+	}
+	for _, d := range rows {
+		roomRow, err := r.GetRoom(ctx, d.RoomID)
+		if err != nil {
+			return fmt.Errorf("get room: %w", err)
+		}
+		ar, err := r.GetAgentByID(ctx, d.AgentID)
+		if err != nil {
+			return fmt.Errorf("get agent: %w", err)
+		}
+		agent, err := agentFromRow(ar)
+		if err != nil {
+			return err
+		}
+		if err := s.releaseHead(ctx, r, roomRow, agent, at, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// AgentGone records that the agent's stream closed: if it was the agent's
+// last stream, one agent.presence event per room, connected=false. Called by
+// the stream handler after Subscription.Close. A human actor is refused.
+func (s *service) AgentGone(ctx context.Context, actor Actor) error {
+	if actor.Kind != ActorAgent {
+		return ErrForbidden
+	}
+	at := s.now()
+	err := s.record(ctx, func(r storage.Repository) error {
+		// Only the last stream's close flips presence off: a replacement is
+		// already counted as connected, so writing more rows would lie.
+		if s.hub.agentConnected(actor.ID) {
+			return nil
+		}
+		roomIDs, err := r.ListAgentRoomIDs(ctx, actor.ID.String())
+		if err != nil {
+			return fmt.Errorf("list agent rooms: %w", err)
+		}
+		for _, roomID := range roomIDs {
+			if err := putEvent(ctx, r, EventAgentPresence, roomID, actor.ID.String(), at); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("agent gone: %w", err)
+	}
+	return nil
 }
 
 // Cursor returns the ID of the last event read, or where the stream started.
@@ -300,6 +378,22 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 			return Event{}, false, err
 		}
 		e.Message = &msgs[0]
+	case EventAgentPresence:
+		// The subject is the agent whose connection changed; show whether it
+		// is connected now. A deleted agent skips the row.
+		ar, err := r.GetAgentByID(ctx, row.SubjectID)
+		if errors.Is(err, storage.ErrNotFound) {
+			return Event{}, false, nil
+		}
+		if err != nil {
+			return Event{}, false, fmt.Errorf("get agent: %w", err)
+		}
+		agent, err := agentFromRow(ar)
+		if err != nil {
+			return Event{}, false, err
+		}
+		e.Agent = &agent
+		e.Connected = s.svc.hub.agentConnected(agent.ID)
 	case EventDelivery:
 		// Only an agent sees these (they are agent-addressed), so the room is
 		// the delivered message's, shown as the agent sees it.

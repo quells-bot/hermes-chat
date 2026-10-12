@@ -193,6 +193,7 @@ func TestPostMessage_AgentAuthorAndChannelContext(t *testing.T) {
 	agent, err := w.s.Subscribe(ctx, bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}, bus.FromNow)
 	require.NoError(t, err)
 	defer agent.Close()
+	_ = drain(t, human) // scout's presence-on row for the channel room
 
 	m, err := w.s.PostMessage(ctx, w.kai, ch.ID, "@scout go", ulid.Zero)
 	require.NoError(t, err)

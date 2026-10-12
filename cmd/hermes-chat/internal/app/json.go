@@ -176,6 +176,15 @@ func (h *controller) activityJSON(ctx context.Context, a bus.Activity) (any, err
 	}, nil
 }
 
+// jsonString quotes s as a JSON string literal, for building a frame's data by hand.
+func jsonString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return `""`
+	}
+	return string(b)
+}
+
 // badRequest answers 400 bad_request with message and aborts.
 func badRequest(c *gin.Context, message string) {
 	c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "bad_request", "message": message}})

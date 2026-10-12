@@ -40,6 +40,7 @@ func routes(e *gin.Engine, ctrl app.Controller, log *slog.Logger) {
 	agent := e.Group("/agent", ctrl.AgentAuth)
 	agent.GET("/me", ctrl.AgentMe)
 	agent.GET("/rooms", ctrl.AgentRooms)
+	agent.GET("/events", ctrl.AgentEvents)
 	agent.POST("/rooms/:room/messages", ctrl.AgentPostMessage)
 	agent.PUT("/messages/:message", ctrl.AgentEditMessage)
 	agent.POST("/deliveries/:message/working", ctrl.AgentTurnWorking)

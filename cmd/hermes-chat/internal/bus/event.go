@@ -22,6 +22,7 @@ const (
 	EventMessageEdited    EventKind = "message.edited"  // human: subject is the message, finalize only
 	EventControlStop      EventKind = "stop"            // agent: subject is the room
 	EventControlSteer     EventKind = "steer"           // agent: subject is the steer message
+	EventAgentPresence    EventKind = "agent.presence"  // human: subject is the agent
 )
 
 // contextMessages and contextTextBytes bound the context an agent-targeted
@@ -41,7 +42,9 @@ type Event struct {
 	Room     *Room       // room.changed, and delivery for an agent: the room as it is now
 	Message  *Message    // message.posted, delivery, delivery.changed, message.edited, and steer
 	Activity *Activity   // activity.posted: the activity, which carries its turn's message id
+	Agent    *Agent      // agent.presence: the agent whose connection changed
 	Context  []Message   // delivery on a channel: the messages leading up to the delivered one
+	Connected bool       // agent.presence: whether the agent is connected now
 }
 
 // putEvent appends an event to the log. Call it inside the transaction that

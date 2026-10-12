@@ -38,6 +38,7 @@ type Controller interface {
 	PostMessage(c *gin.Context)
 	GetMessage(c *gin.Context)
 	Events(c *gin.Context)
+	AgentEvents(c *gin.Context)
 	AgentRooms(c *gin.Context)
 	AgentPostMessage(c *gin.Context)
 	AgentEditMessage(c *gin.Context)

@@ -90,7 +90,7 @@ func TestRoutes_Table(t *testing.T) {
 	sort.Strings(got)
 	assert.Equal(t, []string{
 		"DELETE /api/rooms/:room/agents/:agent",
-		"GET /agent/me", "GET /agent/rooms", "GET /api/agents", "GET /api/events", "GET /api/humans", "GET /api/me", "GET /api/rooms",
+		"GET /agent/events", "GET /agent/me", "GET /agent/rooms", "GET /api/agents", "GET /api/events", "GET /api/humans", "GET /api/me", "GET /api/rooms",
 		"GET /api/rooms/:room", "GET /api/rooms/:room/messages", "GET /api/rooms/:room/messages/:message", "GET /healthz",
 		"PATCH /api/rooms/:room",
 		"POST /agent/deliveries/:message/done", "POST /agent/deliveries/:message/failed", "POST /agent/deliveries/:message/remarks",

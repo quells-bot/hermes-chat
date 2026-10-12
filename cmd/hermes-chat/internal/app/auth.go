@@ -118,15 +118,25 @@ func (h *controller) HumanAuth(c *gin.Context) {
 	c.Next()
 }
 
+// bearer returns the caller's bearer token, or "" when the Authorization
+// header is not a single "Bearer <token>".
+func bearer(c *gin.Context) string {
+	fields := strings.Fields(c.GetHeader("Authorization"))
+	if len(fields) == 2 && strings.EqualFold(fields[0], "bearer") {
+		return fields[1]
+	}
+	return ""
+}
+
 // AgentAuth identifies an agent by bearer token.
 func (h *controller) AgentAuth(c *gin.Context) {
-	fields := strings.Fields(c.GetHeader("Authorization"))
-	if len(fields) != 2 || !strings.EqualFold(fields[0], "bearer") {
+	token := bearer(c)
+	if token == "" {
 		c.Header("WWW-Authenticate", "Bearer")
 		writeError(c, bus.ErrUnauthenticated)
 		return
 	}
-	actor, err := h.svc.ResolveAgentToken(c.Request.Context(), fields[1])
+	actor, err := h.svc.ResolveAgentToken(c.Request.Context(), token)
 	if err != nil {
 		if errors.Is(err, bus.ErrUnauthenticated) || errors.Is(err, bus.ErrInvalidCredentials) {
 			c.Header("WWW-Authenticate", "Bearer")

@@ -42,28 +42,7 @@ func (s *service) WakeAgents(author Actor, flavor RoomFlavor, text string, reply
 func (s *service) ReleaseSweepForTest(ctx context.Context, agentID ulid.ULID) error {
 	at := s.now()
 	err := s.record(ctx, func(r storage.Repository) error {
-		rows, err := r.ReleasableDeliveries(ctx, agentID.String())
-		if err != nil {
-			return fmt.Errorf("list releasable: %w", err)
-		}
-		for _, d := range rows {
-			roomRow, err := r.GetRoom(ctx, d.RoomID)
-			if err != nil {
-				return fmt.Errorf("get room: %w", err)
-			}
-			ar, err := r.GetAgentByID(ctx, d.AgentID)
-			if err != nil {
-				return fmt.Errorf("get agent: %w", err)
-			}
-			agent, err := agentFromRow(ar)
-			if err != nil {
-				return err
-			}
-			if err := s.releaseHead(ctx, r, roomRow, agent, at, true); err != nil {
-				return err
-			}
-		}
-		return nil
+		return s.releaseSweep(ctx, r, agentID, at)
 	})
 	if err != nil {
 		return fmt.Errorf("release sweep: %w", err)
