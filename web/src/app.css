@@ -15,6 +15,10 @@
   --line: #e2d8e4;
   --accent: #7a2f8a;
   --err: #d2473c;
+  --unread: #ff8fb8;
+  --ask: #f0b34a;
+  --on-ask: #3b2600;
+  --ok: #3fbf85;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -59,4 +63,10 @@ input,
 select,
 textarea {
   font-size: max(1rem, 16px);
+}
+
+#app {
+  max-width: 32rem;
+  margin-inline: auto;
+  min-height: 100dvh;
 }
