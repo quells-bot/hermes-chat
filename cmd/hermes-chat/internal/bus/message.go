@@ -40,6 +40,7 @@ type Message struct {
 	Prompt     *Prompt      // the question this message asks, when any; nil for an ordinary message
 	Attachments []Attachment // the files riding the message, in upload order; never nil after a load from storage
 	ClientID    string       // the key its human posted it with; "" when there was none
+	Streaming   bool         // an agent's non-final edit is stored and no final one: more text is coming
 }
 
 var (
@@ -153,6 +154,7 @@ func messagesFromRows(ctx context.Context, r storage.Repository, rows []storage.
 		if row.ClientID != nil {
 			m.ClientID = *row.ClientID
 		}
+		m.Streaming = row.EditedAtMs != nil && row.FinalizedAtMs == nil
 		if row.ReplyToID != nil {
 			if m.ReplyToID, err = parseOptionalID(*row.ReplyToID); err != nil {
 				return nil, err

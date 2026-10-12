@@ -190,9 +190,11 @@ func turnAllowed(target, current DeliveryState) bool {
 // turnReport applies the state transition for the agent's delivery of the
 // message. ErrNoTurn when the current state cannot reach it; a no-op when it
 // already holds it. Each real change writes one delivery.changed event, and
-// done and failed release the pair's next waiting head.
+// done and failed close the turn's unfinished streams (closeStreams) and
+// release the pair's next waiting head.
 func (s *service) turnReport(ctx context.Context, actor Actor, messageID ulid.ULID, target DeliveryState) error {
 	at := s.now()
+	var closed []string // the messages the turn left streaming, now finalized
 	err := s.record(ctx, func(r storage.Repository) error {
 		d, err := requireTurnDelivery(ctx, r, actor.ID, messageID)
 		if err != nil {
@@ -212,6 +214,10 @@ func (s *service) turnReport(ctx context.Context, actor Actor, messageID ulid.UL
 			return err
 		}
 		if target == DeliveryDone || target == DeliveryFailed {
+			closed, err = closeStreams(ctx, r, d.RoomID, actor.ID, messageID, at)
+			if err != nil {
+				return err
+			}
 			ar, err := r.GetAgentByID(ctx, actor.ID.String())
 			if err != nil {
 				return fmt.Errorf("get agent: %w", err)
@@ -229,7 +235,35 @@ func (s *service) turnReport(ctx context.Context, actor Actor, messageID ulid.UL
 	if err != nil {
 		return wrapOp("report turn", err)
 	}
+	s.editWrites.mu.Lock()
+	for _, id := range closed {
+		delete(s.editWrites.last, id)
+	}
+	s.editWrites.mu.Unlock()
 	return nil
+}
+
+// closeStreams finalizes every message the agent was still streaming in the
+// room that is newer than the turn's message, with the text it last stored,
+// and writes one message.edited event for each. A turn that ends without its
+// final edit would otherwise leave its reply streaming for ever. It returns
+// the ids it closed.
+func closeStreams(ctx context.Context, r storage.Repository, roomID string, agentID, turnMessageID ulid.ULID, at time.Time) ([]string, error) {
+	open, err := r.ListStreamingMessages(ctx, roomID, agentID.String(), turnMessageID.String())
+	if err != nil {
+		return nil, fmt.Errorf("list streaming messages: %w", err)
+	}
+	ids := make([]string, 0, len(open))
+	for _, m := range open {
+		if err := r.FinalizeMessage(ctx, m.ID, m.Body, at.UnixMilli()); err != nil {
+			return nil, fmt.Errorf("finalize message: %w", err)
+		}
+		if err := putEvent(ctx, r, EventMessageEdited, roomID, m.ID, at); err != nil {
+			return nil, err
+		}
+		ids = append(ids, m.ID)
+	}
+	return ids, nil
 }
 
 func (s *service) TurnWorking(ctx context.Context, actor Actor, messageID ulid.ULID) error {

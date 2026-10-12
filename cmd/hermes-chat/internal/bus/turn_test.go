@@ -528,3 +528,105 @@ func TestSteer_ClientIDValidation(t *testing.T) {
 	require.ErrorAs(t, err, &ve)
 	assert.Equal(t, `client_id must be at most 64 characters: letters, digits, "-" or "_"`, ve.Message)
 }
+
+// streamed has scout post a message in the room and store one non-final edit of it.
+func streamed(t *testing.T, w world, room bus.Room, text string) bus.Message {
+	t.Helper()
+	m, err := w.s.PostMessage(ctx, agentActor(w.scout), room.ID, "…", ulid.Zero)
+	require.NoError(t, err)
+	require.NoError(t, w.s.EditMessage(ctx, agentActor(w.scout), m.ID, text, false))
+	return m
+}
+
+func isStreaming(t *testing.T, w world, room bus.Room, id ulid.ULID) bool {
+	t.Helper()
+	m, err := w.s.GetMessage(ctx, w.kai, room.ID, id)
+	require.NoError(t, err)
+	return m.Streaming
+}
+
+func TestMessage_StreamingFollowsEdits(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	mID, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	scout := agentActor(w.scout)
+	reply, err := w.s.PostMessage(ctx, scout, room.ID, "…", ulid.Zero)
+	require.NoError(t, err)
+	assert.False(t, reply.Streaming)
+	assert.False(t, isStreaming(t, w, room, reply.ID)) // posted in one piece, so far
+	assert.False(t, isStreaming(t, w, room, mID))      // a human's message never streams
+
+	require.NoError(t, w.s.EditMessage(ctx, scout, reply.ID, "par", false))
+	assert.True(t, isStreaming(t, w, room, reply.ID))
+	require.NoError(t, w.s.EditMessage(ctx, scout, reply.ID, "partial answer", true))
+	assert.False(t, isStreaming(t, w, room, reply.ID))
+}
+
+func TestTurnEnd_ClosesAnAbandonedStream(t *testing.T) { // Review Focus 5
+	for name, report := range map[string]func(bus.Service, bus.Actor, ulid.ULID) error{
+		"done":   func(s bus.Service, a bus.Actor, id ulid.ULID) error { return s.TurnDone(ctx, a, id) },
+		"failed": func(s bus.Service, a bus.Actor, id ulid.ULID) error { return s.TurnFailed(ctx, a, id) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t)
+			room := dmRoom(t, w)
+			mID, sub := startedTurn(t, w, room)
+			defer sub.Close()
+			abandoned := streamed(t, w, room, "half")
+			whole, err := w.s.PostMessage(ctx, agentActor(w.scout), room.ID, "in one piece", ulid.Zero)
+			require.NoError(t, err)
+			human, err := w.s.Subscribe(ctx, w.kai, bus.FromNow)
+			require.NoError(t, err)
+			defer human.Close()
+
+			require.NoError(t, report(w.s, agentActor(w.scout), mID))
+
+			got, err := w.s.GetMessage(ctx, w.kai, room.ID, abandoned.ID)
+			require.NoError(t, err)
+			assert.False(t, got.Streaming)
+			assert.Equal(t, "half", got.Text)
+			edited := of(drain(t, human), bus.EventMessageEdited)
+			require.Len(t, edited, 1) // none for the one-piece message
+			assert.Equal(t, abandoned.ID, edited[0].Message.ID)
+			assert.False(t, edited[0].Message.Streaming)
+			assert.NotEqual(t, whole.ID, edited[0].Message.ID)
+		})
+	}
+}
+
+func TestTurnEnd_LeavesOlderStreamsAlone(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	report := streamed(t, w, room, "a scheduled report, so far") // before the turn's message
+	mID, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), mID))
+	assert.True(t, isStreaming(t, w, room, report.ID))
+}
+
+func TestTurnEnd_AFinalEditStillLands(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	mID, sub := startedTurn(t, w, room)
+	defer sub.Close()
+	abandoned := streamed(t, w, room, "half")
+	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), mID))
+	require.NoError(t, w.s.EditMessage(ctx, agentActor(w.scout), abandoned.ID, "whole answer", true))
+	got, err := w.s.GetMessage(ctx, w.kai, room.ID, abandoned.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "whole answer", got.Text)
+	assert.False(t, got.Streaming)
+}
+
+func TestTurnWorking_ClosesNothing(t *testing.T) {
+	w := newWorld(t)
+	room := dmRoom(t, w)
+	sub := scoutSub(t, w)
+	defer sub.Close()
+	m, err := w.s.PostMessage(ctx, w.kai, room.ID, "first", ulid.Zero)
+	require.NoError(t, err)
+	early := streamed(t, w, room, "half")
+	require.NoError(t, w.s.TurnWorking(ctx, agentActor(w.scout), m.ID))
+	assert.True(t, isStreaming(t, w, room, early.ID))
+}
