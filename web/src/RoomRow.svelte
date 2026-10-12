@@ -57,7 +57,7 @@
   }
 
   .unread .name {
-    color: #fff;
+    color: var(--on-aub);
     font-weight: 700;
   }
 
