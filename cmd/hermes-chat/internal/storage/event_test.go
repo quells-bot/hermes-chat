@@ -87,6 +87,39 @@ func TestEvents_RollBackWithTheirTransaction(t *testing.T) {
 	assert.ErrorIs(t, err, storage.ErrNotFound)
 }
 
+func TestEvents_AgentTargeted(t *testing.T) {
+	r := roomed(t) // kai is a member of trip; both scout and atlas are agents
+	_, err := r.PutEvent(ctx, ev(trip.ID, "human"))
+	require.NoError(t, err)
+	id, err := r.PutEvent(ctx, storage.Event{RoomID: trip.ID, Kind: "agent.assigned", SubjectID: "s", AgentID: sp(scout.ID), CreatedAtMs: 9})
+	require.NoError(t, err)
+
+	// ListEventsForAgent(scout) returns the targeted event, not the NULL-agent row.
+	got, err := r.ListEventsForAgent(ctx, scout.ID, 0, 100)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.EqualValues(t, id, got[0].ID)
+	require.NotNil(t, got[0].AgentID)
+	assert.Equal(t, scout.ID, *got[0].AgentID)
+
+	// ListEventsForHuman still lists the human row but not the agent-targeted one.
+	mine, err := r.ListEventsForHuman(ctx, kai.ID, 0, 100)
+	require.NoError(t, err)
+	subjects := func(es []storage.Event) (out []string) {
+		for _, e := range es {
+			out = append(out, e.SubjectID)
+		}
+		return
+	}
+	assert.Equal(t, []string{"human"}, subjects(mine))
+
+	// ListEventsForAgent for atlas returns nothing.
+	none, err := r.ListEventsForAgent(ctx, atlas.ID, 0, 100)
+	require.NoError(t, err)
+	assert.NotNil(t, none)
+	assert.Empty(t, none)
+}
+
 // Review Focus 4.
 func TestDeleteHuman_WithRoomsAndMessages(t *testing.T) {
 	r := roomed(t)

@@ -182,3 +182,44 @@ func (h *controller) RemoveRoomAgent(c *gin.Context) {
 		return h.svc.RemoveRoomAgent(c.Request.Context(), actorFrom(c), roomID, agentID)
 	})
 }
+
+// StopTurn asks an agent to stop its running turn; a room with no turn still succeeds.
+func (h *controller) StopTurn(c *gin.Context) {
+	roomID, ok := pathID(c, "room")
+	if !ok {
+		return
+	}
+	agentID, ok := pathID(c, "agent")
+	if !ok {
+		return
+	}
+	if err := h.svc.StopTurn(c.Request.Context(), actorFrom(c), roomID, agentID); err != nil {
+		writeError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// Steer redirects an agent's running turn with a new instruction.
+func (h *controller) Steer(c *gin.Context) {
+	roomID, ok := pathID(c, "room")
+	if !ok {
+		return
+	}
+	agentID, ok := pathID(c, "agent")
+	if !ok {
+		return
+	}
+	var body struct {
+		Text string `json:"text"`
+	}
+	if !readJSON(c, maxMessageBody, &body) {
+		return
+	}
+	msg, err := h.svc.Steer(c.Request.Context(), actorFrom(c), roomID, agentID, body.Text)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, messageJSON(msg))
+}

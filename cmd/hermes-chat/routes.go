@@ -34,9 +34,23 @@ func routes(e *gin.Engine, ctrl app.Controller, log *slog.Logger) {
 	human.GET("/rooms/:room/messages", ctrl.ListMessages)
 	human.POST("/rooms/:room/messages", ctrl.PostMessage)
 	human.GET("/rooms/:room/messages/:message", ctrl.GetMessage)
+	human.POST("/rooms/:room/messages/:message/cancel", ctrl.CancelMessage)
+	human.GET("/rooms/:room/messages/:message/activity", ctrl.ListActivity)
+	human.POST("/rooms/:room/agents/:agent/stop", ctrl.StopTurn)
+	human.POST("/rooms/:room/agents/:agent/steer", ctrl.Steer)
 	human.GET("/events", ctrl.Events)
 
 	// Agent API: bearer token.
 	agent := e.Group("/agent", ctrl.AgentAuth)
 	agent.GET("/me", ctrl.AgentMe)
+	agent.GET("/rooms", ctrl.AgentRooms)
+	agent.GET("/events", ctrl.AgentEvents)
+	agent.POST("/rooms/:room/messages", ctrl.AgentPostMessage)
+	agent.PUT("/messages/:message", ctrl.AgentEditMessage)
+	agent.POST("/deliveries/:message/working", ctrl.AgentTurnWorking)
+	agent.POST("/deliveries/:message/done", ctrl.AgentTurnDone)
+	agent.POST("/deliveries/:message/failed", ctrl.AgentTurnFailed)
+	agent.POST("/deliveries/:message/remarks", ctrl.AgentRemark)
+	agent.POST("/deliveries/:message/tools", ctrl.AgentStartTool)
+	agent.PUT("/activities/:activity", ctrl.AgentFinishTool)
 }

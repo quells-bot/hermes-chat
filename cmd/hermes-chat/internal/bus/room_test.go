@@ -2,6 +2,7 @@ package bus_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -77,14 +78,14 @@ func TestCreateRoom(t *testing.T) {
 	require.Len(t, room.Humans, 1)
 	assert.Equal(t, w.kai.ID, room.Humans[0].ID)
 	assert.Equal(t, "kai", room.Humans[0].Username)
-	assert.Equal(t, []bus.Agent{w.scout}, room.Agents)
+	assert.Equal(t, []bus.RoomAgent{{Agent: w.scout, Connected: false}}, room.Agents)
 	assert.True(t, room.LastMessageID.IsZero())
 	assert.True(t, room.LastReadMessageID.IsZero())
 
 	both, err := w.s.CreateRoom(ctx, w.kai, "Both", ids(w.scout, w.atlas))
 	require.NoError(t, err)
 	assert.Equal(t, bus.FlavorChannel, both.Flavor)
-	assert.Equal(t, []bus.Agent{w.atlas, w.scout}, both.Agents)
+	assert.Equal(t, []bus.RoomAgent{{Agent: w.atlas, Connected: false}, {Agent: w.scout, Connected: false}}, both.Agents)
 
 	got, err := w.s.GetRoom(ctx, w.kai, room.ID)
 	require.NoError(t, err)
@@ -97,6 +98,26 @@ func TestCreateRoom(t *testing.T) {
 	assert.NotNil(t, hers)
 	assert.Empty(t, hers)
 	assert.Equal(t, []string{"room.changed", "room.changed"}, w.kinds(t, w.kai))
+}
+
+// ListRooms is the actor's rooms for an agent too, without the human read marker.
+func TestListRooms_AgentView(t *testing.T) {
+	w := newWorld(t)
+	room, err := w.s.CreateRoom(ctx, w.kai, "Trip", ids(w.scout))
+	require.NoError(t, err)
+	dm, _, err := w.s.OpenDM(ctx, w.kai, w.atlas.ID)
+	require.NoError(t, err)
+
+	scout, err := w.s.ListRooms(ctx, bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID})
+	require.NoError(t, err)
+	require.Len(t, scout, 1)
+	assert.Equal(t, room.ID, scout[0].ID)
+	assert.Zero(t, scout[0].LastReadMessageID, "an agent sees no read marker")
+
+	atlas, err := w.s.ListRooms(ctx, bus.Actor{Kind: bus.ActorAgent, ID: w.atlas.ID})
+	require.NoError(t, err)
+	require.Len(t, atlas, 1)
+	assert.Equal(t, dm.ID, atlas[0].ID)
 }
 
 func TestCreateRoom_Validation(t *testing.T) {
@@ -130,7 +151,7 @@ func TestOpenDM(t *testing.T) {
 	assert.Equal(t, "", room.Topic)
 	require.Len(t, room.Humans, 1)
 	assert.Equal(t, w.kai.ID, room.Humans[0].ID)
-	assert.Equal(t, []bus.Agent{w.scout}, room.Agents)
+	assert.Equal(t, []bus.RoomAgent{{Agent: w.scout, Connected: false}}, room.Agents)
 	again, created, err := w.s.OpenDM(ctx, w.kai, w.scout.ID)
 	require.NoError(t, err)
 	assert.False(t, created)
@@ -229,13 +250,13 @@ func TestAddAndRemoveRoomAgent(t *testing.T) {
 	got, err := w.s.AddRoomAgent(ctx, w.kai, room.ID, w.atlas.ID)
 	require.NoError(t, err)
 	assert.Equal(t, bus.FlavorChannel, got.Flavor)
-	assert.Equal(t, []bus.Agent{w.atlas, w.scout}, got.Agents)
+	assert.Equal(t, []bus.RoomAgent{{Agent: w.atlas, Connected: false}, {Agent: w.scout, Connected: false}}, got.Agents)
 	_, err = w.s.AddRoomAgent(ctx, w.kai, room.ID, w.atlas.ID) // again: nothing happens
 	require.NoError(t, err)
 	got, err = w.s.RemoveRoomAgent(ctx, w.kai, room.ID, w.scout.ID)
 	require.NoError(t, err)
 	assert.Equal(t, bus.FlavorConversation, got.Flavor)
-	assert.Equal(t, []bus.Agent{w.atlas}, got.Agents)
+	assert.Equal(t, []bus.RoomAgent{{Agent: w.atlas, Connected: false}}, got.Agents)
 	_, err = w.s.RemoveRoomAgent(ctx, w.kai, room.ID, w.scout.ID) // not in the room: nothing happens
 	require.NoError(t, err)
 	assert.Len(t, w.kinds(t, w.kai), 3) // create, add, remove
@@ -326,4 +347,67 @@ func TestCreateRoom_RollsBackWhenTheEventCannotBeWritten(t *testing.T) {
 	require.ErrorIs(t, err, errDisk)
 	mine, _ := w.s.ListRooms(ctx, w.kai)
 	assert.Empty(t, mine)
+}
+
+func TestRemoveRoomAgent_CancelsWaiting(t *testing.T) {
+	w := newWorld(t)
+	room, err := w.s.CreateRoom(ctx, w.kai, "Channel", ids(w.atlas, w.scout))
+	require.NoError(t, err)
+	var msgs []ulid.ULID
+	for i := range 3 {
+		m, err := w.s.PostMessage(ctx, w.kai, room.ID, fmt.Sprint("@atlas @scout ", i), ulid.Zero)
+		require.NoError(t, err)
+		msgs = append(msgs, m.ID)
+	}
+	deliveries := func(mid ulid.ULID) []bus.Delivery {
+		m, err := w.s.GetMessage(ctx, w.kai, room.ID, mid)
+		require.NoError(t, err)
+		return m.Deliveries
+	}
+	for _, mid := range msgs {
+		assert.Equal(t, []bus.Delivery{{Agent: w.atlas, State: bus.DeliveryWaiting}, {Agent: w.scout, State: bus.DeliveryWaiting}}, deliveries(mid))
+	}
+	_, err = w.s.RemoveRoomAgent(ctx, w.kai, room.ID, w.scout.ID)
+	require.NoError(t, err)
+	for _, mid := range msgs {
+		got := deliveries(mid)
+		require.Len(t, got, 2)
+		assert.Equal(t, bus.DeliveryCancelled, got[1].State, "scout: %s", mid)
+		assert.Equal(t, bus.DeliveryWaiting, got[0].State, "atlas is untouched: %s", mid)
+	}
+}
+
+func TestUpdateRoom_UnarchiveReleases(t *testing.T) {
+	w := newWorld(t)
+	queueAndArchive := func() (bus.Room, ulid.ULID) {
+		room, err := w.s.CreateRoom(ctx, w.kai, "Conv", ids(w.scout))
+		require.NoError(t, err)
+		m, err := w.s.PostMessage(ctx, w.kai, room.ID, "queued", ulid.Zero)
+		require.NoError(t, err)
+		assert.Equal(t, []bus.Delivery{{Agent: w.scout, State: bus.DeliveryWaiting}}, m.Deliveries)
+		_, err = w.s.UpdateRoom(ctx, w.kai, room.ID, bus.RoomUpdate{Archived: ptr(true)})
+		require.NoError(t, err)
+		return room, m.ID
+	}
+	state := func(room bus.Room, mid ulid.ULID) bus.DeliveryState {
+		m, err := w.s.GetMessage(ctx, w.kai, room.ID, mid)
+		require.NoError(t, err)
+		require.Len(t, m.Deliveries, 1)
+		return m.Deliveries[0].State
+	}
+
+	// with the agent connected, unarchiving releases the head
+	roomA, mA := queueAndArchive()
+	sub, err := w.s.Subscribe(ctx, bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}, bus.FromNow)
+	require.NoError(t, err)
+	_, err = w.s.UpdateRoom(ctx, w.kai, roomA.ID, bus.RoomUpdate{Archived: ptr(false)})
+	require.NoError(t, err)
+	assert.Equal(t, bus.DeliveryDelivered, state(roomA, mA))
+	sub.Close()
+
+	// with the agent offline, unarchiving leaves it waiting
+	roomB, mB := queueAndArchive()
+	_, err = w.s.UpdateRoom(ctx, w.kai, roomB.ID, bus.RoomUpdate{Archived: ptr(false)})
+	require.NoError(t, err)
+	assert.Equal(t, bus.DeliveryWaiting, state(roomB, mB))
 }

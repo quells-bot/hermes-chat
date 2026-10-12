@@ -59,8 +59,10 @@ type rig struct {
 	hub    *bus.Hub
 	kai    bus.Actor
 	room   bus.Room
-	cookie string // kai's Cookie header value
-	token  string // kai's session token
+	scout  bus.Agent // the room's agent
+	cookie string    // kai's Cookie header value
+	token  string    // kai's session token
+	scoutToken string // scout's bearer token
 }
 
 // newRig builds a rig. tune, if not nil, adjusts the server before it starts.
@@ -95,16 +97,19 @@ func newFaultyRig(t *testing.T, opts app.Options, tune func(*httptest.Server), w
 	e.Use(app.RequestID(), app.RequestLogger(log), gin.Recovery())
 	ctrl := app.NewController(handled, opts)
 	e.Group("/api", app.SameOrigin(), ctrl.HumanAuth).GET("/events", ctrl.Events)
+	e.Group("/agent", ctrl.AgentAuth).GET("/events", ctrl.AgentEvents)
 
 	kai, err := svc.CreateHuman(ctx, "kai", pw)
 	require.NoError(t, err)
 	sess, err := svc.Login(ctx, "kai", pw, "192.0.2.1")
 	require.NoError(t, err)
-	scout, _, err := svc.CreateAgent(ctx, "scout", "Scout")
+	scout, scoutToken, err := svc.CreateAgent(ctx, "scout", "Scout")
 	require.NoError(t, err)
 	r.kai = bus.Actor{Kind: bus.ActorHuman, ID: kai.ID}
 	r.token = sess.Token
 	r.cookie = app.SessionCookie + "=" + sess.Token
+	r.scout = scout
+	r.scoutToken = scoutToken
 	r.room, err = svc.CreateRoom(ctx, r.kai, "Trip planning", []ulid.ULID{scout.ID})
 	require.NoError(t, err)
 
@@ -133,6 +138,43 @@ func (r rig) open(t *testing.T, cookie, query string, hdr ...string) (*http.Resp
 	t.Cleanup(func() { _ = resp.Body.Close() })
 	return resp, sse.NewDecoder(resp.Body)
 }
+
+// openAgent starts the agent stream (`/agent/events`) with the given bearer token.
+func (r rig) openAgent(t *testing.T, token, query string) (*http.Response, *sse.Decoder) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, r.srv.URL+"/agent/events"+query, nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := r.srv.Client().Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp, sse.NewDecoder(resp.Body)
+}
+
+// nothingElse reports whether no non-comment frame arrives on the stream within ms.
+func nothingElse(d *sse.Decoder, ms time.Duration) bool {
+	got := make(chan error, 1)
+	go func() {
+		for {
+			if f, err := d.Next(); err != nil {
+				got <- err
+				return
+			} else if !(f.Comment != "" && f == sse.Frame{Comment: f.Comment}) {
+				got <- nil
+				return
+			}
+		}
+	}()
+	select {
+	case <-got:
+		return false
+	case <-time.After(ms):
+		return true
+	}
+}
+
+// scoutActor returns scout's actor, for driving the bus as the agent.
+func (r rig) scoutActor() bus.Actor { return bus.Actor{Kind: bus.ActorAgent, ID: r.scout.ID} }
 
 // next returns the next frame that is not a comment, failing the test after 5 seconds.
 func next(t *testing.T, d *sse.Decoder) sse.Frame {
@@ -181,6 +223,35 @@ func ended(d *sse.Decoder) bool {
 	}
 }
 
+// frameQueue reads a stream's frames, holding any that do not match the frame
+// the caller is looking for in a buffer so none are lost to reordering. Paced
+// want calls keep each event's payload at its own state even though the reader
+// does not drive the stream.
+type frameQueue struct {
+	t   *testing.T
+	d   *sse.Decoder
+	buf []sse.Frame
+}
+
+func newFrameQueue(t *testing.T, d *sse.Decoder) *frameQueue { return &frameQueue{t: t, d: d} }
+
+// want returns the next frame matching check, buffering any frames it passes over.
+func (q *frameQueue) want(check func(sse.Frame) bool) sse.Frame {
+	for i, f := range q.buf {
+		if check(f) {
+			q.buf = append(q.buf[:i], q.buf[i+1:]...)
+			return f
+		}
+	}
+	for {
+		f := next(q.t, q.d)
+		if check(f) {
+			return f
+		}
+		q.buf = append(q.buf, f)
+	}
+}
+
 // eventually polls cond every 10 ms for up to 5 seconds.
 func eventually(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
@@ -211,8 +282,8 @@ func TestEvents_ReadyThenLive(t *testing.T) {
 	f := next(t, d)
 	assert.Equal(t, "3", f.ID)
 	assert.Equal(t, "message.posted", f.Event)
-	assert.JSONEq(t, fmt.Sprintf(`{"message":{"id":%q,"room_id":%q,"author":{"kind":"human","id":%q,"name":"kai"},"text":"after","reply_to_id":null,"created_at":%q}}`,
-		m.ID, r.room.ID, r.kai.ID, stamp(m.CreatedAt)), f.Data)
+	assert.JSONEq(t, fmt.Sprintf(`{"message":{"id":%q,"room_id":%q,"author":{"kind":"human","id":%q,"name":"kai"},"text":"after","reply_to_id":null,"deliveries":[{"agent":{"id":%q,"handle":"scout","display_name":"Scout","revoked":false},"state":"waiting"}],"created_at":%q}}`,
+		m.ID, r.room.ID, r.kai.ID, r.scout.ID, stamp(m.CreatedAt)), f.Data)
 
 	_, err := r.svc.UpdateRoom(ctx, r.kai, r.room.ID, bus.RoomUpdate{Topic: ptr("Renamed")})
 	require.NoError(t, err)
@@ -223,6 +294,64 @@ func TestEvents_ReadyThenLive(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(f.Data), &body))
 	assert.Equal(t, "Renamed", body.Room["topic"])
 	assert.Equal(t, m.ID.String(), body.Room["last_read_message_id"])
+}
+
+// One full turn over the bus reaches the human stream in commit order: the
+// message with its deliveries, each delivery and activity, the agent's reply
+// with its edits, the done transition, and the agent's presence across the run.
+// A frameQueue paces the reads so each event's payload keeps its own state, and
+// tolerates a live final:false edit arriving at any point.
+func TestEvents_NewFrames(t *testing.T) {
+	r := newRig(t, app.Options{}, nil)
+	scout := r.scoutActor()
+	_, d := r.open(t, r.cookie, "")
+	assert.Equal(t, "ready", next(t, d).Event)
+	q := newFrameQueue(t, d)
+
+	// kai posts while scout is offline: the copy waits, shown on the message.
+	m, err := r.svc.PostMessage(ctx, r.kai, r.room.ID, "plan the trip", ulid.Zero)
+	require.NoError(t, err)
+	f := q.want(func(f sse.Frame) bool { return f.Event == "message.posted" && strings.Contains(f.Data, m.ID.String()) })
+	assert.Contains(t, f.Data, `"deliveries":[{"agent":`)
+	assert.Contains(t, f.Data, `"state":"waiting"`)
+
+	// scout connects: presence on, then the sweep hands the waiting copy over.
+	resp, _ := r.openAgent(t, r.scoutToken, "")
+	defer resp.Body.Close()
+	f = q.want(func(f sse.Frame) bool { return f.Event == "agent.presence" && strings.Contains(f.Data, `"connected":true`) })
+	f = q.want(func(f sse.Frame) bool { return f.Event == "delivery.changed" && strings.Contains(f.Data, `"state":"delivered"`) })
+
+	require.NoError(t, r.svc.TurnWorking(ctx, scout, m.ID))
+	f = q.want(func(f sse.Frame) bool { return f.Event == "delivery.changed" && strings.Contains(f.Data, `"state":"working"`) })
+
+	_, err = r.svc.ReportRemark(ctx, scout, m.ID, "checking the weather")
+	require.NoError(t, err)
+	q.want(func(f sse.Frame) bool { return f.Event == "activity.posted" && strings.Contains(f.Data, `"kind":"remark"`) && strings.Contains(f.Data, "checking the weather") })
+
+	tool, err := r.svc.StartTool(ctx, scout, m.ID, "web_search", "searching", `{"q":"x"}`)
+	require.NoError(t, err)
+	q.want(func(f sse.Frame) bool { return f.Event == "activity.posted" && strings.Contains(f.Data, `"kind":"tool"`) && strings.Contains(f.Data, tool.ID.String()) })
+
+	_, err = r.svc.FinishTool(ctx, scout, tool.ID, 123, true)
+	require.NoError(t, err)
+	q.want(func(f sse.Frame) bool { return f.Event == "activity.posted" && strings.Contains(f.Data, `"kind":"tool"`) && strings.Contains(f.Data, `"duration_ms":123`) })
+
+	// the agent posts its reply, then edits live and finalizes it.
+	reply, err := r.svc.PostMessage(ctx, scout, r.room.ID, "first draft", m.ID)
+	require.NoError(t, err)
+	q.want(func(f sse.Frame) bool { return f.Event == "message.posted" && strings.Contains(f.Data, reply.ID.String()) })
+
+	require.NoError(t, r.svc.EditMessage(ctx, scout, reply.ID, "second draft", false))
+	require.NoError(t, r.svc.EditMessage(ctx, scout, reply.ID, "final copy", true))
+	require.NoError(t, r.svc.TurnDone(ctx, scout, m.ID))
+	resp.Body.Close() // the agent's client leaves
+
+	// The tail arrives in any order: the finalized frame, at least one live
+	// final:false edit, the done transition, and presence off.
+	q.want(func(f sse.Frame) bool { return f.Event == "message.edited" && strings.Contains(f.Data, `"message"`) && strings.Contains(f.Data, "final copy") })
+	q.want(func(f sse.Frame) bool { return f.Event == "message.edited" && strings.Contains(f.Data, `"final":false`) })
+	q.want(func(f sse.Frame) bool { return f.Event == "delivery.changed" && strings.Contains(f.Data, `"state":"done"`) })
+	q.want(func(f sse.Frame) bool { return f.Event == "agent.presence" && strings.Contains(f.Data, `"connected":false`) })
 }
 
 // Review Focus 1.
@@ -448,4 +577,190 @@ func TestEvents_AFailedSessionCheckIsLoggedAndEndsTheStream(t *testing.T) {
 	require.NoError(t, r.svc.Logout(ctx, r.token))
 	assert.True(t, ended(d))
 	assert.NotContains(t, r.log.String(), `"level":"ERROR"`)
+}
+
+// delivery is the shape of one delivery frame's data.
+type delivery struct {
+	Message struct {
+		ID                ulid.ULID  `json:"id"`
+		RoomID            ulid.ULID  `json:"room_id"`
+		Author            struct {
+			Kind  string    `json:"kind"`
+			ID    ulid.ULID `json:"id"`
+			Name  string    `json:"name"`
+			IsBot bool      `json:"is_bot"`
+		}
+		Text              string     `json:"text"`
+		ReplyToMessageID  *ulid.ULID `json:"reply_to_message_id"`
+		ReplyToText       *string    `json:"reply_to_text"`
+		ReplyToAuthorName *string    `json:"reply_to_author_name"`
+		CreatedAt         time.Time  `json:"created_at"`
+	}
+	Room    map[string]any `json:"room"`
+	Context []any          `json:"context"`
+}
+
+func TestAgentEvents_ReadyThenDelivery(t *testing.T) {
+	r := newRig(t, app.Options{HeartbeatInterval: 20 * time.Millisecond}, nil)
+	resp, d := r.openAgent(t, r.scoutToken, "")
+	require.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+	assert.Equal(t, "no-store", resp.Header.Get("Cache-Control"))
+	assert.Equal(t, "no", resp.Header.Get("X-Accel-Buffering"))
+	assert.Equal(t, sse.Frame{ID: "1", Event: "ready", Data: `{"cursor":1}`}, next(t, d))
+
+	m := r.post(t, "after")
+	f := next(t, d)
+	assert.Equal(t, "delivery", f.Event)
+	var first delivery
+	require.NoError(t, json.Unmarshal([]byte(f.Data), &first))
+	assert.Equal(t, m.ID, first.Message.ID)
+	assert.Equal(t, r.room.ID, first.Message.RoomID)
+	assert.Equal(t, "human", first.Message.Author.Kind)
+	assert.Equal(t, r.kai.ID, first.Message.Author.ID)
+	assert.Equal(t, "kai", first.Message.Author.Name)
+	assert.False(t, first.Message.Author.IsBot)
+	assert.Equal(t, "after", first.Message.Text)
+	assert.Nil(t, first.Message.ReplyToMessageID)
+	assert.Nil(t, first.Message.ReplyToText)
+	assert.Nil(t, first.Message.ReplyToAuthorName)
+	assert.Equal(t, r.room.ID.String(), first.Room["id"])
+	assert.Empty(t, first.Context)
+
+	// A reply carries the replied-to body and author to the agent.
+	require.NoError(t, r.svc.TurnDone(ctx, r.scoutActor(), m.ID))
+	rep, err := r.svc.PostMessage(ctx, r.kai, r.room.ID, "replying", m.ID)
+	require.NoError(t, err)
+	f = next(t, d)
+	assert.Equal(t, "delivery", f.Event)
+	var reply delivery
+	require.NoError(t, json.Unmarshal([]byte(f.Data), &reply))
+	assert.Equal(t, rep.ID, reply.Message.ID)
+	require.NotNil(t, reply.Message.ReplyToMessageID)
+	assert.Equal(t, m.ID, *reply.Message.ReplyToMessageID)
+	require.NotNil(t, reply.Message.ReplyToText)
+	assert.Equal(t, "after", *reply.Message.ReplyToText)
+	require.NotNil(t, reply.Message.ReplyToAuthorName)
+	assert.Equal(t, "kai", *reply.Message.ReplyToAuthorName)
+
+	// Stop reaches the agent as a control event naming the room.
+	require.NoError(t, r.svc.StopTurn(ctx, r.kai, r.room.ID, r.scout.ID))
+	f = next(t, d)
+	assert.Equal(t, "stop", f.Event)
+	var stop struct{ RoomID string `json:"room_id"` }
+	require.NoError(t, json.Unmarshal([]byte(f.Data), &stop))
+	assert.Equal(t, r.room.ID.String(), stop.RoomID)
+
+	// Steer names the room and carries the steer message; it needs a working turn.
+	require.NoError(t, r.svc.TurnWorking(ctx, r.scoutActor(), rep.ID))
+	steer, err := r.svc.Steer(ctx, r.kai, r.room.ID, r.scout.ID, "keep going")
+	require.NoError(t, err)
+	f = next(t, d)
+	assert.Equal(t, "steer", f.Event)
+	var str struct{ RoomID string `json:"room_id"`; Message map[string]any `json:"message"` }
+	require.NoError(t, json.Unmarshal([]byte(f.Data), &str))
+	assert.Equal(t, r.room.ID.String(), str.RoomID)
+	assert.Equal(t, steer.ID.String(), str.Message["id"])
+
+	assert.True(t, nothingElse(d, 150 * time.Millisecond), "nothing follows the steer")
+}
+
+func TestAgentEvents_RevokedWithinAHeartbeat(t *testing.T) {
+	r := newRig(t, app.Options{HeartbeatInterval: 50 * time.Millisecond}, nil)
+	_, d := r.openAgent(t, r.scoutToken, "")
+	next(t, d) // ready
+	require.NoError(t, r.svc.RevokeAgent(ctx, "scout"))
+	assert.True(t, ended(d), "the stream closes within a couple of heartbeats")
+	room, err := r.svc.GetRoom(ctx, r.kai, r.room.ID)
+	require.NoError(t, err)
+	assert.False(t, room.Agents[0].Connected, "closing on revocation flips presence off")
+}
+
+// A client disconnect is the dominant way an agent stream ends. The handler's
+// exit must still write the connected=false presence rows, even though the
+// request context is already over by then: the human subscriber sees them.
+func TestAgentEvents_DisconnectWritesPresenceOff(t *testing.T) {
+	r := newRig(t, app.Options{HeartbeatInterval: 20 * time.Millisecond}, nil)
+	_, human := r.open(t, r.cookie, "")
+	next(t, human) // ready
+	resp, agent := r.openAgent(t, r.scoutToken, "")
+	next(t, agent) // ready
+	f := next(t, human)
+	assert.Equal(t, "agent.presence", f.Event)
+	var on struct{ Connected bool `json:"connected"` }
+	require.NoError(t, json.Unmarshal([]byte(f.Data), &on))
+	assert.True(t, on.Connected, "the human saw the connection open")
+
+	resp.Body.Close() // the agent's client disconnects for real
+	f = next(t, human)
+	assert.Equal(t, "agent.presence", f.Event)
+	var off struct{ Connected bool `json:"connected"` }
+	require.NoError(t, json.Unmarshal([]byte(f.Data), &off))
+	assert.False(t, off.Connected, "the human saw the connection close")
+}
+
+func TestAgentEvents_SecondConnectionReplacesTheFirst(t *testing.T) {
+	r := newRig(t, app.Options{HeartbeatInterval: 20 * time.Millisecond}, nil)
+	connected := func() bool {
+		got, err := r.svc.GetRoom(ctx, r.kai, r.room.ID)
+		return err == nil && got.Agents[0].Connected
+	}
+	assert.False(t, connected())
+
+	resp1, d1 := r.openAgent(t, r.scoutToken, "")
+	assert.Equal(t, 200, resp1.StatusCode)
+	next(t, d1) // ready
+	assert.True(t, connected(), "connected while the first stream is open")
+
+	_, d2 := r.openAgent(t, r.scoutToken, "")
+	assert.True(t, ended(d1), "the replaced stream ends")
+	assert.True(t, connected(), "still connected after the first ends")
+	next(t, d2) // second's ready
+
+	m := r.post(t, "hello")
+	f := next(t, d2)
+	assert.Equal(t, "delivery", f.Event)
+	assert.Contains(t, f.Data, m.ID.String())
+	assert.True(t, connected(), "connected the whole time")
+}
+
+func TestAgentEvents_Cursor(t *testing.T) {
+	r := newRig(t, app.Options{HeartbeatInterval: 20 * time.Millisecond}, nil)
+	m1 := r.post(t, "one") // waiting: scout is offline, no stream yet
+	connected := func() bool {
+		got, err := r.svc.GetRoom(ctx, r.kai, r.room.ID)
+		return err == nil && got.Agents[0].Connected
+	}
+
+	// Reconnect behind the log: the sweep releases m1 and the replay carries it.
+	resp1, d1 := r.openAgent(t, r.scoutToken, "?cursor=0")
+	next(t, d1) // ready
+	f := next(t, d1)
+	assert.Equal(t, "delivery", f.Event)
+	assert.Contains(t, f.Data, m1.ID.String())
+
+	// Close the first stream so scout is offline again, finish m1 to open the
+	// gate, then queue m2.
+	resp1.Body.Close()
+	eventually(t, func() bool { return !connected() }, "the first stream closed")
+	require.NoError(t, r.svc.TurnDone(ctx, r.scoutActor(), m1.ID))
+	m2 := r.post(t, "two") // waiting
+
+	// Reopen behind the log: both missed deliveries replay, in order.
+	_, d2 := r.openAgent(t, r.scoutToken, "?cursor=0")
+	next(t, d2)
+	f1 := next(t, d2)
+	f2 := next(t, d2)
+	assert.Equal(t, "delivery", f1.Event)
+	assert.Contains(t, f1.Data, m1.ID.String())
+	assert.Equal(t, "delivery", f2.Event)
+	assert.Contains(t, f2.Data, m2.ID.String())
+
+	// A bogus cursor is refused.
+	for _, bad := range []string{"?cursor=abc", "?cursor=-1", "?cursor=99999999999999999999"} {
+		resp, _ := r.openAgent(t, r.scoutToken, bad)
+		body, _ := io.ReadAll(resp.Body)
+		assert.Equal(t, 400, resp.StatusCode, bad)
+		assert.JSONEq(t, badReq("cursor must be a non-negative integer"), string(body), bad)
+	}
 }

@@ -155,6 +155,10 @@ func apiEngine(t *testing.T, secure bool) (e *gin.Engine, buf *bytes.Buffer, svc
 	human.GET("/rooms/:room/messages", ctrl.ListMessages)
 	human.POST("/rooms/:room/messages", ctrl.PostMessage)
 	human.GET("/rooms/:room/messages/:message", ctrl.GetMessage)
+	human.POST("/rooms/:room/messages/:message/cancel", ctrl.CancelMessage)
+	human.GET("/rooms/:room/messages/:message/activity", ctrl.ListActivity)
+	human.POST("/rooms/:room/agents/:agent/stop", ctrl.StopTurn)
+	human.POST("/rooms/:room/agents/:agent/steer", ctrl.Steer)
 	human.GET("/events", ctrl.Events)
 	e.Group("/agent", ctrl.AgentAuth).GET("/me", ctrl.AgentMe)
 	return e, buf, svc

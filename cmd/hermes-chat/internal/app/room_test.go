@@ -92,7 +92,7 @@ func TestRooms_CreateGetAndList(t *testing.T) {
 	require.Len(t, rooms, 1)
 	want := fmt.Sprintf(`{"id":%q,"flavor":"conversation","topic":"Trip planning","archived":false,"created_at":%q,
         "humans":[{"id":%q,"username":"kai"}],
-        "agents":[{"id":%q,"handle":"scout","display_name":"Scout","revoked":false}],
+        "agents":[{"id":%q,"handle":"scout","display_name":"Scout","revoked":false,"connected":false}],
         "last_message_id":null,"last_read_message_id":null}`, id, stamp(rooms[0].CreatedAt), c.kaiH.ID, c.scout.ID)
 	assert.JSONEq(t, want, w.Body.String())
 	assert.JSONEq(t, want, c.call(c.kai, "GET", "/api/rooms/"+id, "").Body.String())
@@ -182,6 +182,68 @@ func TestRoomMembersAndSettings(t *testing.T) {
 	w = c.call(c.kai, "PATCH", room, `{}`) // nothing asked, nothing changed
 	assert.Equal(t, 200, w.Code)
 	assert.Equal(t, true, obj(t, w)["archived"])
+}
+
+// The room's agents carry whether each has a live stream right now.
+func TestRoomJSON_ShowsPresence(t *testing.T) {
+	c := newChat(t)
+	room := "/api/rooms/" + obj(t, c.call(c.kai, "POST", "/api/rooms", `{"topic":"T","agent_ids":["`+c.scout.ID.String()+`"]}`))["id"].(string)
+	connected := func() bool {
+		agents := obj(t, c.call(c.kai, "GET", room, ""))["agents"].([]any)
+		require.Len(t, agents, 1)
+		return agents[0].(map[string]any)["connected"].(bool)
+	}
+	assert.False(t, connected())
+	sub, err := c.svc.Subscribe(ctx, bus.Actor{Kind: bus.ActorAgent, ID: c.scout.ID}, bus.FromNow) // the agent comes online
+	require.NoError(t, err)
+	defer sub.Close()
+	assert.True(t, connected())
+}
+
+func TestStopAndSteer(t *testing.T) {
+	c := newChat(t)
+	room, _, err := c.svc.OpenDM(ctx, bus.Actor{Kind: bus.ActorHuman, ID: c.kaiH.ID}, c.scout.ID)
+	require.NoError(t, err)
+	scout := bus.Actor{Kind: bus.ActorAgent, ID: c.scout.ID}
+	sub, err := c.svc.Subscribe(ctx, scout, bus.FromNow) // connect scout
+	require.NoError(t, err)
+	defer sub.Close()
+	base := "/api/rooms/" + room.ID.String() + "/agents/" + c.scout.ID.String()
+
+	// stop needs no running turn
+	w := c.call(c.kai, "POST", base+"/stop", "")
+	require.Equal(t, 204, w.Code)
+	assert.Empty(t, w.Body.String())
+
+	// a working turn takes a steer
+	m, err := c.svc.PostMessage(ctx, bus.Actor{Kind: bus.ActorHuman, ID: c.kaiH.ID}, room.ID, "work", ulid.Zero)
+	require.NoError(t, err)
+	require.NoError(t, c.svc.TurnWorking(ctx, scout, m.ID))
+	w = c.call(c.kai, "POST", base+"/steer", `{"text":"also check trains"}`)
+	require.Equal(t, 201, w.Code, w.Body.String())
+	steer := obj(t, w)
+	assert.Equal(t, "also check trains", steer["text"])
+	assert.Equal(t, room.ID.String(), steer["room_id"])
+
+	// a steer as long as a message may be is read whole, not cut at the small-body limit
+	big := strings.Repeat("x", 8192)
+	w = c.call(c.kai, "POST", base+"/steer", `{"text":"`+big+`"}`)
+	require.Equal(t, 201, w.Code, w.Body.String())
+	assert.Equal(t, big, obj(t, w)["text"])
+
+	// finishing the turn leaves no turn to steer
+	require.NoError(t, c.svc.TurnDone(ctx, scout, m.ID))
+	w = c.call(c.kai, "POST", base+"/steer", `{"text":"again"}`)
+	require.Equal(t, 409, w.Code)
+	assert.JSONEq(t, `{"error":{"code":"no_turn","message":"no turn is running"}}`, w.Body.String())
+
+	// a missing agent, and one not in this room, are 404
+	missing := "/api/rooms/" + room.ID.String() + "/agents/" + ulid.Make().String()
+	notIn := "/api/rooms/" + room.ID.String() + "/agents/" + c.atlas.ID.String()
+	assert.Equal(t, 404, c.call(c.kai, "POST", missing+"/stop", "").Code)
+	assert.Equal(t, 404, c.call(c.kai, "POST", notIn+"/stop", "").Code)
+	assert.Equal(t, 404, c.call(c.kai, "POST", missing+"/steer", `{"text":"x"}`).Code)
+	assert.Equal(t, 404, c.call(c.kai, "POST", notIn+"/steer", `{"text":"x"}`).Code)
 }
 
 // Review Focus 3: every room route, as a human who is not in the room, and with an ID that names nothing.

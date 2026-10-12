@@ -37,7 +37,21 @@ type Controller interface {
 	ListMessages(c *gin.Context)
 	PostMessage(c *gin.Context)
 	GetMessage(c *gin.Context)
+	CancelMessage(c *gin.Context)
+	ListActivity(c *gin.Context)
+	StopTurn(c *gin.Context)
+	Steer(c *gin.Context)
 	Events(c *gin.Context)
+	AgentEvents(c *gin.Context)
+	AgentRooms(c *gin.Context)
+	AgentPostMessage(c *gin.Context)
+	AgentEditMessage(c *gin.Context)
+	AgentTurnWorking(c *gin.Context)
+	AgentTurnDone(c *gin.Context)
+	AgentTurnFailed(c *gin.Context)
+	AgentRemark(c *gin.Context)
+	AgentStartTool(c *gin.Context)
+	AgentFinishTool(c *gin.Context)
 }
 
 // Options are the settings the handlers need.

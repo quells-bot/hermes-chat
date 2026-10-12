@@ -7,6 +7,7 @@ package sqlcgen
 
 import (
 	"context"
+	"database/sql"
 )
 
 const getLastEventID = `-- name: GetLastEventID :one
@@ -21,13 +22,14 @@ func (q *Queries) GetLastEventID(ctx context.Context) (int64, error) {
 }
 
 const insertEvent = `-- name: InsertEvent :one
-INSERT INTO events (room_id, kind, subject_id, created_at) VALUES (?, ?, ?, ?) RETURNING id
+INSERT INTO events (room_id, kind, subject_id, agent_id, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id
 `
 
 type InsertEventParams struct {
 	RoomID    string
 	Kind      string
 	SubjectID string
+	AgentID   sql.NullString
 	CreatedAt int64
 }
 
@@ -36,6 +38,7 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (int64
 		arg.RoomID,
 		arg.Kind,
 		arg.SubjectID,
+		arg.AgentID,
 		arg.CreatedAt,
 	)
 	var id int64
@@ -43,9 +46,61 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (int64
 	return id, err
 }
 
+const listEventsForAgent = `-- name: ListEventsForAgent :many
+SELECT e.id, e.room_id, e.kind, e.subject_id, e.agent_id, e.created_at FROM events e
+WHERE e.id > ? AND e.agent_id = ?
+ORDER BY e.id LIMIT ?
+`
+
+type ListEventsForAgentParams struct {
+	ID      int64
+	AgentID sql.NullString
+	Limit   int64
+}
+
+type ListEventsForAgentRow struct {
+	ID        int64
+	RoomID    string
+	Kind      string
+	SubjectID string
+	AgentID   sql.NullString
+	CreatedAt int64
+}
+
+func (q *Queries) ListEventsForAgent(ctx context.Context, arg ListEventsForAgentParams) ([]ListEventsForAgentRow, error) {
+	rows, err := q.db.QueryContext(ctx, listEventsForAgent, arg.ID, arg.AgentID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListEventsForAgentRow
+	for rows.Next() {
+		var i ListEventsForAgentRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RoomID,
+			&i.Kind,
+			&i.SubjectID,
+			&i.AgentID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEventsForHuman = `-- name: ListEventsForHuman :many
-SELECT e.id, e.room_id, e.kind, e.subject_id, e.created_at FROM events e
-WHERE e.id > ? AND e.room_id IN (SELECT m.room_id FROM room_humans m WHERE m.human_id = ?)
+SELECT e.id, e.room_id, e.kind, e.subject_id, e.agent_id, e.created_at FROM events e
+WHERE e.id > ? AND e.agent_id IS NULL
+  AND e.room_id IN (SELECT m.room_id FROM room_humans m WHERE m.human_id = ?)
 ORDER BY e.id LIMIT ?
 `
 
@@ -55,20 +110,81 @@ type ListEventsForHumanParams struct {
 	Limit   int64
 }
 
-func (q *Queries) ListEventsForHuman(ctx context.Context, arg ListEventsForHumanParams) ([]Event, error) {
+type ListEventsForHumanRow struct {
+	ID        int64
+	RoomID    string
+	Kind      string
+	SubjectID string
+	AgentID   sql.NullString
+	CreatedAt int64
+}
+
+func (q *Queries) ListEventsForHuman(ctx context.Context, arg ListEventsForHumanParams) ([]ListEventsForHumanRow, error) {
 	rows, err := q.db.QueryContext(ctx, listEventsForHuman, arg.ID, arg.HumanID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Event
+	var items []ListEventsForHumanRow
 	for rows.Next() {
-		var i Event
+		var i ListEventsForHumanRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.RoomID,
 			&i.Kind,
 			&i.SubjectID,
+			&i.AgentID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnacknowledgedDeliveryEvents = `-- name: ListUnacknowledgedDeliveryEvents :many
+SELECT e.id, e.room_id, e.kind, e.subject_id, e.agent_id, e.created_at FROM events e
+JOIN deliveries d ON d.room_id = e.room_id AND d.agent_id = e.agent_id AND d.message_id = e.subject_id
+WHERE e.agent_id = ? AND e.kind = 'delivery' AND e.id <= ? AND d.state = 'delivered'
+ORDER BY e.id
+`
+
+type ListUnacknowledgedDeliveryEventsParams struct {
+	AgentID sql.NullString
+	ID      int64
+}
+
+type ListUnacknowledgedDeliveryEventsRow struct {
+	ID        int64
+	RoomID    string
+	Kind      string
+	SubjectID string
+	AgentID   sql.NullString
+	CreatedAt int64
+}
+
+func (q *Queries) ListUnacknowledgedDeliveryEvents(ctx context.Context, arg ListUnacknowledgedDeliveryEventsParams) ([]ListUnacknowledgedDeliveryEventsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listUnacknowledgedDeliveryEvents, arg.AgentID, arg.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUnacknowledgedDeliveryEventsRow
+	for rows.Next() {
+		var i ListUnacknowledgedDeliveryEventsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RoomID,
+			&i.Kind,
+			&i.SubjectID,
+			&i.AgentID,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err

@@ -15,6 +15,35 @@ import (
 	"github.com/quells-bot/hermes-chat/cmd/hermes-chat/internal/storage/storagetest"
 )
 
+func TestPoll_AgentSeesOnlyItsOwn(t *testing.T) {
+	w := newWorld(t)
+	ch, err := w.s.CreateRoom(ctx, w.kai, "Both", ids(w.atlas, w.scout))
+	require.NoError(t, err)
+	scout, err := w.s.Subscribe(ctx, bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}, bus.FromNow)
+	require.NoError(t, err)
+	defer scout.Close()
+	atlas, err := w.s.Subscribe(ctx, bus.Actor{Kind: bus.ActorAgent, ID: w.atlas.ID}, bus.FromNow)
+	require.NoError(t, err)
+	defer atlas.Close()
+	m, err := w.s.PostMessage(ctx, w.kai, ch.ID, "@atlas @scout hi", ulid.Zero)
+	require.NoError(t, err)
+	require.Len(t, m.Deliveries, 2)
+	seen := []struct {
+		sub  *bus.Subscription
+		agent ulid.ULID
+	}{
+		{scout, w.scout.ID},
+		{atlas, w.atlas.ID},
+	}
+	for _, c := range seen {
+		events := drain(t, c.sub)
+		require.Len(t, events, 1, "each agent sees only its own delivery event")
+		assert.Equal(t, bus.EventDelivery, events[0].Kind)
+		require.NotNil(t, events[0].Message)
+		assert.Equal(t, m.ID, events[0].Message.ID)
+	}
+}
+
 // drain polls until the log is drained and returns everything read.
 func drain(t *testing.T, sub *bus.Subscription) (out []bus.Event) {
 	t.Helper()
@@ -113,8 +142,6 @@ func TestSubscribe_Cursors(t *testing.T) {
 	var ve bus.ValidationError
 	require.ErrorAs(t, err, &ve)
 	assert.Equal(t, "cursor must not be negative", ve.Message)
-	_, err = w.s.Subscribe(ctx, bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}, bus.FromNow)
-	assert.ErrorIs(t, err, bus.ErrForbidden)
 }
 
 // Review Focus 3.
@@ -322,4 +349,208 @@ func TestPoll_StorageFailureIsReportedAndTheCursorStays(t *testing.T) {
 	_, err = sub.Poll(ctx)
 	assert.ErrorIs(t, err, errDisk)
 	assert.Zero(t, sub.Cursor())
+}
+
+func TestHub_OneStreamPerAgent(t *testing.T) {
+	w := newWorld(t)
+	scout := bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}
+	connected := w.s.(interface{ AgentConnected(ulid.ULID) bool })
+
+	first, err := w.s.Subscribe(ctx, scout, bus.FromNow)
+	require.NoError(t, err)
+	defer first.Close()
+	assert.True(t, connected.AgentConnected(w.scout.ID))
+	_, open := <-first.Wake() // opening the stream rings it once for its own presence
+	assert.True(t, open)
+
+	second, err := w.s.Subscribe(ctx, scout, bus.FromNow)
+	require.NoError(t, err)
+	defer second.Close()
+	assert.True(t, connected.AgentConnected(w.scout.ID), "still connected while the replacement is open")
+	_, open = <-first.Wake()
+	assert.False(t, open, "the replaced stream's wake channel is closed")
+	assert.Equal(t, 1, w.s.(interface{ Subscribers() int }).Subscribers())
+
+	second.Close()
+	assert.False(t, connected.AgentConnected(w.scout.ID))
+	assert.Equal(t, 0, w.s.(interface{ Subscribers() int }).Subscribers())
+}
+
+func TestHub_BroadcastEditReachesHumansAndDropsWhenFull(t *testing.T) {
+	w := newWorld(t)
+	human, err := w.s.Subscribe(ctx, w.kai, bus.FromNow)
+	require.NoError(t, err)
+	defer human.Close()
+	agent, err := w.s.Subscribe(ctx, bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}, bus.FromNow)
+	require.NoError(t, err)
+	defer agent.Close()
+
+	msgID := ulid.Make()
+	for i := range editsBuffer + 8 {
+		w.s.(interface {
+			BroadcastEdit(bus.LiveEdit, ...ulid.ULID)
+		}).BroadcastEdit(bus.LiveEdit{MessageID: msgID, Text: fmt.Sprint(i)}, w.kai.ID)
+	}
+	got := len(readAllAvailable(human.Edits()))
+	assert.Equal(t, editsBuffer, got, "buffered, then dropped; never blocked")
+	assert.Len(t, readAllAvailable(agent.Edits()), 0, "agents get no edits")
+}
+
+// Review Focus 2, the sweep half. Coming online releases the waiting head and
+// writes one connected=true presence row per room; done releases the next head.
+func TestSubscribe_SweepsTheQueue(t *testing.T) {
+	w := newWorld(t)
+	dm, _, err := w.s.OpenDM(ctx, w.kai, w.scout.ID)
+	require.NoError(t, err)
+	scout := bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}
+	m1, err := w.s.PostMessage(ctx, w.kai, dm.ID, "one", ulid.Zero)
+	require.NoError(t, err)
+	m2, err := w.s.PostMessage(ctx, w.kai, dm.ID, "two", ulid.Zero)
+	require.NoError(t, err) // scout is offline: both stay waiting
+
+	human, err := w.s.Subscribe(ctx, w.kai, bus.FromNow)
+	require.NoError(t, err)
+	defer human.Close()
+	assert.Empty(t, drain(t, human))
+
+	sub, err := w.s.Subscribe(ctx, scout, bus.FromNow)
+	require.NoError(t, err)
+	defer sub.Close()
+	got := drain(t, sub)
+	require.Len(t, got, 1)
+	assert.Equal(t, bus.EventDelivery, got[0].Kind)
+	assert.Equal(t, m1.ID, got[0].Message.ID)
+
+	msgs, err := w.s.ListMessages(ctx, w.kai, dm.ID, ulid.Zero, 0)
+	require.NoError(t, err)
+	require.Len(t, msgs, 2)
+	assert.Equal(t, bus.DeliveryDelivered, msgs[0].Deliveries[0].State, "m1 was swept through")
+	assert.Equal(t, bus.DeliveryWaiting, msgs[1].Deliveries[0].State, "m2 is still gated")
+
+	// Reporting m1 done releases m2 on the same subscription.
+	require.NoError(t, w.s.TurnDone(ctx, scout, m1.ID))
+	got = drain(t, sub)
+	require.Len(t, got, 1)
+	assert.Equal(t, bus.EventDelivery, got[0].Kind)
+	assert.Equal(t, m2.ID, got[0].Message.ID)
+
+	// One connected=true presence row per room for the human; the agent's own
+	// stream only ever carried delivery events, never a presence row.
+	pres := []bus.Event{}
+	for _, e := range drain(t, human) {
+		if e.Kind == bus.EventAgentPresence {
+			pres = append(pres, e)
+		}
+	}
+	require.Len(t, pres, 1, "scout is in one room")
+	assert.True(t, pres[0].Connected)
+}
+
+func TestAgentGone_PresenceOff(t *testing.T) {
+	w := newWorld(t)
+	_, _, err := w.s.OpenDM(ctx, w.kai, w.scout.ID)
+	require.NoError(t, err)
+	human, err := w.s.Subscribe(ctx, w.kai, bus.FromNow)
+	require.NoError(t, err)
+	defer human.Close()
+	scout := bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}
+	connected := w.s.(interface{ AgentConnected(ulid.ULID) bool })
+
+	sub, err := w.s.Subscribe(ctx, scout, bus.FromNow)
+	require.NoError(t, err)
+	on := drain(t, human)
+	require.Len(t, on, 1, "one presence-on row when the stream opens")
+	assert.True(t, on[0].Connected)
+
+	// Close and report gone: the human sees connected=false.
+	sub.Close()
+	assert.False(t, connected.AgentConnected(w.scout.ID))
+	require.NoError(t, w.s.AgentGone(ctx, scout))
+	off := drain(t, human)
+	require.Len(t, off, 1)
+	assert.Equal(t, bus.EventAgentPresence, off[0].Kind)
+	assert.False(t, off[0].Connected)
+
+	// Flicker: A is replaced by B; A's handler calling AgentGone writes nothing.
+	_, err = w.s.Subscribe(ctx, scout, bus.FromNow)
+	require.NoError(t, err)
+	assert.Len(t, drain(t, human), 1, "A's presence-on")
+	b, err := w.s.Subscribe(ctx, scout, bus.FromNow)
+	require.NoError(t, err)
+	defer b.Close()
+	assert.Len(t, drain(t, human), 1, "B's presence-on")
+	require.NoError(t, w.s.AgentGone(ctx, scout)) // as A's handler will, once its poll unblocks
+	assert.Empty(t, drain(t, human), "no rows while B is still live")
+	assert.True(t, connected.AgentConnected(w.scout.ID))
+
+	// Closing the last stream and reporting gone flips presence off.
+	b.Close()
+	assert.False(t, connected.AgentConnected(w.scout.ID))
+	require.NoError(t, w.s.AgentGone(ctx, scout))
+	off = drain(t, human)
+	require.Len(t, off, 1)
+	assert.False(t, off[0].Connected)
+}
+
+// AgentGone refuses a human actor.
+func TestAgentGone_RefusesAHuman(t *testing.T) {
+	w := newWorld(t)
+	require.ErrorIs(t, w.s.AgentGone(ctx, w.kai), bus.ErrForbidden)
+}
+
+// readAllAvailable drains edits without blocking and returns what it got.
+func readAllAvailable(edits <-chan bus.LiveEdit) (out []bus.LiveEdit) {
+	for {
+		select {
+		case e, ok := <-edits:
+			if !ok {
+				return
+			}
+			out = append(out, e)
+		default:
+			return
+		}
+	}
+}
+
+// editsBuffer matches the bus package's unexported edits channel bound, so the
+// drop-when-full test can target it. Reaching the public constant would couple
+// the black-box test to an internal; the value is pinned by the prod code.
+const editsBuffer = 32
+
+// A delivery released to a stream that died before reading it must not wedge
+// the pair: an agent that comes back with no cursor is handed its unacknowledged
+// deliveries again, and nothing it already finished.
+func TestSubscribe_NoCursorHandsOverUnacknowledgedDeliveriesAgain(t *testing.T) {
+	w := newWorld(t)
+	dm, _, err := w.s.OpenDM(ctx, w.kai, w.scout.ID)
+	require.NoError(t, err)
+	scout := bus.Actor{Kind: bus.ActorAgent, ID: w.scout.ID}
+
+	sub, err := w.s.Subscribe(ctx, scout, bus.FromNow)
+	require.NoError(t, err)
+	m0, err := w.s.PostMessage(ctx, w.kai, dm.ID, "zero", ulid.Zero)
+	require.NoError(t, err)
+	require.NoError(t, w.s.TurnDone(ctx, scout, m0.ID)) // finished: never handed over again
+	m1, err := w.s.PostMessage(ctx, w.kai, dm.ID, "one", ulid.Zero)
+	require.NoError(t, err) // released to the stream, which dies before reading it
+	sub.Close()
+	require.NoError(t, w.s.AgentGone(ctx, scout))
+
+	again, err := w.s.Subscribe(ctx, scout, bus.FromNow)
+	require.NoError(t, err)
+	defer again.Close()
+	start := again.Cursor()
+	got := drain(t, again)
+	require.Len(t, got, 1, "only the unacknowledged delivery")
+	assert.Equal(t, bus.EventDelivery, got[0].Kind)
+	assert.Equal(t, m1.ID, got[0].Message.ID)
+	assert.Equal(t, start, got[0].ID, "the frame does not move the plugin's cursor backwards")
+	assert.Empty(t, drain(t, again), "handed over once per stream")
+
+	// a stream that names a cursor replays the log as before, nothing extra
+	withCursor, err := w.s.Subscribe(ctx, scout, again.Cursor())
+	require.NoError(t, err)
+	defer withCursor.Close()
+	assert.Empty(t, drain(t, withCursor))
 }

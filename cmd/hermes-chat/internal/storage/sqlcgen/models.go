@@ -8,6 +8,21 @@ import (
 	"database/sql"
 )
 
+type Activity struct {
+	ID         string
+	RoomID     string
+	AgentID    string
+	MessageID  string
+	Kind       string
+	Text       string
+	Tool       string
+	Preview    string
+	Arguments  string
+	DurationMs sql.NullInt64
+	Succeeded  sql.NullInt64
+	CreatedAt  int64
+}
+
 type Agent struct {
 	ID          string
 	Handle      string
@@ -17,12 +32,20 @@ type Agent struct {
 	CreatedAt   int64
 }
 
+type Delivery struct {
+	RoomID    string
+	AgentID   string
+	MessageID string
+	State     string
+}
+
 type Event struct {
 	ID        int64
 	RoomID    string
 	Kind      string
 	SubjectID string
 	CreatedAt int64
+	AgentID   sql.NullString
 }
 
 type Human struct {
@@ -40,6 +63,7 @@ type Message struct {
 	ReplyToID     sql.NullString
 	Body          string
 	CreatedAt     int64
+	FinalizedAt   sql.NullInt64
 }
 
 type Room struct {
