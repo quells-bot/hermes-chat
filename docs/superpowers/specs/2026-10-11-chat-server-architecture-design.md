@@ -482,7 +482,7 @@ and `wait -n`, among other things. Also avoid GNU-only flags to `sed`, `date`,
 ### To verify before relying on it
 
 A reviewer checked the first three on the development machine on 2026-10-11;
-the fourth is still open.
+the fourth was confirmed in stage 7.
 
 - `modernc.org/sqlite` accepts `_pragma` and `_txlock` in the connection
   string. Confirmed by reading the driver source (versions 1.38 to 1.55), not
@@ -491,9 +491,9 @@ the fourth is still open.
   migration files. Confirmed by generating code from a throwaway project.
 - gin's response writer works with `http.ResponseController`. Confirmed: gin
   1.11 and 1.12 define `Unwrap()` on it.
-- **Not checked:** that HTTP/2 is negotiated on the autocert listener when it
-  is passed to `http.Server.Serve` through grace. Without it, browsers cap SSE
-  streams at six per origin. Check this in the first task that stands up TLS.
+- HTTP/2 is negotiated on the autocert listener when it is passed to
+  `http.Server.Serve` through grace. Without it, browsers cap SSE streams at
+  six per origin. Confirmed in stage 7 by `TestServe_AutocertNegotiatesHTTP2`.
 
 ## 13. Edits to the product spec
 

@@ -490,8 +490,9 @@ an agent gets 403. Downloads support byte ranges.
   query. That is fine for two humans and a few tabs.
 - The event log is never pruned, and a client that reconnects with a very old
   cursor is sent everything since.
-- Over plain HTTP/1.1 a browser allows six streams per origin. Stage 7
-  checks HTTP/2.
+- Over plain HTTP/1.1 a browser allows six streams per origin. TLS mode
+  `autocert` negotiates HTTP/2, so the limit applies only to TLS mode `off`
+  without an HTTP/2 proxy in front.
 - A turn that never reports `done` or `failed` holds its agent's queue in that
   room forever, by design; `stop` exists for the human, and the plugin reports
   the stop as a finished turn.
