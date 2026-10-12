@@ -47,5 +47,6 @@ func serve(ctx context.Context, cfg Config, log *slog.Logger, ln listeners) erro
 	return grace.Run(ctx,
 		httpserver.New(cfg.HTTPAddr, e, apiOpts...),
 		httpserver.New(cfg.DebugAddr, httpserver.DebugHandler(), debugOpts...),
+		w.Hub,
 	)
 }

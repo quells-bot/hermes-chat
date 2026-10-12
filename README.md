@@ -77,6 +77,21 @@ A human created before passwords existed needs `user passwd` before logging in.
 | `POST /api/login` | none, same-origin | Body `{"username":"…","password":"…"}`. Replies `{"id":"…","username":"…"}` and sets the `hermes_session` cookie (90 days, `HttpOnly`, `SameSite=Lax`, `Secure` unless configured off). |
 | `POST /api/logout` | session cookie, same-origin | Ends the session and clears the cookie. Replies 204. |
 | `GET /api/me` | session cookie | Replies `{"id":"…","username":"…"}`. |
+| `GET /api/agents` | session cookie | Replies `{"agents":[agent…]}`, by handle. |
+| `GET /api/humans` | session cookie | Replies `{"humans":[human…]}`, by username. |
+| `GET /api/rooms` | session cookie | Replies `{"rooms":[room…]}`, the rooms the caller is in, by ID. |
+| `POST /api/rooms` | session cookie, same-origin | Body `{"topic":"…","agent_ids":["…"]}`. Replies 201 with the room. |
+| `POST /api/dms` | session cookie, same-origin | Body `{"agent_id":"…"}`. Replies 201 with the room if it was created, 200 with it if it existed. |
+| `GET /api/rooms/:room` | session cookie | Replies the room. |
+| `PATCH /api/rooms/:room` | session cookie, same-origin | Body `{"topic":"…","archived":true}`, both optional. Replies the room. |
+| `POST /api/rooms/:room/humans` | session cookie, same-origin | Body `{"human_id":"…"}`. Replies the room. |
+| `POST /api/rooms/:room/agents` | session cookie, same-origin | Body `{"agent_id":"…"}`. Replies the room. |
+| `DELETE /api/rooms/:room/agents/:agent` | session cookie, same-origin | Replies the room. |
+| `PUT /api/rooms/:room/read` | session cookie, same-origin | Body `{"message_id":"…"}`. Sets the caller's read marker. Replies 204. |
+| `GET /api/rooms/:room/messages` | session cookie | Query `before=<id>` (default: the newest) and `limit=<1..200>` (default 50). Replies `{"messages":[message…]}`, oldest first. |
+| `POST /api/rooms/:room/messages` | session cookie, same-origin | Body `{"text":"…","reply_to_id":"…"}`, `reply_to_id` optional. Replies 201 with the message. |
+| `GET /api/rooms/:room/messages/:message` | session cookie | Replies the message. |
+| `GET /api/events` | session cookie | The event stream; see "Event stream". |
 | `GET /agent/me` | `Authorization: Bearer <token>` | Replies `{"id":"…","handle":"…","display_name":"…"}`. |
 
 Same-origin means the `Origin` header must name this server. Errors have one
@@ -86,15 +101,78 @@ shape:
 
 | Status | `code` | Meaning |
 |---|---|---|
-| 400 | `bad_request` | A login body that is not a JSON object with username and password. |
+| 400 | `bad_request` | A body, query parameter, or ID that cannot be read. |
 | 400 | `validation` | The request was understood but a value is not acceptable; `message` says which. |
 | 401 | `invalid_credentials` | Wrong username or password. |
 | 401 | `unauthenticated` | No valid session or token. |
 | 403 | `forbidden` | Not allowed, including a cross-origin state-changing request. |
 | 404 | `not_found` | No such thing. |
 | 409 | `conflict` | It already exists. |
+| 409 | `room_archived` | The room is archived; its messages, members, and topic cannot change until it is unarchived. |
 | 429 | `throttled` | Too many attempts; `Retry-After` gives the seconds to wait. |
 | 500 | `internal` | Something failed on the server; details are only in the log. |
+| 503 | `unavailable` | The server is shutting down; try again shortly. |
+
+The JSON shapes. Arrays are never `null`, IDs are ULID strings, and times are
+RFC 3339 in UTC.
+
+    human    {"id":"01…","username":"kai"}
+    agent    {"id":"01…","handle":"scout","display_name":"Scout","revoked":false}
+    room     {"id":"01…","flavor":"conversation","topic":"Trip planning","archived":false,
+              "created_at":"2026-10-11T12:00:00.123Z","humans":[human…],"agents":[agent…],
+              "last_message_id":null,"last_read_message_id":null}
+    message  {"id":"01…","room_id":"01…","author":{"kind":"human","id":"01…","name":"kai"},
+              "text":"hello","reply_to_id":null,"created_at":"2026-10-11T12:00:00.123Z"}
+
+`flavor` is `dm`, `channel`, or `conversation`, worked out from who is in the
+room. `author` is `null` for a message whose human has since been removed.
+`last_read_message_id` is the caller's own marker. A human who is not in a
+room gets 404 for it, the same as for a room that does not exist. Only humans
+use these routes; an agent token gets 401.
+
+## Event stream
+
+Open `GET /api/events` with the session cookie. The response is
+`text/event-stream` and stays open. Every committed change to a room the
+caller is in produces an event with an increasing integer ID.
+
+The first frame is `ready`, with `id` and `data` `{"cursor":N}`, the cursor the
+stream starts from. With no cursor the stream starts at the present, so open
+the stream first, wait for `ready`, and only then load rooms and messages;
+nothing that happens in between is lost. To resume after a disconnect, send
+the last `id` seen as `Last-Event-ID` (a browser's `EventSource` does this
+itself) or as `?cursor=`; the header wins if both are given. A cursor that is
+not a non-negative integer is a 400. A cursor ahead of the event log is
+treated as the end of the log, and `ready` says where the stream really
+starts. Events after the cursor are sent in order, then new ones as they
+happen.
+
+| `event` | `data` |
+|---|---|
+| `message.posted` | `{"message":<message>}` |
+| `room.changed` | `{"room":<room>}` |
+
+`room.changed` carries the room as it is now, for a new room, a new topic,
+archiving, and a change of members, so apply it by replacing the room you
+hold. A person who is added to a room receives the room's earlier events too.
+
+A comment line (`: hb`) arrives every 25 seconds while the stream is idle. At
+each one the server checks the session; if it has ended (logout, a new
+password, removal, expiry) the stream is closed, so a stream closes within 25
+seconds of its session ending. On shutdown the server closes every open
+stream at once.
+
+## Known limits
+
+- Posting is not idempotent. A phone that retries a `POST` after a timeout can
+  post the message twice.
+- `user remove` runs in another process and writes no event, so an open
+  browser learns that a member has gone only when it next loads the room.
+- Every committed change wakes every open stream, and each runs one indexed
+  query. That is fine for two humans and a few tabs.
+- The event log is never pruned, and a client that reconnects with a very old
+  cursor is sent everything since.
+- Over plain HTTP/1.1 a browser allows six streams per origin.
 
 ## Adding a migration
 
@@ -121,6 +199,6 @@ For example, `00001_humans.sql`:
 ## Layering
 
 Code under `cmd/hermes-chat/internal` is layered `app` to `bus` to `storage`:
-each layer may import only the one below it, and `reqid` is a leaf that imports
-none of them. Only `storage` may import its generated `sqlcgen` package;
+each layer may import only the one below it, and `reqid` and `sse` are leaves that
+import none of them. Only `storage` may import its generated `sqlcgen` package;
 `TestLayering_ThisRepository` checks this against the real import graph.

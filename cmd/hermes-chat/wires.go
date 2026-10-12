@@ -21,6 +21,7 @@ const (
 
 type wires struct {
 	Svc     bus.Service
+	Hub     *bus.Hub
 	App     app.Controller
 	CleanUp []func() error
 }
@@ -47,7 +48,9 @@ func wireUp(ctx context.Context, cfg Config, mode wireMode) (wires, error) {
 		return w, err
 	}
 
-	w.Svc = bus.NewService(storage.NewRepo(db), time.Now)
+	svc := bus.NewService(storage.NewRepo(db), time.Now)
+	w.Svc = svc
+	w.Hub = svc.Hub() // built in every mode; only serve runs it
 	w.App = app.NewController(w.Svc, app.Options{CookieSecure: cfg.CookieSecure})
 	return w, nil
 }
