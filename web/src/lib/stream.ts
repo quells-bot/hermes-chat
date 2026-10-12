@@ -90,12 +90,23 @@ export function openStream(handlers: StreamHandlers): Stream {
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
 
+  // call runs a handler. One that throws is reported and the stream carries
+  // on as if it had returned, so the read loop's catch only ever sees the
+  // transport fail: a bug in a handler must not look like a lost connection.
+  function call(handler: () => void): void {
+    try {
+      handler();
+    } catch (err) {
+      console.error('event stream: a handler threw', err);
+    }
+  }
+
   function setState(s: StreamState): void {
     if (closed || s === state) {
       return;
     }
     state = s;
-    handlers.state(s);
+    call(() => handlers.state(s));
   }
 
   // lose gives up on conn and schedules the next one. It is the one way a
@@ -132,7 +143,7 @@ export function openStream(handlers: StreamHandlers): Stream {
       failures = 0;
       setState('live');
       if (conn === current) {
-        handlers.ready();
+        call(() => handlers.ready());
       }
       return;
     }
@@ -142,7 +153,7 @@ export function openStream(handlers: StreamHandlers): Stream {
     } catch {
       return; // not JSON: dropped, and its id still counts
     }
-    handlers.event(f.event, data);
+    call(() => handlers.event(f.event, data));
   }
 
   async function read(conn: AbortController): Promise<void> {
@@ -158,7 +169,7 @@ export function openStream(handlers: StreamHandlers): Stream {
       }
       if (res.status === 401) {
         close();
-        sessionLost();
+        call(sessionLost);
         return;
       }
       if (res.status === 400) {

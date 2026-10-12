@@ -485,3 +485,106 @@ test('close from a handler stops the frames behind it in the same chunk', async 
 
   expect(seen).toEqual(['a']);
 });
+
+// --- handlers that throw ---
+
+test('an event handler that throws is reported, and the next frame still arrives', async () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const boom = new Error('boom');
+  const seen: unknown[] = [];
+  stream = openStream({
+    ready: () => {},
+    event: (_name, data) => {
+      seen.push(data);
+      if (seen.length === 1) {
+        throw boom;
+      }
+    },
+    state: (s) => states.push(s),
+  });
+  await push(0, 'id: 12\nevent: ready\ndata: {"cursor":12}\n\n');
+
+  // the frame behind it in the same chunk, and one in a later chunk
+  await push(0, 'id: 13\nevent: a\ndata: 1\n\nid: 14\nevent: a\ndata: 2\n\n');
+  await push(0, 'id: 15\nevent: a\ndata: 3\n\n');
+  await advance(5000);
+
+  expect(seen).toEqual([1, 2, 3]);
+  expect(errors).toHaveBeenCalledTimes(1);
+  expect(errors.mock.calls[0]).toContain(boom);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(states).toEqual(['connecting', 'live']);
+  expect(signal(0).aborted).toBe(false);
+  errors.mockRestore();
+});
+
+test('a ready handler that throws is reported and does not reconnect', async () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const boom = new Error('boom');
+  const seen: unknown[] = [];
+  stream = openStream({
+    ready: () => {
+      throw boom;
+    },
+    event: (_name, data) => seen.push(data),
+    state: (s) => states.push(s),
+  });
+
+  await push(0, 'id: 12\nevent: ready\ndata: {"cursor":12}\n\n');
+  await advance(5000);
+  await push(0, 'id: 13\nevent: a\ndata: 1\n\n');
+
+  expect(errors).toHaveBeenCalledTimes(1);
+  expect(errors.mock.calls[0]).toContain(boom);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(states).toEqual(['connecting', 'live']);
+  expect(seen).toEqual([1]);
+  errors.mockRestore();
+});
+
+test('a state handler that throws is reported and the stream still reconnects', async () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const boom = new Error('boom');
+  stream = openStream({
+    ready: () => calls.push({ ready: true }),
+    event: () => {},
+    state: (s) => {
+      states.push(s);
+      throw boom;
+    },
+  });
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+
+  await push(0, 'id: 12\nevent: ready\ndata: {"cursor":12}\n\n');
+  expect(calls).toEqual([{ ready: true }]);
+  await end(0);
+  await advance(1000);
+
+  expect(url(1)).toBe('/api/events?cursor=12');
+  expect(states).toEqual(['connecting', 'live', 'waiting', 'connecting']);
+  expect(errors).toHaveBeenCalledTimes(4);
+  expect(errors.mock.calls[0]).toContain(boom);
+  errors.mockRestore();
+});
+
+test('a 401 stops for good even when the session handler throws', async () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const boom = new Error('boom');
+  lost.mockImplementation(() => {
+    throw boom;
+  });
+  fetchMock.mockImplementation(() => Promise.resolve(status(401)));
+  const s = open();
+  await flush();
+
+  await advance(5 * 60 * 1000);
+  s.kick();
+  await flush();
+
+  expect(lost).toHaveBeenCalledTimes(1);
+  expect(errors).toHaveBeenCalledTimes(1);
+  expect(errors.mock.calls[0]).toContain(boom);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(states).toEqual(['connecting']);
+  errors.mockRestore();
+});
