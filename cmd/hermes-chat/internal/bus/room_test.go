@@ -31,7 +31,7 @@ func newWorld(t *testing.T) world {
 	t.Helper()
 	now := fixed
 	r := storagetest.NewRepo(t)
-	svc := bus.NewService(r, func() time.Time { return now })
+	svc := bus.NewService(r, func() time.Time { return now }, bus.WithFiles(storagetest.NewFiles(t)))
 	var s bus.Service = svc
 	human := func(name string) bus.Actor {
 		h, err := s.CreateHuman(ctx, name, pw)

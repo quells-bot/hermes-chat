@@ -34,6 +34,17 @@ func TestLoadConfig_MissingDBPath(t *testing.T) {
 	assert.Contains(t, err.Error(), "HERMES_CHAT_DB_PATH")
 }
 
+func TestConfig_AttachmentsDir(t *testing.T) {
+	t.Setenv("HERMES_CHAT_DB_PATH", "/var/lib/hermes/chat.db")
+	c, err := loadConfig()
+	require.NoError(t, err)
+	assert.Equal(t, "/var/lib/hermes/attachments", c.attachmentsDir())
+	t.Setenv("HERMES_CHAT_ATTACHMENTS_DIR", "/srv/files")
+	c, err = loadConfig()
+	require.NoError(t, err)
+	assert.Equal(t, "/srv/files", c.attachmentsDir())
+}
+
 func TestValidateForServe_BadGinMode(t *testing.T) { // gin.SetMode panics on an unknown mode
 	t.Setenv("HERMES_CHAT_DB_PATH", "/tmp/x.db")
 	t.Setenv("HERMES_CHAT_GIN_MODE", "fast")

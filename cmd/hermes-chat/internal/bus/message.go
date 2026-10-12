@@ -35,8 +35,9 @@ type Message struct {
 	ReplyToID  ulid.ULID // zero when not a reply
 	ReplyTo    *Message  // the message this one replies to, when any; set only on an agent delivery
 	CreatedAt  time.Time
-	Deliveries []Delivery // each agent's copy, in handle order; never nil after a load from storage
-	Prompt     *Prompt    // the question this message asks, when any; nil for an ordinary message
+	Deliveries []Delivery   // each agent's copy, in handle order; never nil after a load from storage
+	Prompt     *Prompt      // the question this message asks, when any; nil for an ordinary message
+	Attachments []Attachment // the files riding the message, in upload order; never nil after a load from storage
 }
 
 var (
@@ -145,6 +146,17 @@ func messagesFromRows(ctx context.Context, r storage.Repository, rows []storage.
 			out[i].Prompt = &cp
 		}
 	}
+	atts, err := loadAttachments(ctx, r, rows)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if as, ok := atts[out[i].ID.String()]; ok {
+			out[i].Attachments = as
+		} else {
+			out[i].Attachments = []Attachment{}
+		}
+	}
 	return out, nil
 }
 
@@ -198,7 +210,38 @@ func roomForPoster(ctx context.Context, r storage.Repository, actor Actor, roomI
 // room they are a member of. The id and time are taken inside the transaction,
 // so id order is commit order.
 func (s *service) PostMessage(ctx context.Context, actor Actor, roomID ulid.ULID, text string, replyTo ulid.ULID) (Message, error) {
-	if !validMessageText(text) {
+	return s.postMessage(ctx, actor, roomID, text, replyTo, nil)
+}
+
+// PostMessageWithAttachments is PostMessage carrying files the actor uploaded
+// to this room; the text may be blank when there is at least one.
+func (s *service) PostMessageWithAttachments(ctx context.Context, actor Actor, roomID ulid.ULID, text string, replyTo ulid.ULID, attachmentIDs []ulid.ULID) (Message, error) {
+	return s.postMessage(ctx, actor, roomID, text, replyTo, attachmentIDs)
+}
+
+// postMessage adds a message, attaching the actor's own fresh uploads to this
+// room when any are named. A refused attachment rolls the whole message back.
+func (s *service) postMessage(ctx context.Context, actor Actor, roomID ulid.ULID, text string, replyTo ulid.ULID, attachmentIDs []ulid.ULID) (Message, error) {
+	if attachmentIDs == nil {
+		attachmentIDs = []ulid.ULID{}
+	}
+	if len(attachmentIDs) > MaxAttachmentsPerMessage {
+		return Message{}, errAttachmentIDs
+	}
+	repeats := map[ulid.ULID]bool{}
+	for _, id := range attachmentIDs {
+		if repeats[id] {
+			return Message{}, errAttachmentIDs
+		}
+		repeats[id] = true
+	}
+	if len(attachmentIDs) > 0 {
+		if strings.TrimSpace(text) == "" {
+			text = "" // a message with a file needs no text
+		} else if !validMessageText(text) {
+			return Message{}, errMessageText
+		}
+	} else if !validMessageText(text) {
 		return Message{}, errMessageText
 	}
 	var posted Message
@@ -247,6 +290,22 @@ func (s *service) PostMessage(ctx context.Context, actor Actor, roomID ulid.ULID
 		}
 		if err := r.PutMessage(ctx, msg); err != nil {
 			return fmt.Errorf("put message: %w", err)
+		}
+		// The files ride the message, so a refused one leaves no message behind.
+		for _, aid := range attachmentIDs {
+			arow, err := r.GetAttachment(ctx, aid.String())
+			if errors.Is(err, storage.ErrNotFound) {
+				return errAttachmentIDs
+			}
+			if err != nil {
+				return fmt.Errorf("get attachment: %w", err)
+			}
+			if arow.RoomID != row.ID || arow.MessageID != nil || arow.UploaderAgentID == nil || *arow.UploaderAgentID != actor.ID.String() {
+				return errAttachmentIDs
+			}
+			if err := r.AttachToMessage(ctx, aid.String(), msg.ID); err != nil {
+				return fmt.Errorf("attach to message: %w", err)
+			}
 		}
 		if actor.Kind == ActorHuman {
 			if err := r.SetRoomHumanLastRead(ctx, row.ID, actor.ID.String(), msg.ID); err != nil {
