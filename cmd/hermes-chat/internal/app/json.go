@@ -67,9 +67,10 @@ type messageBody struct {
 	Author     *authorBody    `json:"author"`
 	Text       string         `json:"text"`
 	ReplyToID  *ulid.ULID     `json:"reply_to_id"`
-	Deliveries []deliveryBody `json:"deliveries"` // never null; [] for an agent's own messages
-	CreatedAt  time.Time      `json:"created_at"`
-	Prompt     *promptBody    `json:"prompt"` // the question this message asks, when any
+	Deliveries []deliveryBody    `json:"deliveries"` // never null; [] for an agent's own messages
+	CreatedAt  time.Time         `json:"created_at"`
+	Prompt     *promptBody       `json:"prompt"`         // the question this message asks, when any
+	Attachments []attachmentBody `json:"attachments"`    // the files riding the message; never null
 }
 
 // promptBody is the prompt riding a message, as the UI shows it.
@@ -135,6 +136,14 @@ type noteEntryBody struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type attachmentBody struct {
+	ID          ulid.ULID `json:"id"`
+	Name        string    `json:"name"`
+	ContentType string    `json:"content_type"`
+	Size        int64     `json:"size"`
+	Image       bool      `json:"image"` // a safe type a browser may show inline
+}
+
 // optionalID is nil for a zero ID, which JSON writes as null.
 func optionalID(id ulid.ULID) *ulid.ULID {
 	if id.IsZero() {
@@ -177,7 +186,7 @@ func roomJSON(r bus.Room) any {
 // with no waiting copies carry [].
 func messageJSON(m bus.Message) any {
 	out := messageBody{ID: m.ID, RoomID: m.RoomID, Text: m.Text, ReplyToID: optionalID(m.ReplyToID), CreatedAt: m.CreatedAt,
-		Deliveries: make([]deliveryBody, 0, len(m.Deliveries))}
+		Deliveries: make([]deliveryBody, 0, len(m.Deliveries)), Attachments: make([]attachmentBody, 0, len(m.Attachments))}
 	if m.Author != nil {
 		out.Author = &authorBody{Kind: m.Author.Kind, ID: m.Author.ID, Name: m.Author.Name}
 	}
@@ -188,7 +197,15 @@ func messageJSON(m bus.Message) any {
 		p := promptJSON(*m.Prompt)
 		out.Prompt = &p
 	}
+	for _, a := range m.Attachments {
+		out.Attachments = append(out.Attachments, attachmentJSON(a))
+	}
 	return out
+}
+
+// attachmentJSON builds the attachment object.
+func attachmentJSON(a bus.Attachment) attachmentBody {
+	return attachmentBody{ID: a.ID, Name: a.Name, ContentType: a.ContentType, Size: a.Size, Image: a.Image()}
 }
 
 // promptJSON builds the prompt object; answer and closed_at are null until they exist.

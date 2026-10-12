@@ -31,8 +31,9 @@ func (h *controller) AgentPostMessage(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Text      string  `json:"text"`
-		ReplyToID *string `json:"reply_to_id"`
+		Text          string   `json:"text"`
+		ReplyToID     *string  `json:"reply_to_id"`
+		AttachmentIDs []string `json:"attachment_ids"`
 	}
 	if !readJSON(c, maxMessageBody, &body) {
 		return
@@ -43,7 +44,17 @@ func (h *controller) AgentPostMessage(c *gin.Context) {
 			return
 		}
 	}
-	msg, err := h.svc.PostMessage(c.Request.Context(), actorFrom(c), roomID, body.Text, replyTo)
+	var ids []ulid.ULID
+	if body.AttachmentIDs != nil {
+		for _, s := range body.AttachmentIDs {
+			id, ok := parseID(c, "attachment_ids", s)
+			if !ok {
+				return
+			}
+			ids = append(ids, id)
+		}
+	}
+	msg, err := h.svc.PostMessageWithAttachments(c.Request.Context(), actorFrom(c), roomID, body.Text, replyTo, ids)
 	if err != nil {
 		writeError(c, err)
 		return

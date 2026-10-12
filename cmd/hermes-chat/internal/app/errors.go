@@ -29,6 +29,7 @@ var errorTable = []errorRow{
 	{bus.ErrPaused, http.StatusConflict, "paused", "the room is paused or everything is stopped"},
 	{bus.ErrPromptClosed, http.StatusConflict, "prompt_closed", "the prompt is no longer open"},
 	{bus.ErrConflict, http.StatusConflict, "conflict", "already exists"},
+	{bus.ErrTooLarge, http.StatusRequestEntityTooLarge, "too_large", "the file is larger than 25 MiB"},
 	{bus.ErrRoomArchived, http.StatusConflict, "room_archived", "room is archived"},
 	{bus.ErrNoTurn, http.StatusConflict, "no_turn", "no turn is running"},
 	{bus.ErrNothingWaiting, http.StatusConflict, "nothing_waiting", "no waiting delivery for this message"},

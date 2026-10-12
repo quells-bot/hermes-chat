@@ -282,7 +282,7 @@ func TestEvents_ReadyThenLive(t *testing.T) {
 	f := next(t, d)
 	assert.Equal(t, "3", f.ID)
 	assert.Equal(t, "message.posted", f.Event)
-	assert.JSONEq(t, fmt.Sprintf(`{"message":{"id":%q,"room_id":%q,"author":{"kind":"human","id":%q,"name":"kai"},"text":"after","reply_to_id":null,"deliveries":[{"agent":{"id":%q,"handle":"scout","display_name":"Scout","revoked":false},"state":"waiting"}],"created_at":%q,"prompt":null}}`,
+	assert.JSONEq(t, fmt.Sprintf(`{"message":{"id":%q,"room_id":%q,"author":{"kind":"human","id":%q,"name":"kai"},"text":"after","reply_to_id":null,"deliveries":[{"agent":{"id":%q,"handle":"scout","display_name":"Scout","revoked":false},"state":"waiting"}],"created_at":%q,"prompt":null,"attachments":[]}}`,
 		m.ID, r.room.ID, r.kai.ID, r.scout.ID, stamp(m.CreatedAt)), f.Data)
 
 	_, err := r.svc.UpdateRoom(ctx, r.kai, r.room.ID, bus.RoomUpdate{Topic: ptr("Renamed")})

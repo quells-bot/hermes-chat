@@ -65,6 +65,8 @@ type Controller interface {
 	UpdateNoteEntry(c *gin.Context)
 	DeleteNoteEntry(c *gin.Context)
 	AgentSuggestNoteEntry(c *gin.Context)
+	AgentUploadAttachment(c *gin.Context)
+	GetAttachment(c *gin.Context)
 }
 
 // Options are the settings the handlers need.
@@ -72,7 +74,13 @@ type Options struct {
 	CookieSecure       bool          // the Secure attribute on the session cookie
 	HeartbeatInterval  time.Duration // between a stream's heartbeats; zero means DefaultHeartbeatInterval
 	StreamWriteTimeout time.Duration // for one write to a stream; zero means DefaultStreamWriteTimeout
+	TransferTimeout    time.Duration // for an upload or download; zero means DefaultTransferTimeout
 }
+
+// DefaultTransferTimeout is how long one file transfer may take: the server's
+// write deadline counts from the request's headers, which a slow upload or
+// download outlives.
+const DefaultTransferTimeout = 10 * time.Minute
 
 type controller struct {
 	svc  bus.Service
@@ -86,6 +94,9 @@ func NewController(svc bus.Service, opts Options) *controller {
 	}
 	if opts.StreamWriteTimeout <= 0 {
 		opts.StreamWriteTimeout = DefaultStreamWriteTimeout
+	}
+	if opts.TransferTimeout <= 0 {
+		opts.TransferTimeout = DefaultTransferTimeout
 	}
 	return &controller{svc: svc, opts: opts}
 }

@@ -152,6 +152,7 @@ func apiEngine(t *testing.T, secure bool) (e *gin.Engine, buf *bytes.Buffer, svc
 	human.POST("/rooms/:room/agents", ctrl.AddRoomAgent)
 	human.DELETE("/rooms/:room/agents/:agent", ctrl.RemoveRoomAgent)
 	human.PUT("/rooms/:room/read", ctrl.MarkRoomRead)
+	human.GET("/rooms/:room/attachments/:attachment", ctrl.GetAttachment)
 	human.GET("/rooms/:room/messages", ctrl.ListMessages)
 	human.POST("/rooms/:room/messages", ctrl.PostMessage)
 	human.GET("/rooms/:room/messages/:message", ctrl.GetMessage)

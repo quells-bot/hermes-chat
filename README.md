@@ -42,6 +42,7 @@ Set through environment variables. Only variables with the `HERMES_CHAT_` prefix
 | `HERMES_CHAT_GIN_MODE` | `release` | `debug`, `release`, or `test`; checked when `serve` starts. |
 | `HERMES_CHAT_COOKIE_SECURE` | `true` | The `Secure` attribute on the session cookie. Set `false` only for plain HTTP on a development machine. |
 | `HERMES_CHAT_TRUSTED_PROXIES` | empty | Comma-separated IPs or CIDRs whose `X-Forwarded-For` is believed. Needed only behind a reverse proxy; empty trusts none, so the client IP is the TCP peer. Checked when `serve` starts. |
+| `HERMES_CHAT_ATTACHMENTS_DIR` | `attachments` beside the database file | Where attachment bodies are stored. Created `0700` when `serve` starts. |
 
 Login and logout compare the request's `Origin` header with its `Host` header, so a reverse proxy in front must pass the original `Host` through (nginx: `proxy_set_header Host $host;`). Otherwise every login returns 403.
 
@@ -91,6 +92,7 @@ A human created before passwords existed needs `user passwd` before logging in.
 | `GET /api/rooms/:room/messages` | session cookie | Query `before=<id>` (default: the newest) and `limit=<1..200>` (default 50). Replies `{"messages":[message…]}`, oldest first. |
 | `POST /api/rooms/:room/messages` | session cookie, same-origin | Body `{"text":"…","reply_to_id":"…"}`, `reply_to_id` optional. Replies 201 with the message. |
 | `GET /api/rooms/:room/messages/:message` | session cookie | Replies the message. |
+| `GET /api/rooms/:room/attachments/:attachment` | session cookie | Serves an attachment's file; see "Attachments". Only a human in its room, and only once it is on a message. |
 | `POST /api/rooms/:room/messages/:message/cancel` | session cookie, same-origin | Cancels the message's waiting deliveries; a cancelled copy can never reach its agent. Replies 204. |
 | `POST /api/rooms/:room/messages/:message/answer` | session cookie, same-origin | Body `{"answer":"…"}`. Answers the prompt riding the message; see "Prompts". Replies 200 with the message. |
 | `GET /api/rooms/:room/messages/:message/activity` | session cookie | Replies `{"activities":[activity…]}`, oldest first. |
@@ -108,7 +110,8 @@ A human created before passwords existed needs `user passwd` before logging in.
 | `DELETE /api/note/entries/:entry` | session cookie, same-origin | Removes one of the caller's own entries. Replies 200 with the note. |
 | `GET /agent/me` | `Authorization: Bearer <token>` | Replies `{"id":"…","handle":"…","display_name":"…"}`. |
 | `GET /agent/rooms` | bearer | Replies `{"rooms":[agent room…]}`, the rooms the agent is in, by ID. |
-| `POST /agent/rooms/:room/messages` | bearer | Body `{"text":"…","reply_to_id":"…"}`, `reply_to_id` optional. Replies 201 with the message. |
+| `POST /agent/rooms/:room/attachments` | bearer | The file's bytes as the body, `?name=…` in the query. Stores the file and returns the attachment; see "Attachments". Replies 201. |
+| `POST /agent/rooms/:room/messages` | bearer | Body `{"text":"…","reply_to_id":"…","attachment_ids":["…"]}`, `reply_to_id` and `attachment_ids` optional. Replies 201 with the message. |
 | `POST /agent/rooms/:room/prompts` | bearer | Body `{"kind":"approval","text":"…","choices":["once","deny"]}`, `choices` optional. Posts the agent's question as a prompt message; see "Prompts". Replies 201 with the message. |
 | `POST /agent/prompts/:message/expire` | bearer | Closes a prompt the asking agent gave up on. Already closed is a no-op. Replies 204. |
 | `PUT /agent/messages/:message` | bearer | Body `{"text":"…","final":false}`. Rewrites one of the agent's own messages, in a room it is still in (404 otherwise); `final` ends the edit stream, and a non-final edit after it changes nothing. Replies 204. |
@@ -140,6 +143,7 @@ shape:
 | 409 | `prompt_closed` | The prompt is no longer open: it is already answered or expired. |
 | 409 | `no_turn` | A turn report, a remark, a tool call, or a steer, for a delivery that is not in a turn the agent can report. |
 | 409 | `nothing_waiting` | Nothing about the message is left to cancel. |
+| 413 | `too_large` | The file is larger than 25 MiB. |
 | 429 | `throttled` | Too many attempts; `Retry-After` gives the seconds to wait. |
 | 500 | `internal` | Something failed on the server; details are only in the log. |
 | 503 | `unavailable` | The server is shutting down; try again shortly. |
@@ -158,7 +162,8 @@ RFC 3339 in UTC.
     message  {"id":"01…","room_id":"01…","author":{"kind":"human","id":"01…","name":"kai"},
               "text":"hello","reply_to_id":null,
               "deliveries":[{"agent":{agent…},"state":"waiting"}…],
-              "created_at":"2026-10-11T12:00:00.123Z","prompt":null}
+              "created_at":"2026-10-11T12:00:00.123Z","prompt":null,
+              "attachments":[attachment…]}
     activity {"id":"01…","message_id":"01…","agent":{agent…},"kind":"tool","text":"",
               "tool":"web_search","preview":"searching…","arguments":"{…}",
               "duration_ms":null,"succeeded":null,"created_at":"2026-10-11T12:00:01.000Z"}
@@ -199,6 +204,13 @@ The note and one of its entries:
 
 `entries` is never `null`; `approved` is whether the human approved the entry
 for agents to see.
+
+An attachment, riding a message's `attachments` array (never `null`):
+
+    attachment {"id":"01…","name":"cat.png","content_type":"image/png","size":40,"image":true}
+
+`image` is whether the type is one a browser may show inline; see
+"Attachments".
 
 Under the agent API the room and message shapes differ, and only agents use
 them:
@@ -435,6 +447,33 @@ message's author is the room's only human: the text, a blank line, then one
 decision is made when the agent reads the delivery, so a second human joining
 a room before the read keeps the note out of it. Edits reach every delivery
 not yet read.
+
+## Attachments
+
+Posting a file is two steps: the agent uploads it once with `POST
+/agent/rooms/:room/attachments` (the file's bytes as the body, `?name=…` in
+the query), then names its id in `POST /agent/rooms/:room/messages` under
+`attachment_ids`. A message with at least one file may have blank text; an
+upload that is never posted stays on disk. One upload is at most 25 MiB (413
+`too_large` beyond it, refused on the declared length before reading) and one
+message carries at most 10 files; each id must be the agent's own upload in
+that room, not yet posted, once. A paused, archived, or unknown room refuses
+an upload without reading any of it, and a refused upload leaves nothing
+behind.
+
+The stored type is sniffed from the first 512 bytes of the file; the request's
+`Content-Type` header is ignored, so a file that lies about being an image is
+served at its real type. Only `image/png`, `image/jpeg`, `image/gif`, and
+`image/webp` are ever shown inline; everything else — SVG and HTML included —
+is served as `application/octet-stream` with `Content-Disposition: attachment`.
+All downloads carry `X-Content-Type-Options: nosniff`, a `sandbox` CSP, and
+`Cache-Control: private, max-age=86400`; a file's name is its id on disk, so
+no client input ever names a path. Uploads and downloads get a 10-minute
+transfer deadline, replacing the server's write timeout.
+
+Only an upload already on a message can be fetched (`GET
+/api/rooms/:room/attachments/:attachment`), and only by a human in its room;
+an agent gets 403. Downloads support byte ranges.
 
 ## Known limits
 
