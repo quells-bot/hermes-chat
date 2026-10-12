@@ -10,10 +10,11 @@ Module `github.com/quells-bot/hermes-chat`; the server lives under `cmd/hermes-c
 
 - **`cmd/hermes-chat` (package main)** — server: dispatch (`main.go`), config (`config.go`), wiring (`wires.go`), HTTP bootstrap (`serve.go`, `routes.go`), logging (`logging.go`), layering check (`layering.go`).
 - **`internal/cli`** — admin subcommands (`migrate`, `user`, `agent`) in `admin.go`/`admin_agent.go`, terminal password input (`password_input.go`); wires bus+storage itself (`openSvc`), builds no hub and no HTTP controller.
-- **`internal/app`** — gin HTTP layer: handlers (`room.go`, `message.go`, `pause.go`, `auth.go`, `stream.go`, `prompt.go`, `note.go`, `attachment.go`), middleware (`middleware.go`), JSON bodies (`json.go`), bus-error→HTTP mapping (`errors.go`). Knows HTTP, nothing about SQL.
+- **`internal/app`** — gin HTTP layer: handlers (`room.go`, `message.go`, `pause.go`, `auth.go`, `stream.go`, `prompt.go`, `note.go`, `attachment.go`), the web UI's static files and security headers (`static.go`), middleware (`middleware.go`), JSON bodies (`json.go`), bus-error→HTTP mapping (`errors.go`). Knows HTTP, nothing about SQL.
 - **`internal/bus`** — business logic. `Service` interface (`bus.go`), sentinel errors (`ErrNotFound`, `ErrConflict`, …), auth/rate limiting (`session.go`, `throttle.go`, `password.go`), event fan-out `Hub` (`hub.go`), the off switch (`pause.go`, `halt.go`, `turncap.go`: room pause, stop everything, the turn cap), and the stage 6 features (`prompt.go`, `note.go`, `attachment.go`: prompts, the per-human note, uploads). Knows no HTTP or SQL.
 - **`internal/storage`** — `Repository` interface over sqlc queries; two SQLite pools (`db.go`: 1 write connection with `_txlock=immediate`, ≥4 read connections, WAL); error translation (`mapErr`); migrations (`migrate.go`, goose as a library, embedded via `go:embed`); the stage 6 rows (`prompt.go`, `note.go`, `attachment.go`) and the attachment file store (`files.go`).
 - **Shared leaves** at the repository root, not under `cmd/hermes-chat`: `internal/reqid` (ULID per request, slog handler), `internal/sse` (frame encode/decode), and `internal/fakeagent` (a client for the agent API, used by the e2e tests and by `cmd/fakeagent`). They import none of the layers, and the server does not import `fakeagent` outside tests; that is a convention stated in the package comments, not something the layering test checks.
+- **`web`** — the built web UI behind `//go:embed all:dist` (`web/embed.go`). Also a leaf; imported only by `cmd/hermes-chat`, which passes it to `app` as an `fs.FS` (`app.Options.UI`), so `app` never imports it.
 - **`cmd/fakeagent`** — a small command wrapping `internal/fakeagent`: connects as one agent (`FAKEAGENT_URL`, `FAKEAGENT_TOKEN`), prints each event as a JSON line, echoes every delivery, and reconnects from its cursor. For trying a server by hand.
 
 Request flow: gin route → app handler → `bus.Service` method → `storage.Repository` → sqlcgen → SQLite. Writes happen inside one transaction; `bus` writes the event row and rings the Hub in the same tx (`bus/event.go`). SSE handlers (`app/stream.go`) wake on the ring, then poll events after the subscription cursor (`storage.ListEventsForHuman`), so a stream never depends on in-memory state.
@@ -35,6 +36,7 @@ Request flow: gin route → app handler → `bus.Service` method → `storage.Re
 | `cmd/hermes-chat/internal/storage/migrations/` | goose SQL migrations `NNNNN_name.sql` |
 | `cmd/hermes-chat/internal/storage/sqlcgen/` | generated — never edit |
 | `cmd/hermes-chat/internal/storage/storagetest/` | test-only helper; production code must not import it (layering test enforces) |
+| `web/` | the web UI: `embed.go` (Go), `dist/` (build output, only `.gitkeep` committed) |
 | `deploy/` | systemd unit, environment example, `hermes-chat-upgrade` and `hermes-chat-admin` scripts, upgrade test |
 | `docs/deploy.md` | operator runbook: host setup, first start, upgrade, rollback |
 | `docs/superpowers/` | architecture/product specs and stage plans — read before changing design |

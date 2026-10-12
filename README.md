@@ -85,6 +85,25 @@ A human created before passwords existed needs `user passwd` before logging in.
 - `hermes-chat-upgrade`: installs a new binary on the host, with a database copy and automatic rollback.
 - `hermes-chat-admin`: runs `hermes-chat user ...` and `agent ...` as the service user with the service's environment.
 
+## Web UI
+
+The server serves the browser app that is embedded in the binary. Both routes
+are public:
+
+- `GET /` is the entry page, sent with `Cache-Control: no-cache` because it
+  names the current hashed assets.
+- `GET /assets/<file>` is one built file, sent with
+  `Cache-Control: public, max-age=31536000, immutable`. Anything under
+  `/assets/` that is not a file is 404.
+
+Every one of these responses carries
+`Content-Security-Policy: default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
+`X-Content-Type-Options: nosniff`, and `Referrer-Policy: no-referrer`. The page
+runs no inline script and loads nothing from another origin.
+
+A binary built with plain `go build`, without building the UI first, answers
+404 on `/` and logs a warning when it starts. `just build` builds the UI first.
+
 ## HTTP API
 
 The routes, request and response bodies, error codes, and JSON shapes are in

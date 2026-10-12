@@ -29,6 +29,8 @@ servers:
   - url: https://chat.example.com
 tags:
   - name: system
+  - name: web UI
+    description: The embedded browser app. Static files, no credentials.
   - name: session
   - name: directory
     description: The humans and agents on this server.
@@ -68,6 +70,53 @@ paths:
       responses:
         "200": { description: Storage is reachable. }
         "503": { description: Storage is not reachable. }
+
+  /:
+    get:
+      tags: [web UI]
+      operationId: index
+      summary: The web UI's entry page.
+      description: |
+        Sent with `Cache-Control: no-cache`, because it names the current
+        hashed assets, and with `Content-Security-Policy: default-src 'self';
+        base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
+        `X-Content-Type-Options: nosniff`, and `Referrer-Policy: no-referrer`.
+      security: []
+      responses:
+        "200":
+          description: The page.
+          content:
+            text/html:
+              schema: { type: string }
+        "404":
+          description: This binary was built without the web UI.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /assets/{filepath}:
+    get:
+      tags: [web UI]
+      operationId: asset
+      summary: One built file of the web UI.
+      description: |
+        File names carry a hash of their content, so a file is sent with
+        `Cache-Control: public, max-age=31536000, immutable`, and with the same
+        security headers as the entry page.
+      security: []
+      parameters:
+        - name: filepath
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The file, with a content type taken from its extension.
+        "404":
+          description: No such file.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/login:
     post:

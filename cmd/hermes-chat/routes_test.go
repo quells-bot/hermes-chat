@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/gin-gonic/gin"
 	"github.com/oklog/ulid/v2"
@@ -83,6 +84,27 @@ func TestRoutes_MiddlewareChain(t *testing.T) {
 	assert.Equal(t, 403, w.Code)
 }
 
+// The web UI is public and goes through the same middleware chain; it does not
+// swallow the API or unknown paths.
+func TestRoutes_ServeTheWebUI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ui := fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}}
+	e := gin.New()
+	routes(e, app.NewController(bus.NewService(storagetest.NewRepo(t), nil), app.Options{UI: ui}), newLogger(io.Discard, -4))
+	get := func(path string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		return w
+	}
+
+	w := get("/")
+	assert.Equal(t, 200, w.Code)
+	assert.Equal(t, "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'", w.Header().Get("Content-Security-Policy"))
+	assert.NotEmpty(t, w.Header().Get("X-Request-ID"))
+	assert.Equal(t, 401, get("/api/me").Code)
+	assert.Equal(t, 404, get("/nope").Code)
+}
+
 func TestRoutes_Table(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	e := gin.New()
@@ -94,8 +116,8 @@ func TestRoutes_Table(t *testing.T) {
 	sort.Strings(got)
 	assert.Equal(t, []string{
 		"DELETE /api/halt", "DELETE /api/note/entries/:entry", "DELETE /api/rooms/:room/agents/:agent",
-		"GET /agent/events", "GET /agent/me", "GET /agent/rooms", "GET /api/agents", "GET /api/events", "GET /api/halt", "GET /api/humans", "GET /api/me", "GET /api/note", "GET /api/rooms",
-		"GET /api/rooms/:room", "GET /api/rooms/:room/attachments/:attachment", "GET /api/rooms/:room/messages", "GET /api/rooms/:room/messages/:message", "GET /api/rooms/:room/messages/:message/activity", "GET /healthz",
+		"GET /", "GET /agent/events", "GET /agent/me", "GET /agent/rooms", "GET /api/agents", "GET /api/events", "GET /api/halt", "GET /api/humans", "GET /api/me", "GET /api/note", "GET /api/rooms",
+		"GET /api/rooms/:room", "GET /api/rooms/:room/attachments/:attachment", "GET /api/rooms/:room/messages", "GET /api/rooms/:room/messages/:message", "GET /api/rooms/:room/messages/:message/activity", "GET /assets/*filepath", "GET /healthz",
 		"HEAD /healthz",
 		"PATCH /api/note/entries/:entry", "PATCH /api/rooms/:room",
 		"POST /agent/deliveries/:message/done", "POST /agent/deliveries/:message/failed", "POST /agent/deliveries/:message/note-entries", "POST /agent/deliveries/:message/remarks",
@@ -118,7 +140,7 @@ func TestRoutes_MatchTheOpenAPISpec(t *testing.T) {
 	routes(e, app.NewController(bus.NewService(storagetest.NewRepo(t), nil), app.Options{}), newLogger(io.Discard, -4))
 	var registered []string
 	for _, r := range e.Routes() {
-		registered = append(registered, r.Method+" "+regexp.MustCompile(`:(\w+)`).ReplaceAllString(r.Path, "{$1}"))
+		registered = append(registered, r.Method+" "+regexp.MustCompile(`[:*](\w+)`).ReplaceAllString(r.Path, "{$1}"))
 	}
 	sort.Strings(registered)
 
