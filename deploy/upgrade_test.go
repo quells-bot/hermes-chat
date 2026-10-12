@@ -28,6 +28,9 @@ func newBox(t *testing.T) *box {
 	b := &box{t: t, dir: t.TempDir(), script: script}
 	b.write("bin/systemctl", `#!/bin/sh
 echo "$*" >> "$(dirname "$0")/../calls.log"
+if [ "$1" = start ] && grep -q STARTFAIL "$HERMES_CHAT_BIN" 2>/dev/null; then
+  exit 1
+fi
 if [ "$1" = start ] && grep -q BROKEN "$HERMES_CHAT_BIN" 2>/dev/null; then
   echo migrated >> "$STUB_DB"
 fi
@@ -93,9 +96,15 @@ func (b *box) candidate(marker string) string {
 
 func (b *box) run(candidate string) (int, string) {
 	b.t.Helper()
+	return b.runIn("", candidate, b.path("bin"))
+}
+
+func (b *box) runIn(dir, candidate, stubPath string) (int, string) {
+	b.t.Helper()
 	cmd := exec.Command("bash", b.script, candidate)
+	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
-		"PATH="+b.path("bin")+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"PATH="+stubPath+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"HERMES_CHAT_ENV_FILE="+b.path("env"),
 		"HERMES_CHAT_BIN="+b.path("installed/hermes-chat"),
 		"HERMES_CHAT_UNIT=hermes-chat",
@@ -216,4 +225,45 @@ func TestUpgrade_Usage(t *testing.T) {
 	require.ErrorAs(t, err, &ee)
 	assert.Equal(t, 2, ee.ExitCode())
 	assert.Contains(t, string(out), "usage: hermes-chat-upgrade CANDIDATE")
+}
+
+func TestUpgrade_RollsBackWhenTheServiceWillNotStart(t *testing.T) {
+	b := newBox(t)
+	b.install("v1")
+	b.write("state/chat.db", "rows")
+	code, stderr := b.run(b.candidate("STARTFAIL"))
+	assert.Equal(t, 1, code)
+	assert.Contains(t, stderr, "rolled back to the previous version")
+	assert.Contains(t, b.read("installed/hermes-chat"), "v1")
+	assert.Equal(t, "rows", b.read("state/chat.db"))
+	assert.Equal(t, []string{"stop hermes-chat", "start hermes-chat", "stop hermes-chat", "start hermes-chat"}, b.calls())
+}
+
+func TestUpgrade_RestartsTheOldVersionWhenSetupFailsAfterStop(t *testing.T) {
+	b := newBox(t)
+	b.install("v1")
+	b.write("state/chat.db", "rows")
+	b.write("state/backups", "in the way") // mkdir of the backup directory fails
+	code, stderr := b.run(b.candidate("v2"))
+	assert.NotEqual(t, 0, code)
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	assert.Equal(t, "upgrade failed; restarted the previous version", lines[len(lines)-1])
+	assert.Contains(t, stderr, "restarted the previous version")
+	assert.Contains(t, b.read("installed/hermes-chat"), "v1")
+	assert.Equal(t, []string{"stop hermes-chat", "start hermes-chat"}, b.calls())
+}
+
+func TestUpgrade_BareNameCandidateIsTheFileInTheWorkingDirectory(t *testing.T) {
+	b := newBox(t)
+	b.install("v1")
+	b.write("work/hermes-chat", "not a program")
+	require.NoError(t, os.Chmod(b.path("work/hermes-chat"), 0o755))
+	good := b.candidate("good")
+	require.NoError(t, os.MkdirAll(b.path("onpath"), 0o755))
+	require.NoError(t, os.Rename(good, b.path("onpath/hermes-chat")))
+	code, stderr := b.runIn(b.path("work"), "hermes-chat", b.path("bin")+string(os.PathListSeparator)+b.path("onpath"))
+	assert.Equal(t, 1, code)
+	assert.Contains(t, stderr, "candidate does not run on this host")
+	assert.Empty(t, b.calls())
+	assert.Contains(t, b.read("installed/hermes-chat"), "v1")
 }
