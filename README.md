@@ -91,8 +91,22 @@ A human created before passwords existed needs `user passwd` before logging in.
 | `GET /api/rooms/:room/messages` | session cookie | Query `before=<id>` (default: the newest) and `limit=<1..200>` (default 50). Replies `{"messages":[message…]}`, oldest first. |
 | `POST /api/rooms/:room/messages` | session cookie, same-origin | Body `{"text":"…","reply_to_id":"…"}`, `reply_to_id` optional. Replies 201 with the message. |
 | `GET /api/rooms/:room/messages/:message` | session cookie | Replies the message. |
+| `POST /api/rooms/:room/messages/:message/cancel` | session cookie, same-origin | Cancels the message's waiting deliveries; a cancelled copy can never reach its agent. Replies 204. |
+| `GET /api/rooms/:room/messages/:message/activity` | session cookie | Replies `{"activities":[activity…]}`, oldest first. |
+| `POST /api/rooms/:room/agents/:agent/stop` | session cookie, same-origin | Asks the agent to stop its running turn; a room with no turn still succeeds. Replies 204. |
+| `POST /api/rooms/:room/agents/:agent/steer` | session cookie, same-origin | Body `{"text":"…"}`. Redirects the agent's running turn. Replies 201 with the message. |
 | `GET /api/events` | session cookie | The event stream; see "Event stream". |
 | `GET /agent/me` | `Authorization: Bearer <token>` | Replies `{"id":"…","handle":"…","display_name":"…"}`. |
+| `GET /agent/rooms` | bearer | Replies `{"rooms":[agent room…]}`, the rooms the agent is in, by ID. |
+| `POST /agent/rooms/:room/messages` | bearer | Body `{"text":"…","reply_to_id":"…"}`, `reply_to_id` optional. Replies 201 with the message. |
+| `PUT /agent/messages/:message` | bearer | Body `{"text":"…","final":false}`. Rewrites one of the agent's own messages; `final` ends the edit stream. Replies 204. |
+| `POST /agent/deliveries/:message/working` | bearer | Marks the agent's delivery of the delivered message working. Replies 204. |
+| `POST /agent/deliveries/:message/done` | bearer | Reports the turn done. Replies 204. |
+| `POST /agent/deliveries/:message/failed` | bearer | Reports the turn failed. Replies 204. |
+| `POST /agent/deliveries/:message/remarks` | bearer | Body `{"text":"…"}`. Records a remark. Replies 201 with the activity. |
+| `POST /agent/deliveries/:message/tools` | bearer | Body `{"tool":"…","preview":"…","arguments":"…"}`, `preview` and `arguments` optional. Records a tool call. Replies 201 with the activity. |
+| `PUT /agent/activities/:activity` | bearer | Body `{"duration_ms":123,"succeeded":true}`. Finishes a tool's activity. Replies 200 with the activity. |
+| `GET /agent/events` | bearer | The agent's event stream; see "Agent stream". |
 
 Same-origin means the `Origin` header must name this server. Errors have one
 shape:
@@ -109,6 +123,8 @@ shape:
 | 404 | `not_found` | No such thing. |
 | 409 | `conflict` | It already exists. |
 | 409 | `room_archived` | The room is archived; its messages, members, and topic cannot change until it is unarchived. |
+| 409 | `no_turn` | A turn report, or a steer, for a delivery that is not in a turn the agent can report. |
+| 409 | `nothing_waiting` | Nothing about the message is left to cancel. |
 | 429 | `throttled` | Too many attempts; `Retry-After` gives the seconds to wait. |
 | 500 | `internal` | Something failed on the server; details are only in the log. |
 | 503 | `unavailable` | The server is shutting down; try again shortly. |
@@ -119,16 +135,43 @@ RFC 3339 in UTC.
     human    {"id":"01…","username":"kai"}
     agent    {"id":"01…","handle":"scout","display_name":"Scout","revoked":false}
     room     {"id":"01…","flavor":"conversation","topic":"Trip planning","archived":false,
-              "created_at":"2026-10-11T12:00:00.123Z","humans":[human…],"agents":[agent…],
+              "created_at":"2026-10-11T12:00:00.123Z","humans":[human…],
+              "agents":[{"id":"01…","handle":"scout","display_name":"Scout","revoked":false,
+                         "connected":false}…],
               "last_message_id":null,"last_read_message_id":null}
     message  {"id":"01…","room_id":"01…","author":{"kind":"human","id":"01…","name":"kai"},
-              "text":"hello","reply_to_id":null,"created_at":"2026-10-11T12:00:00.123Z"}
+              "text":"hello","reply_to_id":null,
+              "deliveries":[{"agent":{agent…},"state":"waiting"}…],
+              "created_at":"2026-10-11T12:00:00.123Z"}
+    activity {"id":"01…","message_id":"01…","agent":{agent…},"kind":"tool","text":"",
+              "tool":"web_search","preview":"searching…","arguments":"{…}",
+              "duration_ms":null,"succeeded":null,"created_at":"2026-10-11T12:00:01.000Z"}
 
 `flavor` is `dm`, `channel`, or `conversation`, worked out from who is in the
 room. `author` is `null` for a message whose human has since been removed.
-`last_read_message_id` is the caller's own marker. A human who is not in a
-room gets 404 for it, the same as for a room that does not exist. Only humans
-use these routes; an agent token gets 401.
+`last_read_message_id` is the caller's own marker. `deliveries` is never
+`null`: each entry is one agent's copy and its `state` in `waiting`,
+`delivered`, `working`, `done` `failed`, or `cancelled`, and `[]` for an
+agent's own messages. `connected` is whether the agent has a live event stream
+right now. An `activity`'s `kind` is `remark` or `tool`; `duration_ms` and
+`succeeded` are `null` until a tool's activity finishes. A human who is not in
+a room gets 404 for it, the same as for a room that does not exist. Only
+humans use the `/api` routes; an agent token gets 401 there.
+
+Under the agent API the room and message shapes differ, and only agents use
+them:
+
+    agent room    {"id":"01…","flavor":"dm","topic":"","humans":[human…]}
+    agent message {"id":"01…","room_id":"01…","text":"hello",
+                   "author":{"kind":"human","id":"01…","name":"kai","is_bot":false},
+                   "reply_to_message_id":null,"reply_to_text":null,"reply_to_author_name":null,
+                   "created_at":"2026-10-11T12:00:00.123Z"}
+
+`is_bot` is `true` exactly when the author is an agent. The three `reply_to_*`
+fields are all `null` without a reply; with one, `reply_to_text` is the
+replied-to body and `reply_to_author_name` its author's name, or `null` when
+that human has since been removed. `author` is `null` once the human who wrote
+it was removed. A human session gets 401 on the `/agent` routes.
 
 ## Event stream
 
@@ -150,17 +193,83 @@ happen.
 | `event` | `data` |
 |---|---|
 | `message.posted` | `{"message":<message>}` |
+| `message.edited` | `{"message":<message>}` — the finalized message |
+| `delivery.changed` | `{"message":<message>}` — a delivery's state changed |
 | `room.changed` | `{"room":<room>}` |
+| `activity.posted` | `{"message_id":"01…","activity":<activity>}` |
+| `agent.presence` | `{"agent":<agent>,"connected":true}` |
 
 `room.changed` carries the room as it is now, for a new room, a new topic,
 archiving, and a change of members, so apply it by replacing the room you
 hold. A person who is added to a room receives the room's earlier events too.
+`delivery.changed` carries the message with its `deliveries` array, so the UI
+can render each agent's copy moving through `waiting`, `delivered`, `working`,
+`done`, `failed`, and `cancelled`. `agent.presence` tells the UI when an agent
+connects or disconnects; apply `connected` to that agent in every room it is
+in. `message.edited` is written once when a message is finalized (see the
+agents' edit stream below).
+
+While an agent streams edits, each one is also broadcast to the browser as a
+live `message.edited` frame with `data`
+`{"message_id":"01…","text":"…","final":false}`. These have no log row, arrive
+in memory, and carry the current intermediate text so the UI can show typing
+without a round trip. A slow browser can miss one — the row update (throttled
+to once a second) and the finalize event carry the text it missed — and the
+UI ignores a non-final edit for a message it knows is finalized.
+
+An SSE frame may be replayed after a reconnect: the server resends everything
+after the client's cursor, at least once. The plugin dedupes by message id.
 
 A comment line (`: hb`) arrives every 25 seconds while the stream is idle. At
 each one the server checks the session; if it has ended (logout, a new
 password, removal, expiry) the stream is closed, so a stream closes within 25
 seconds of its session ending. On shutdown the server closes every open
 stream at once.
+
+## Agent stream
+
+Open `GET /agent/events` with the agent's bearer token. The response is
+`text/event-stream` and stays open. The first frame is `ready`, with `data`
+`{"cursor":N}`, exactly as for humans. The other frames are the agent's own:
+
+| `event` | `data` |
+|---|---|
+| `delivery` | `{"message":<agent message>,"room":<agent room>,"context":[<agent message>…]}` |
+| `stop` | `{"room_id":"01…"}` |
+| `steer` | `{"room_id":"01…","message":<agent message>}` |
+
+`delivery` hands the agent a message to work on; `context` is the room's
+recent channel messages for context (see "Delivery and turns"). `stop` means
+the human asked the agent to stop its running turn; `steer` redirects it with
+a new instruction. A comment line (`: hb`) arrives every 25 seconds while the
+stream is idle, and at each one the server re-checks the token, so a revoked
+stream closes within 25 seconds. One stream per agent: a second connection
+replaces the first, which ends. The plugin should keep its cursor and send it
+back as `Last-Event-ID` (or `?cursor=`) to replay missed deliveries after a
+reconnect, and buffer outbound reports while the stream is down so the next
+`delivery` for an old message is reported once the connection returns.
+
+## Delivery and turns
+
+Every message an agent is responsible for moves through the state machine
+`waiting → delivered → working → done | failed | cancelled`. Each agent gets
+one delivery per message, and a room serves **one message at a time per
+agent**: while an agent has a `delivered` or `working` copy, later messages
+for it wait, and the next releases only when the current one reports `done`
+or `failed`. A human can `cancel` a message while its copies are `waiting` —
+a cancelled copy can never reach the agent, even if it reconnects later — and
+`stop` or `steer` while the agent is `working`. Offline messages queue: a
+delivery is written when the agent's stream reconnects, so nothing is lost to
+a dropped connection.
+
+A `delivery` frame's `context` is the room's recent messages for the agent's
+context window: at most 20 messages and 4096 bytes of text, channels only,
+older than the delivered message. The agent reports `working`, `done`, or
+`failed` against the delivered message, streams edits with `PUT
+/agent/messages/:message` (`final:false` while working, then `final:true`), and
+posts its reply with `POST /agent/rooms/:room/messages` before reporting
+`done`. Reporting `done` or `failed` releases the next queued message for that
+pair.
 
 ## Known limits
 
@@ -174,6 +283,15 @@ stream at once.
   cursor is sent everything since.
 - Over plain HTTP/1.1 a browser allows six streams per origin. Stage 7
   checks HTTP/2.
+- A turn that never reports `done` or `failed` holds its agent's queue in that
+  room forever, by design; `stop` exists for the human, and the plugin reports
+  the stop as a finished turn.
+- Activity rows, delivery-state rows, and presence rows are kept forever, like
+  the event log.
+- An intermediate edit dropped for a slow browser is gone; the row (updated at
+  most once a second) and the finalize event carry the text it missed.
+- A revoked or removed agent's open deliveries stall in `delivered`/`working`;
+  nothing cancels another actor's turn.
 
 ## Adding a migration
 
