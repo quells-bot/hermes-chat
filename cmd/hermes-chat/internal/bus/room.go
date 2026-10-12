@@ -37,10 +37,26 @@ type Room struct {
 	Agents            []RoomAgent // ordered by handle
 	LastMessageID     ulid.ULID   // zero when the room has no messages
 	LastReadMessageID ulid.ULID   // the viewer's read marker; zero when nothing is read
+	PausedAt          time.Time   // zero while running
+	PauseReason       PauseReason // PauseNone while running
+	TurnCap           int         // agent-woken turns allowed since the last human message
+	Halted            bool        // whether everything is stopped
 }
 
 // Archived reports whether the room is archived.
 func (r Room) Archived() bool { return !r.ArchivedAt.IsZero() }
+
+// Paused reports whether the room itself is paused.
+func (r Room) Paused() bool { return !r.PausedAt.IsZero() }
+
+// PauseReason says why a room is paused.
+type PauseReason string
+
+const (
+	PauseNone    PauseReason = ""         // the room is running
+	PauseHuman   PauseReason = "human"    // a human paused it
+	PauseTurnCap PauseReason = "turn_cap" // its agents reached the turn cap
+)
 
 // RoomUpdate changes what is non-nil. Archived is applied before Topic.
 type RoomUpdate struct {
@@ -139,9 +155,13 @@ func (s *service) buildRoomLayout(ctx context.Context, r storage.Repository, row
 		ID: id, Flavor: roomFlavor(row, len(agentRows)), Topic: row.Topic,
 		CreatedAt: time.UnixMilli(row.CreatedAtMs).UTC(),
 		Humans:    make([]Human, 0, len(humanRows)), Agents: make([]RoomAgent, 0, len(agentRows)),
+		PauseReason: PauseReason(row.PauseReason), TurnCap: int(row.TurnCap),
 	}
 	if row.ArchivedAtMs != nil {
 		room.ArchivedAt = time.UnixMilli(*row.ArchivedAtMs).UTC()
+	}
+	if row.PausedAtMs != nil {
+		room.PausedAt = time.UnixMilli(*row.PausedAtMs).UTC()
 	}
 	for _, hr := range humanRows {
 		h, err := humanFromRow(hr)
@@ -417,7 +437,7 @@ func (s *service) UpdateRoom(ctx context.Context, actor Actor, roomID ulid.ULID,
 			changed = true
 			if !*u.Archived {
 				// the room is live again, so the queue thaws to connected agents
-				if err := s.thawQueue(ctx, r, row, at); err != nil {
+				if err := s.resumeDeliveries(ctx, r, row.ID, at); err != nil {
 					return false, err
 				}
 			}
@@ -506,25 +526,4 @@ func (s *service) RemoveRoomAgent(ctx context.Context, actor Actor, roomID, agen
 		}
 		return true, nil
 	})
-}
-
-// thawQueue releases the current head to every room agent after the room is
-// live again: an unarchived room's queue thaws to its connected agents.
-func (s *service) thawQueue(ctx context.Context, r storage.Repository, row storage.Room, at time.Time) error {
-	live := row
-	live.ArchivedAtMs = nil
-	agentRows, err := r.ListRoomAgents(ctx, row.ID)
-	if err != nil {
-		return fmt.Errorf("list room agents: %w", err)
-	}
-	for _, ar := range agentRows {
-		a, err := agentFromRow(ar)
-		if err != nil {
-			return err
-		}
-		if err := s.releaseHead(ctx, r, live, a, at, true); err != nil {
-			return err
-		}
-	}
-	return nil
 }

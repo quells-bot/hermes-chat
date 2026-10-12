@@ -21,6 +21,7 @@ var (
 	ErrForbidden       = errors.New("forbidden")
 	ErrNothingWaiting  = errors.New("no waiting delivery for this message")
 	ErrNoTurn          = errors.New("no turn is running")
+	ErrPaused          = errors.New("paused") // the room is paused, or everything is stopped
 
 	// ErrUnavailable reports that the server is shutting down.
 	ErrUnavailable = errors.New("unavailable")
@@ -66,8 +67,10 @@ type Service interface {
 	InviteHuman(ctx context.Context, actor Actor, roomID, humanID ulid.ULID) (Room, error)           // the same three
 	AddRoomAgent(ctx context.Context, actor Actor, roomID, agentID ulid.ULID) (Room, error)          // the same three
 	RemoveRoomAgent(ctx context.Context, actor Actor, roomID, agentID ulid.ULID) (Room, error)       // the same three
+	PauseRoom(ctx context.Context, actor Actor, roomID ulid.ULID) (Room, error)                      // human member only; ErrForbidden, ErrNotFound; already paused is a no-op
+	ResumeRoom(ctx context.Context, actor Actor, roomID ulid.ULID) (Room, error)                     // the same; not paused is a no-op
 
-	PostMessage(ctx context.Context, actor Actor, roomID ulid.ULID, text string, replyTo ulid.ULID) (Message, error) // ErrNotFound, ErrValidation, ErrRoomArchived
+	PostMessage(ctx context.Context, actor Actor, roomID ulid.ULID, text string, replyTo ulid.ULID) (Message, error) // ErrNotFound, ErrValidation, ErrRoomArchived; ErrPaused for an agent
 	CancelMessage(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) error                               // ErrNotFound, ErrForbidden, ErrNothingWaiting
 	GetMessage(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) (Message, error)                       // ErrNotFound, also for a message in another room
 	// ListMessages returns up to limit messages older than before (zero: the newest), oldest first.
@@ -75,16 +78,16 @@ type Service interface {
 	ListMessages(ctx context.Context, actor Actor, roomID, before ulid.ULID, limit int) ([]Message, error) // ErrNotFound
 	MarkRoomRead(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) error                      // ErrNotFound, ErrValidation
 
-	EditMessage(ctx context.Context, actor Actor, messageID ulid.ULID, text string, final bool) error  // ErrNotFound, ErrValidation, ErrForbidden
+	EditMessage(ctx context.Context, actor Actor, messageID ulid.ULID, text string, final bool) error  // ErrNotFound, ErrValidation, ErrForbidden, ErrPaused
 	TurnWorking(ctx context.Context, actor Actor, messageID ulid.ULID) error                           // ErrNotFound, ErrNoTurn
 	TurnDone(ctx context.Context, actor Actor, messageID ulid.ULID) error                              // ErrNotFound, ErrNoTurn
 	TurnFailed(ctx context.Context, actor Actor, messageID ulid.ULID) error                            // ErrNotFound, ErrNoTurn
-	ReportRemark(ctx context.Context, actor Actor, messageID ulid.ULID, text string) (Activity, error) // ErrNotFound, ErrValidation
+	ReportRemark(ctx context.Context, actor Actor, messageID ulid.ULID, text string) (Activity, error) // ErrNotFound, ErrValidation, ErrPaused
 	StartTool(ctx context.Context, actor Actor, messageID ulid.ULID, tool, preview, arguments string) (Activity, error)
 	FinishTool(ctx context.Context, actor Actor, activityID ulid.ULID, durationMs int64, succeeded bool) (Activity, error)
 	ListActivity(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) ([]Activity, error)  // human viewer only
 	StopTurn(ctx context.Context, actor Actor, roomID, agentID ulid.ULID) error                      // human only; ErrNotFound
-	Steer(ctx context.Context, actor Actor, roomID, agentID ulid.ULID, text string) (Message, error) // human only; ErrNotFound, ErrValidation, ErrNoTurn, ErrRoomArchived
+	Steer(ctx context.Context, actor Actor, roomID, agentID ulid.ULID, text string) (Message, error) // human only; ErrNotFound, ErrValidation, ErrNoTurn, ErrRoomArchived, ErrPaused
 
 	// Subscribe opens a stream of the actor's events after the given event ID; FromNow starts at the end of the log.
 	Subscribe(ctx context.Context, actor Actor, after int64) (*Subscription, error) // ErrForbidden, ErrValidation, ErrUnavailable

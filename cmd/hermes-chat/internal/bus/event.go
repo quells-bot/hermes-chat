@@ -14,37 +14,38 @@ import (
 type EventKind string
 
 const (
-	EventRoomChanged   EventKind = "room.changed"   // subject: the room's id
-	EventMessagePosted EventKind = "message.posted" // subject: the message's id
-	EventDelivery      EventKind = "delivery"       // agent: subject is the delivered message
+	EventRoomChanged     EventKind = "room.changed"     // subject: the room's id
+	EventMessagePosted   EventKind = "message.posted"   // subject: the message's id
+	EventDelivery        EventKind = "delivery"         // agent: subject is the delivered message
 	EventDeliveryChanged EventKind = "delivery.changed" // human: subject is the message
-	EventActivityPosted   EventKind = "activity.posted" // human: subject is the activity
-	EventMessageEdited    EventKind = "message.edited"  // human: subject is the message, finalize only
-	EventControlStop      EventKind = "stop"            // agent: subject is the room
-	EventControlSteer     EventKind = "steer"           // agent: subject is the steer message
-	EventAgentPresence    EventKind = "agent.presence"  // human: subject is the agent
+	EventActivityPosted  EventKind = "activity.posted"  // human: subject is the activity
+	EventMessageEdited   EventKind = "message.edited"   // human: subject is the message, finalize only
+	EventControlStop     EventKind = "stop"             // agent: subject is the room
+	EventControlSteer    EventKind = "steer"            // agent: subject is the steer message
+	EventControlPause    EventKind = "pause"            // agent: subject is the room
+	EventAgentPresence   EventKind = "agent.presence"   // human: subject is the agent
 )
 
 // contextMessages and contextTextBytes bound the context an agent-targeted
 // delivery event carries: at most contextMessages messages, older than the
 // delivered one, totalling at most contextTextBytes of text, channels only.
 const (
-	contextMessages = 20
+	contextMessages  = 20
 	contextTextBytes = 4096
 )
 
 // Event is one entry of the log, as one subscriber sees it.
 type Event struct {
-	ID       int64 // the stream cursor
-	Kind     EventKind
-	RoomID   ulid.ULID
-	At       time.Time
-	Room     *Room       // room.changed, and delivery for an agent: the room as it is now
-	Message  *Message    // message.posted, delivery, delivery.changed, message.edited, and steer
-	Activity *Activity   // activity.posted: the activity, which carries its turn's message id
-	Agent    *Agent      // agent.presence: the agent whose connection changed
-	Context  []Message   // delivery on a channel: the messages leading up to the delivered one
-	Connected bool       // agent.presence: whether the agent is connected now
+	ID        int64 // the stream cursor
+	Kind      EventKind
+	RoomID    ulid.ULID
+	At        time.Time
+	Room      *Room     // room.changed, and delivery for an agent: the room as it is now
+	Message   *Message  // message.posted, delivery, delivery.changed, message.edited, and steer
+	Activity  *Activity // activity.posted: the activity, which carries its turn's message id
+	Agent     *Agent    // agent.presence: the agent whose connection changed
+	Context   []Message // delivery on a channel: the messages leading up to the delivered one
+	Connected bool      // agent.presence: whether the agent is connected now
 }
 
 // putEvent appends an event to the log. Call it inside the transaction that

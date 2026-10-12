@@ -230,10 +230,6 @@ func (s *service) releaseSweep(ctx context.Context, r storage.Repository, agentI
 		return fmt.Errorf("list releasable: %w", err)
 	}
 	for _, d := range rows {
-		roomRow, err := r.GetRoom(ctx, d.RoomID)
-		if err != nil {
-			return fmt.Errorf("get room: %w", err)
-		}
 		ar, err := r.GetAgentByID(ctx, d.AgentID)
 		if err != nil {
 			return fmt.Errorf("get agent: %w", err)
@@ -242,7 +238,7 @@ func (s *service) releaseSweep(ctx context.Context, r storage.Repository, agentI
 		if err != nil {
 			return err
 		}
-		if err := s.releaseHead(ctx, r, roomRow, agent, at, true); err != nil {
+		if err := s.releaseHead(ctx, r, d.RoomID, agent, at, true); err != nil {
 			return err
 		}
 	}
@@ -397,9 +393,9 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 			return Event{}, false, err
 		}
 		e.Activity = &a // the activity carries its turn's message id
-	case EventControlStop:
+	case EventControlStop, EventControlPause:
 		// There is nothing to load: the event's subject is the room itself,
-		// which names the turn's room, already set on e.RoomID.
+		// already set on e.RoomID.
 	case EventControlSteer:
 		msgRow, err := r.GetMessage(ctx, row.SubjectID)
 		if errors.Is(err, storage.ErrNotFound) {

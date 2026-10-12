@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -104,12 +105,27 @@ func wakeAgents(author Actor, flavor RoomFlavor, text string, replyToRow *storag
 
 // releaseHead hands the pair's waiting head to the agent: it sets the delivery
 // to delivered and writes the agent-targeted delivery event. It does nothing
-// when the room is archived, the agent has no live stream, or the pair has no
-// releasable head. notify is false when a message.posted event in the same
-// transaction already carries the current deliveries (its payload is loaded at
-// poll time), so no delivery.changed row is needed.
-func (s *service) releaseHead(ctx context.Context, r storage.Repository, room storage.Room, agent Agent, at time.Time, notify bool) error {
-	if room.ArchivedAtMs != nil || !s.hub.agentConnected(agent.ID) {
+// when the room is gone, archived, or paused, the agent has no live stream, or
+// the pair has no releasable head. It reads the room itself rather than trust
+// a row its caller read earlier, so it sees a change made in this transaction.
+// notify is false when a message.posted event in the same transaction already
+// carries the current deliveries (its payload is loaded at poll time), so no
+// delivery.changed row is needed.
+func (s *service) releaseHead(ctx context.Context, r storage.Repository, roomID string, agent Agent, at time.Time, notify bool) error {
+	room, err := r.GetRoom(ctx, roomID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil // the room is gone (its human is deleted); nothing to release
+	}
+	if err != nil {
+		return fmt.Errorf("get room: %w", err)
+	}
+	if room.ArchivedAtMs != nil {
+		return nil
+	}
+	if closed, err := paused(ctx, r, room); err != nil || closed {
+		return err
+	}
+	if !s.hub.agentConnected(agent.ID) {
 		return nil
 	}
 	head, ok, err := r.HeadWaiting(ctx, room.ID, agent.ID.String())
@@ -139,8 +155,7 @@ func (s *service) releaseHead(ctx context.Context, r storage.Repository, room st
 func (s *service) CancelMessage(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) error {
 	at := s.now()
 	err := s.record(ctx, func(r storage.Repository) error {
-		row, err := roomForMember(ctx, r, actor, roomID)
-		if err != nil {
+		if _, err := roomForMember(ctx, r, actor, roomID); err != nil {
 			return err
 		}
 		msg, found, err := messageInRoom(ctx, r, roomID, messageID)
@@ -189,7 +204,7 @@ func (s *service) CancelMessage(ctx context.Context, actor Actor, roomID, messag
 			return err
 		}
 		for _, a := range agents {
-			if err := s.releaseHead(ctx, r, row, a, at, true); err != nil {
+			if err := s.releaseHead(ctx, r, roomID.String(), a, at, true); err != nil {
 				return err
 			}
 		}

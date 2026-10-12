@@ -137,15 +137,18 @@ func requireAgentInRoom(ctx context.Context, r storage.Repository, roomID string
 }
 
 // requireOpenTurn returns the actor's delivery of the message when the agent
-// may report activity on it: the agent is still in the room, and the delivery
-// was handed over and has not ended. A delivery still waiting, cancelled, or
-// finished is ErrNoTurn.
+// may report activity on it: the agent is still in the room, the room is open
+// to agents (ErrPaused otherwise), and the delivery was handed over and has
+// not ended. A delivery still waiting, cancelled, or finished is ErrNoTurn.
 func requireOpenTurn(ctx context.Context, r storage.Repository, actorID ulid.ULID, messageID ulid.ULID) (storage.Delivery, error) {
 	d, err := requireTurnDelivery(ctx, r, actorID, messageID)
 	if err != nil {
 		return storage.Delivery{}, err
 	}
 	if err := requireAgentInRoom(ctx, r, d.RoomID, actorID); err != nil {
+		return storage.Delivery{}, err
+	}
+	if err := requireRoomOpen(ctx, r, d.RoomID); err != nil {
 		return storage.Delivery{}, err
 	}
 	if st := DeliveryState(d.State); st != DeliveryDelivered && st != DeliveryWorking {
@@ -209,13 +212,6 @@ func (s *service) turnReport(ctx context.Context, actor Actor, messageID ulid.UL
 			return err
 		}
 		if target == DeliveryDone || target == DeliveryFailed {
-			roomRow, err := r.GetRoom(ctx, d.RoomID)
-			if errors.Is(err, storage.ErrNotFound) {
-				return nil // the room is gone (its human is deleted); nothing to release
-			}
-			if err != nil {
-				return fmt.Errorf("get room: %w", err)
-			}
 			ar, err := r.GetAgentByID(ctx, actor.ID.String())
 			if err != nil {
 				return fmt.Errorf("get agent: %w", err)
@@ -224,7 +220,7 @@ func (s *service) turnReport(ctx context.Context, actor Actor, messageID ulid.UL
 			if err != nil {
 				return err
 			}
-			if err := s.releaseHead(ctx, r, roomRow, agent, at, true); err != nil {
+			if err := s.releaseHead(ctx, r, d.RoomID, agent, at, true); err != nil {
 				return err
 			}
 		}
@@ -440,6 +436,11 @@ func (s *service) Steer(ctx context.Context, actor Actor, roomID, agentID ulid.U
 		}
 		if row.ArchivedAtMs != nil {
 			return ErrRoomArchived
+		}
+		if closed, err := paused(ctx, r, row); err != nil {
+			return err
+		} else if closed {
+			return ErrPaused
 		}
 		member, err := roomHasAgent(ctx, r, roomID, agentID)
 		if err != nil {
