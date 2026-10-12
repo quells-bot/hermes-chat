@@ -70,7 +70,7 @@ func (s *service) pauseRoom(ctx context.Context, r storage.Repository, row stora
 }
 
 // resumeDeliveries hands each connected agent in the room what it is owed, if
-// the room is open: a delivery still 'delivered' (its event was skipped while
+// the room is open (not archived, not paused, not halted): a delivery still 'delivered' (its event was skipped while
 // the room was closed) is handed over again with no state change, otherwise
 // the agent's next waiting message is released. An agent with no stream is
 // handed its delivery when it returns, by Subscribe.
@@ -81,6 +81,9 @@ func (s *service) resumeDeliveries(ctx context.Context, r storage.Repository, ro
 	}
 	if err != nil {
 		return fmt.Errorf("get room: %w", err)
+	}
+	if row.ArchivedAtMs != nil {
+		return nil
 	}
 	if closed, err := paused(ctx, r, row); err != nil || closed {
 		return err

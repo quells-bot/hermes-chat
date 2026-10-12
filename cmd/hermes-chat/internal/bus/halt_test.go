@@ -100,3 +100,18 @@ func TestHalt_SurvivesARestart(t *testing.T) {
 	got, _ := restarted.GetMessage(ctx, w.kai, room.ID, m.ID)
 	assert.Equal(t, bus.DeliveryWaiting, got.Deliveries[0].State)
 }
+
+func TestHalt_LiftLeavesAnArchivedRoomAlone(t *testing.T) {
+	w := newWorld(t)
+	room := convRoom(t, w)
+	sub := agentSub(t, w, w.scout)
+	m, err := w.s.PostMessage(ctx, w.kai, room.ID, "one", ulid.Zero) // delivered, never reported
+	require.NoError(t, err)
+	require.Equal(t, bus.DeliveryDelivered, m.Deliveries[0].State)
+	_, err = w.s.UpdateRoom(ctx, w.kai, room.ID, bus.RoomUpdate{Archived: ptr(true)})
+	require.NoError(t, err)
+	require.NoError(t, w.s.StopEverything(ctx, w.kai))
+	drain(t, sub)
+	require.NoError(t, w.s.ResumeEverything(ctx, w.kai))
+	assert.Empty(t, of(drain(t, sub), bus.EventDelivery), "an archived room hands nothing over")
+}
