@@ -79,15 +79,17 @@
     display: grid;
     gap: 0.25rem;
     font-size: 0.875rem;
-    color: var(--ink2);
+    font-weight: 600;
+    color: var(--ink);
   }
 
   input {
     padding: 0.5rem;
-    border: 1px solid var(--line);
+    border: 1px solid var(--edge);
     border-radius: 0.25rem;
-    background: var(--paper2);
+    background: var(--paper);
     color: var(--ink);
+    font-weight: 400;
   }
 
   p {
@@ -100,12 +102,12 @@
     padding: 0.5rem;
     border: 0;
     border-radius: 0.25rem;
-    background: var(--aub);
-    color: var(--on-aub);
+    background: var(--btn);
+    color: var(--on-btn);
     font-weight: 600;
   }
 
   button:disabled {
-    opacity: 0.6;
+    opacity: 0.5;
   }
 </style>
