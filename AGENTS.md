@@ -44,12 +44,15 @@ Request flow: gin route → app handler → `bus.Service` method → `storage.Re
 ## Development Commands
 
 ```
-just check            # sqlc diff + go vet ./... + go test ./...  (run before handing over)
+just check            # sqlc diff + go vet ./... + shellcheck + web-check + go test ./...  (run before handing over; needs Node)
 just generate         # sqlc generate after editing queries or migrations
 just check-generated  # sqlc diff; fails if sqlcgen is stale
 just vet
 just test             # go test ./...
-just build [goos] [goarch]  # CGO_ENABLED=0, default linux/amd64 → bin/hermes-chat-<goos>-<goarch>
+just build [goos] [goarch]  # web-build, then CGO_ENABLED=0, default linux/amd64 → bin/hermes-chat-<goos>-<goarch>
+just web-build        # npm ci + vite build → web/dist (embedded by web/embed.go)
+just web-check        # npm ci + svelte-check + vitest
+just web-dev          # Vite dev server on :5173, /api proxied to :8080
 go test ./...         # equivalent to just test
 ```
 
@@ -68,6 +71,7 @@ Locally: `go run ./cmd/hermes-chat serve` (requires `HERMES_CHAT_DB_PATH`; migra
 - **Retries**: a human post or steer may carry `client_id`; the lookup (`repeatedPost` in `bus/message.go`) runs inside the write transaction, after the membership check and before every other check, and a hit returns the stored message and writes nothing. A new human write that creates a message goes through the same lookup.
 - **Streams end with their turn**: `turnReport` finalizes what the agent was still streaming in the room (`closeStreams` in `bus/turn.go`) on `done` and `failed`, so `streaming` on a message cannot stay true after its turn.
 - **Migrations**: next numbered file in `migrations/`, `-- +goose Up`/`-- +goose Down`, every table `STRICT`. After adding one: `just generate`.
+- **Web UI**: Svelte 5 + TypeScript in `web/src`. The page is served under `default-src 'self'`, so no inline script, no `style="…"` attributes (use classes and component `<style>` blocks), and no `{@html}`. npm dependencies are pinned to exact versions; TypeScript stays on 6.x (`svelte-check` does not start under 7). `go build` and `go test ./...` must work with no Node and no UI build, so a Go test that reads `web/dist` skips when `index.html` is absent.
 - **Queries**: add named queries under `storage/queries/*.sql`, then `just generate`; call them only from `storage`, wrapped as `Repository` methods.
 
 ## Important Files
@@ -89,15 +93,16 @@ Locally: `go run ./cmd/hermes-chat serve` (requires `HERMES_CHAT_DB_PATH`; migra
 
 - Go 1.26 (toolchain 1.26.5); build with `CGO_ENABLED=0` — SQLite is `modernc.org/sqlite` (pure Go, no cgo).
 - Tool versions in `README.md`: sqlc 1.31.1, just 1.45.0, Node 24.18.1, Python 3.14.4/uv 0.11.31, shellcheck 0.11.0, sqlite3 3.46.1.
-- Dependencies are Go-only; there is no Node/Python runtime component of the server itself.
+- The server's dependencies are Go-only and it has no Node/Python runtime component; Node is a build-time tool for the web UI (`web/`), whose output is embedded in the binary.
 - `sqlcgen/` output is committed; `just check-generated` (sqlc diff) must stay clean.
 
 ## Testing & QA
 
-`go test ./...` (~10s, no flags needed). Three tiers, plus the deploy script:
+`go test ./...` (~10s, no flags needed). Three Go tiers, the web UI's own tests, and the deploy script:
 
 - **Unit** — the server's `internal/bus` and `internal/storage`, and the shared `internal/sse` and `internal/reqid`: storage tests get a migrated SQLite via `storage/storagetest.NewRepo`; `bus` takes a fixed `Clock` and `export_test.go` exposes internals (throttle state, argon limiter) for testing.
 - **HTTP** — `internal/app` (package `app_test`): httptest against a real bus; helpers `newEngine`, `authEngine`, `newChat`.
+- **Web UI** — `web/src/**/*.test.ts`: Vitest with `@testing-library/svelte` on jsdom, run by `just web-check`; `web/embed_test.go` checks the built entry page for inline script when a build is present.
 - **E2E** — `cmd/hermes-chat/serve_test.go` spawns the real server (CLI + HTTP + SSE); `internal/cli` tests drive `Migrate`/`User`/`Agent` with a temp DB, and `cmd/hermes-chat/main_test.go` pins the dispatch entries.
 - **Deploy script** — `go test ./deploy` runs `deploy/hermes-chat-upgrade` against stubbed `systemctl` and `curl`; `just lint-scripts` runs `shellcheck` on both scripts.
 

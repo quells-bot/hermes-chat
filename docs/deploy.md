@@ -8,7 +8,7 @@ The files are in `deploy/`: `hermes-chat.service`, `hermes-chat.env.example`, `h
 
 - A Debian 13 host that you can reach with `ssh` as root (port 22) and that the internet can reach on port 443. Port 80 is not used.
 - A DNS name with an A record pointing at the host, and optionally an AAAA record.
-- This repository, with Go and `just`, on the machine you build on (the build machine).
+- This repository, with Go, `just`, and Node with npm (the versions in `README.md`), on the machine you build on (the build machine). Node is needed only to build: the web UI is compiled and embedded in the binary, and the host runs no Node.
 
 ## 2. Before the first start, check DNS and IPv6
 
@@ -124,7 +124,7 @@ Once, on the host, in this order. Allowing 22 before enabling ufw keeps your ssh
    just build linux amd64
    ```
 
-   Worked: `bin/hermes-chat-linux-amd64` exists.
+   Worked: `bin/hermes-chat-linux-amd64` exists. The recipe builds the web UI first (`npm ci`, then `vite build`) and embeds it.
 
 2. Copy it to the host.
 
@@ -161,6 +161,14 @@ Once, on the host, in this order. Allowing 22 before enabling ufw keeps your ssh
    ```
 
    Worked: it prints `2 200` (HTTP/2, status 200) with no certificate warning. `curl -sI --http2` works too and shows `HTTP/2 200` as its first line.
+
+   Check that the web UI is in the binary and carries its security header:
+
+   ```
+   curl -s -D - -o /dev/null https://chat.example.com/ | grep -i -E '^HTTP|content-security-policy|cache-control'
+   ```
+
+   Worked: status 200, `content-security-policy: default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`, and `cache-control: no-cache`. A 404 means the binary was built with plain `go build` instead of `just build`.
 
    If you published an AAAA record, check IPv6 as well:
 
