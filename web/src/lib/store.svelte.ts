@@ -26,6 +26,16 @@ let stream: Stream | null = null;
 // loads numbers the calls to load(), so that only the newest one writes.
 let loads = 0;
 
+// loading is true from the start of a load until the newest one settles.
+// Events that arrive meanwhile are held, in order, and applied after it: the
+// snapshot replaces everything, so one applied before it would be lost.
+let loading = false;
+let held: [name: string, data: unknown][] = [];
+
+// resets counts the calls to disconnect(), so that a stop or resume that
+// settles after one does not write into the emptied store.
+let resets = 0;
+
 // A hidden page may have missed a read marker moving, which no event
 // announces, and its stream may be waiting out a long reconnect delay.
 function visibilityChanged(): void {
@@ -46,7 +56,7 @@ export function connect(): void {
   }
   stream = openStream({
     ready: () => void load(),
-    event: apply,
+    event: receive,
     state: (s) => {
       store.link = s;
     },
@@ -61,6 +71,9 @@ export function disconnect(): void {
   stream?.close();
   stream = null;
   loads += 1; // a load still in flight must not write into the empty store
+  loading = false;
+  held = [];
+  resets += 1;
   Object.assign(store, initial());
 }
 
@@ -87,6 +100,7 @@ function failed(err: unknown): void {
 export async function load(): Promise<void> {
   loads += 1;
   const seq = loads;
+  loading = true;
   try {
     const [rooms, agents, halted] = await Promise.all([listRooms(), listAgents(), getHalt()]);
     if (seq !== loads) {
@@ -98,10 +112,30 @@ export async function load(): Promise<void> {
     store.error = '';
     store.loaded = true;
   } catch (err) {
-    if (seq === loads) {
-      failed(err);
+    if (seq !== loads) {
+      return;
     }
+    failed(err);
   }
+  // The newest load has settled, well or badly. The held events carry the
+  // state as it was when each was sent, so applying them over a snapshot that
+  // already includes them changes nothing.
+  loading = false;
+  const events = held;
+  held = [];
+  for (const [name, data] of events) {
+    apply(name, data);
+  }
+}
+
+// receive takes an event from the stream: held while a load is in flight,
+// applied at once otherwise.
+function receive(name: string, data: unknown): void {
+  if (loading) {
+    held.push([name, data]);
+    return;
+  }
+  apply(name, data);
 }
 
 // putRoom inserts the room, or replaces the one held under its id.
@@ -207,18 +241,26 @@ export function apply(name: string, data: unknown): void {
 
 // stopAll stops every room. It never rejects; a failure leaves halted as it was.
 export async function stopAll(): Promise<void> {
-  try {
-    store.halted = await stopEverything();
-  } catch (err) {
-    failed(err);
-  }
+  await setHalt(stopEverything);
 }
 
 // resumeAll undoes stopAll. It never rejects; a failure leaves halted as it was.
 export async function resumeAll(): Promise<void> {
+  await setHalt(resumeEverything);
+}
+
+// setHalt makes the call and sets halted from its answer. An answer or a
+// failure that arrives after disconnect() is dropped.
+async function setHalt(call: () => Promise<boolean>): Promise<void> {
+  const epoch = resets;
   try {
-    store.halted = await resumeEverything();
+    const halted = await call();
+    if (epoch === resets) {
+      store.halted = halted;
+    }
   } catch (err) {
-    failed(err);
+    if (epoch === resets) {
+      failed(err);
+    }
   }
 }

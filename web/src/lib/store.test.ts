@@ -386,3 +386,108 @@ test('connect after disconnect opens a new stream', () => {
   connect();
   expect(openStream).toHaveBeenCalledTimes(2);
 });
+
+test('an event that arrives during a load is applied after the snapshot', async () => {
+  const slow = deferred<Room[]>();
+  vi.mocked(api.listRooms).mockReturnValueOnce(slow.promise);
+  connect();
+  handlers.ready();
+
+  handlers.event('message.posted', { message: { id: '01M7', room_id: '01R', deliveries: [] } });
+  slow.resolve([room({ id: '01R', last_message_id: '01M5' })]);
+
+  await vi.waitFor(() => expect(store.loaded).toBe(true));
+  expect(store.rooms['01R'].last_message_id).toBe('01M7');
+});
+
+test('a room.changed for a new room during a load survives the snapshot', async () => {
+  const slow = deferred<Room[]>();
+  vi.mocked(api.listRooms).mockReturnValueOnce(slow.promise);
+  connect();
+  handlers.ready();
+
+  handlers.event('room.changed', { room: room({ id: '01NEW' }) });
+  expect(store.rooms).toEqual({}); // held, not applied
+  slow.resolve([room({ id: '01R' })]);
+
+  await vi.waitFor(() => expect(store.loaded).toBe(true));
+  expect(Object.keys(store.rooms)).toEqual(['01R', '01NEW']);
+});
+
+test('events held during a failed load are still applied', async () => {
+  vi.mocked(api.listRooms).mockResolvedValue([room({ id: '01R', last_message_id: '01M5' })]);
+  await load();
+  let reject!: (err: Error) => void;
+  vi.mocked(api.listRooms).mockReturnValueOnce(new Promise((_, r) => (reject = r)));
+  connect();
+  handlers.ready();
+
+  handlers.event('message.posted', { message: { id: '01M6', room_id: '01R', deliveries: [] } });
+  handlers.event('message.posted', { message: { id: '01M7', room_id: '01R', deliveries: [] } });
+  expect(store.rooms['01R'].last_message_id).toBe('01M5');
+  reject(unreachable());
+
+  await vi.waitFor(() => expect(store.error).toBe('cannot reach the server'));
+  expect(store.rooms['01R'].last_message_id).toBe('01M7');
+});
+
+test('events held behind a superseded load wait for the newest one', async () => {
+  const first = deferred<Room[]>();
+  const second = deferred<Room[]>();
+  vi.mocked(api.listRooms).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+  connect();
+  const older = load();
+  handlers.event('room.changed', { room: room({ id: '01A' }) });
+  const newer = load();
+  handlers.event('room.changed', { room: room({ id: '01B' }) });
+
+  first.resolve([room({ id: '01OLD' })]);
+  await older;
+  expect(store.rooms).toEqual({});
+
+  second.resolve([room({ id: '01R' })]);
+  await newer;
+  expect(Object.keys(store.rooms)).toEqual(['01R', '01A', '01B']);
+
+  // Nothing is in flight now, so an event is applied as it arrives.
+  handlers.event('room.changed', { room: room({ id: '01C' }) });
+  expect(store.rooms['01C']).toBeDefined();
+});
+
+test('disconnect drops held events', async () => {
+  const slow = deferred<Room[]>();
+  vi.mocked(api.listRooms).mockReturnValueOnce(slow.promise);
+  connect();
+  const pending = load();
+  handlers.event('room.changed', { room: room({ id: '01GONE' }) });
+
+  disconnect();
+  slow.resolve([]);
+  await pending;
+  expect(store.rooms).toEqual({});
+
+  connect();
+  await load();
+  expect(store.rooms).toEqual({});
+  handlers.event('room.changed', { room: room({ id: '01R' }) });
+  expect(Object.keys(store.rooms)).toEqual(['01R']);
+});
+
+test('a stop that settles after disconnect writes nothing', async () => {
+  const stop = deferred<boolean>();
+  vi.mocked(api.stopEverything).mockReturnValueOnce(stop.promise);
+  let reject!: (err: Error) => void;
+  vi.mocked(api.resumeEverything).mockReturnValueOnce(new Promise((_, r) => (reject = r)));
+  connect();
+  const stopping = stopAll();
+  const resuming = resumeAll();
+
+  disconnect();
+  stop.resolve(true);
+  reject(unreachable());
+  await stopping;
+  await resuming;
+
+  expect(store.halted).toBe(false);
+  expect(store.error).toBe('');
+});
