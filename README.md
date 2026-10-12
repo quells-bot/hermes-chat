@@ -127,9 +127,10 @@ loads the rooms, the agents and the halt on every `ready` and when the page
 becomes visible again, and applies each later event to the store; events that
 arrive during a load are held and applied after it. It resumes a dropped
 connection with `?cursor=` set to the last id it received, reconnecting after
-1, 2, 4, 8, 16, then 30 seconds, and after 60 seconds of silence. While the
-stream is down the header says `reconnecting`. Routes are hash-based: `#/` is
-the list, `#/new` the form.
+1, 2, 4, 8, 16, then 30 seconds. It drops a connection that has been silent
+for 60 seconds and then reconnects. Once the list has loaded, the list's
+header says `reconnecting` while the stream is not live. Routes are
+hash-based: `#/` is the list, `#/new` the form.
 
 The source is a Svelte 5 and TypeScript project in `web/src`, built by Vite
 into `web/dist`, which `web/embed.go` embeds. `web/dist` is never committed
@@ -232,7 +233,9 @@ with the text of their newest edit, and writes `message.edited` for each.
 Each of a room's `agents` carries `working`: whether that agent has a delivery
 in state `working` in that room. It is read when the room is loaded and no
 event announces it; keep it current from `delivery.changed` (state `working`
-sets it, `done` and `failed` clear it).
+sets it, `done` and `failed` clear it). The event carries every agent's copy
+of that message as it is now, so `done` for an agent on an older message does
+not mean that agent is idle.
 
 An SSE frame may be replayed after a reconnect: the server resends everything
 after the client's cursor, at least once. The plugin dedupes by message id.
