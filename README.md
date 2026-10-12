@@ -551,6 +551,20 @@ For example, `00001_humans.sql`:
 ## Layering
 
 Code under `cmd/hermes-chat/internal` is layered `app` to `bus` to `storage`:
-each layer may import only the one below it, and `reqid` and `sse` are leaves that
-import none of them. Only `storage` may import its generated `sqlcgen` package;
-`TestLayering_ThisRepository` checks this against the real import graph.
+each layer may import only the one below it. Only `storage` may import its
+generated `sqlcgen` package; `TestLayering_ThisRepository` checks this against
+the real import graph.
+
+The repository-root `internal/` holds packages that are not tied to the server:
+`reqid`, `sse`, and `fakeagent`. They import none of the layers, by convention.
+
+## Fake agent
+
+`cmd/fakeagent` connects to a server as one agent, for trying it by hand:
+
+    FAKEAGENT_URL=https://chat.example.com FAKEAGENT_TOKEN=hca_… go run ./cmd/fakeagent
+
+It prints each event as a JSON line on standard output, answers every
+`delivery` with `echo: <text>` (working, reply, done), and reopens a dropped
+stream from its cursor, logging how long the stream stayed open. Status goes to
+standard error. It is not the Hermes plugin.

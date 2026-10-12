@@ -437,7 +437,10 @@ produced. This is cheap because the bottom is SQLite.
 - `app` tests build repository → service → controller → gin engine and drive
   it with `httptest`.
 - End-to-end tests in `cmd/hermes-chat` use the fake agent client from the
-  product spec.
+  product spec. *(Kai, 2026-10-12)* The client, `reqid`, and `sse` live in the
+  repository-root `internal/` because they are reusable, and `cmd/fakeagent`
+  wraps the client as a command. A comment, not the layering test, says the
+  server must not import the client.
 
 **testify** is allowed as a test-only dependency *(Kai)*.
 
