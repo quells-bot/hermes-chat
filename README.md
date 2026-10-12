@@ -43,6 +43,11 @@ Set through environment variables. Only variables with the `HERMES_CHAT_` prefix
 | `HERMES_CHAT_COOKIE_SECURE` | `true` | The `Secure` attribute on the session cookie. Set `false` only for plain HTTP on a development machine. |
 | `HERMES_CHAT_TRUSTED_PROXIES` | empty | Comma-separated IPs or CIDRs whose `X-Forwarded-For` is believed. Needed only behind a reverse proxy; empty trusts none, so the client IP is the TCP peer. Checked when `serve` starts. |
 | `HERMES_CHAT_ATTACHMENTS_DIR` | `attachments` beside the database file | Where attachment bodies are stored. Created `0700` when `serve` starts. |
+| `HERMES_CHAT_TLS_MODE` | `autocert` | `autocert` or `off`; checked when `serve` starts. The default makes a host that forgets the setting fail instead of serving plain HTTP. |
+| `HERMES_CHAT_TLS_DOMAIN` | none | The one name certificates are issued for. Required when the mode is `autocert`, ignored when `off`. A lower-case DNS name with at least one dot: no scheme, port, path, wildcard, or IP address. |
+| `HERMES_CHAT_TLS_CACHE_DIR` | `certs` beside the database file | Where issued certificates and the account key are cached. |
+
+A development machine running `serve` on plain HTTP sets `HERMES_CHAT_TLS_MODE=off` and `HERMES_CHAT_COOKIE_SECURE=false`. A production environment file sets `HERMES_CHAT_HTTP_ADDR=:443`.
 
 Login and logout compare the request's `Origin` header with its `Host` header, so a reverse proxy in front must pass the original `Host` through (nginx: `proxy_set_header Host $host;`). Otherwise every login returns 403.
 

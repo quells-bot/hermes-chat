@@ -21,6 +21,7 @@ func setDB(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.db")
 	t.Setenv("HERMES_CHAT_DB_PATH", path)
+	t.Setenv("HERMES_CHAT_TLS_MODE", "off")
 	return path
 }
 
