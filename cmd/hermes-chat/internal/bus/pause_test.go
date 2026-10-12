@@ -253,6 +253,12 @@ func TestResume_HandsOverAgainWhatWasHeldBack(t *testing.T) {
 	assert.Equal(t, m.ID, got[0].Message.ID)
 	assert.Equal(t, bus.DeliveryDelivered, stateOf(t, w, room, m.ID, w.scout))
 	assert.Empty(t, of(drain(t, human), bus.EventDeliveryChanged), "handing over again is not a state change")
+	// Two delivery rows now sit in the log for m; a stream with no cursor is handed it once.
+	sub.Close()
+	again := agentSub(t, w, w.scout)
+	gotAgain := of(drain(t, again), bus.EventDelivery)
+	require.Len(t, gotAgain, 1)
+	assert.Equal(t, m.ID, gotAgain[0].Message.ID)
 	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), m.ID)) // and the queue moves on
 }
 
@@ -264,4 +270,24 @@ func TestResume_AnOfflineAgentIsHandedItWhenItReturns(t *testing.T) {
 	got := of(drain(t, agentSub(t, w, w.scout)), bus.EventDelivery)
 	require.Len(t, got, 1, "exactly once: resume wrote no second row for an agent that was away")
 	assert.Equal(t, m.ID, got[0].Message.ID)
+}
+
+func TestResume_AnAgentThatReconnectedWithACursorIsStillHandedIt(t *testing.T) {
+	w := newWorld(t)
+	room, m := unreadDeliveryInPausedRoom(t, w)
+	during, err := w.s.Subscribe(ctx, agentActor(w.scout), 0) // replays during the pause: the delivery is skipped
+	require.NoError(t, err)
+	assert.Empty(t, of(drain(t, during), bus.EventDelivery))
+	cursor := during.Cursor()
+	during.Close() // and it is away when the room resumes
+	_, err = w.s.ResumeRoom(ctx, w.kai, room.ID)
+	require.NoError(t, err)
+
+	back, err := w.s.Subscribe(ctx, agentActor(w.scout), cursor)
+	require.NoError(t, err)
+	defer back.Close()
+	got := of(drain(t, back), bus.EventDelivery)
+	require.Len(t, got, 1, "its cursor is past the row, so the subscribe hands it over again, once")
+	assert.Equal(t, m.ID, got[0].Message.ID)
+	require.NoError(t, w.s.TurnDone(ctx, agentActor(w.scout), m.ID))
 }

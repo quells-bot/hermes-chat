@@ -520,7 +520,7 @@ const editsBuffer = 32
 
 // A delivery released to a stream that died before reading it must not wedge
 // the pair: an agent that comes back with no cursor is handed its unacknowledged
-// deliveries again, and nothing it already finished.
+// deliveries again, and nothing it already finished. A cursor does not change that.
 func TestSubscribe_NoCursorHandsOverUnacknowledgedDeliveriesAgain(t *testing.T) {
 	w := newWorld(t)
 	dm, _, err := w.s.OpenDM(ctx, w.kai, w.scout.ID)
@@ -548,9 +548,12 @@ func TestSubscribe_NoCursorHandsOverUnacknowledgedDeliveriesAgain(t *testing.T) 
 	assert.Equal(t, start, got[0].ID, "the frame does not move the plugin's cursor backwards")
 	assert.Empty(t, drain(t, again), "handed over once per stream")
 
-	// a stream that names a cursor replays the log as before, nothing extra
+	// a stream that names a cursor is handed the unacknowledged delivery too
+	// (at-least-once), but nothing it already finished
 	withCursor, err := w.s.Subscribe(ctx, scout, again.Cursor())
 	require.NoError(t, err)
 	defer withCursor.Close()
-	assert.Empty(t, drain(t, withCursor))
+	gotCursor := drain(t, withCursor)
+	require.Len(t, gotCursor, 1)
+	assert.Equal(t, m1.ID, gotCursor[0].Message.ID)
 }
