@@ -22,6 +22,7 @@ var (
 	ErrNothingWaiting  = errors.New("no waiting delivery for this message")
 	ErrNoTurn          = errors.New("no turn is running")
 	ErrPaused          = errors.New("paused") // the room is paused, or everything is stopped
+	ErrPromptClosed    = errors.New("prompt is closed") // answered otherwise, or expired
 
 	// ErrUnavailable reports that the server is shutting down.
 	ErrUnavailable = errors.New("unavailable")
@@ -91,6 +92,10 @@ type Service interface {
 	ListActivity(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) ([]Activity, error)  // human viewer only
 	StopTurn(ctx context.Context, actor Actor, roomID, agentID ulid.ULID) error                      // human only; ErrNotFound
 	Steer(ctx context.Context, actor Actor, roomID, agentID ulid.ULID, text string) (Message, error) // human only; ErrNotFound, ErrValidation, ErrNoTurn, ErrRoomArchived, ErrPaused
+
+	PostPrompt(ctx context.Context, actor Actor, roomID ulid.ULID, kind PromptKind, text string, choices []string) (Message, error) // agent member only: ErrForbidden for a human; ErrNotFound, ErrValidation, ErrRoomArchived, ErrPaused
+	AnswerPrompt(ctx context.Context, actor Actor, roomID, messageID ulid.ULID, answer string) (Message, error)                     // human member; ErrNotFound, ErrValidation, ErrRoomArchived, ErrPaused, ErrPromptClosed; the same answer again is a no-op
+	ExpirePrompt(ctx context.Context, actor Actor, messageID ulid.ULID) error                                                       // the agent that asked: ErrNotFound otherwise; already closed is a no-op
 
 	// Subscribe opens a stream of the actor's events after the given event ID; FromNow starts at the end of the log.
 	Subscribe(ctx context.Context, actor Actor, after int64) (*Subscription, error) // ErrForbidden, ErrValidation, ErrUnavailable

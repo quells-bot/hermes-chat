@@ -41,6 +41,7 @@ type Room struct {
 	PauseReason       PauseReason // PauseNone while running
 	TurnCap           int         // agent-woken turns allowed since the last human message
 	Halted            bool        // whether everything is stopped
+	OpenPrompts       int         // prompts in the room still waiting for a human
 }
 
 // Archived reports whether the room is archived.
@@ -183,6 +184,11 @@ func (s *service) buildRoomLayout(ctx context.Context, r storage.Repository, row
 		return Room{}, fmt.Errorf("get halt: %w", err)
 	}
 	room.Halted = halted != nil
+	n, err := r.CountOpenPrompts(ctx, row.ID)
+	if err != nil {
+		return Room{}, fmt.Errorf("count open prompts: %w", err)
+	}
+	room.OpenPrompts = int(n)
 	last, err := r.GetLastMessageID(ctx, row.ID)
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return Room{}, fmt.Errorf("get last message: %w", err)
@@ -442,7 +448,12 @@ func (s *service) UpdateRoom(ctx context.Context, actor Actor, roomID ulid.ULID,
 			}
 			archived = *u.Archived
 			changed = true
-			if !*u.Archived {
+			if *u.Archived {
+				// the room is closed for good: its open prompts no longer wait
+				if _, err := s.expireOpenPrompts(ctx, r, row.ID, "", at); err != nil {
+					return false, err
+				}
+			} else {
 				// the room is live again, so the queue thaws to connected agents
 				if err := s.resumeDeliveries(ctx, r, row.ID, at); err != nil {
 					return false, err
@@ -541,9 +552,13 @@ func (s *service) RemoveRoomAgent(ctx context.Context, actor Actor, roomID, agen
 			return false, fmt.Errorf("delete room agent: %w", err)
 		}
 		// membership changes ride mutateRoom; the removed agent's waiting
-		// deliveries are cancelled so they can never reach it.
+		// deliveries are cancelled so they can never reach it, and its
+		// open prompts expire with the turn that was waiting.
 		if _, err := r.CancelDeliveries(ctx, row.ID, agentID.String()); err != nil {
 			return false, fmt.Errorf("cancel deliveries: %w", err)
+		}
+		if _, err := s.expireOpenPrompts(ctx, r, row.ID, agentID.String(), at); err != nil {
+			return false, err
 		}
 		return true, nil
 	})

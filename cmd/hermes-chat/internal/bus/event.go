@@ -24,6 +24,8 @@ const (
 	EventControlSteer    EventKind = "steer"            // agent: subject is the steer message
 	EventControlPause    EventKind = "pause"            // agent: subject is the room
 	EventAgentPresence   EventKind = "agent.presence"   // human: subject is the agent
+	EventPromptChanged   EventKind = "prompt.changed"   // human: subject is the prompt's message
+	EventPromptAnswered  EventKind = "prompt.answered"  // agent: subject is the prompt's message
 )
 
 // contextMessages and contextTextBytes bound the context an agent-targeted

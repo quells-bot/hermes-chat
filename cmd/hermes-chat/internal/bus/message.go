@@ -36,6 +36,7 @@ type Message struct {
 	ReplyTo    *Message  // the message this one replies to, when any; set only on an agent delivery
 	CreatedAt  time.Time
 	Deliveries []Delivery // each agent's copy, in handle order; never nil after a load from storage
+	Prompt     *Prompt    // the question this message asks, when any; nil for an ordinary message
 }
 
 var (
@@ -132,6 +133,16 @@ func messagesFromRows(ctx context.Context, r storage.Repository, rows []storage.
 			out[i].Deliveries = ds
 		} else {
 			out[i].Deliveries = []Delivery{}
+		}
+	}
+	prompts, err := loadPrompts(ctx, r, rows)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if p, ok := prompts[out[i].ID.String()]; ok {
+			cp := p
+			out[i].Prompt = &cp
 		}
 	}
 	return out, nil

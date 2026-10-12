@@ -50,6 +50,9 @@ func (s *service) pauseRoom(ctx context.Context, r storage.Repository, row stora
 	if err := r.SetRoomPause(ctx, row.ID, &ms, string(reason)); err != nil {
 		return fmt.Errorf("set room pause: %w", err)
 	}
+	if _, err := s.expireOpenPrompts(ctx, r, row.ID, "", at); err != nil {
+		return err
+	}
 	if err := putEvent(ctx, r, EventRoomChanged, row.ID, row.ID, at); err != nil {
 		return err
 	}

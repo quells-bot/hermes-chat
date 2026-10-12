@@ -389,7 +389,7 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 			return Event{}, false, err
 		}
 		e.Room = &room
-	case EventMessagePosted, EventMessageEdited, EventDeliveryChanged:
+	case EventMessagePosted, EventMessageEdited, EventDeliveryChanged, EventPromptChanged:
 		msgRow, err := r.GetMessage(ctx, row.SubjectID)
 		if errors.Is(err, storage.ErrNotFound) {
 			return Event{}, false, nil
@@ -442,6 +442,36 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 		msgs, err := messagesFromRows(ctx, r, []storage.Message{msgRow})
 		if err != nil {
 			return Event{}, false, err
+		}
+		e.Message = &msgs[0]
+	case EventPromptAnswered:
+		// An answer the agent has not read when its room closes is dropped,
+		// exactly as a steer is: the pause has already told the plugin to stop
+		// that turn, and resuming the room does not send the answer.
+		roomRow, err := r.GetRoom(ctx, row.RoomID)
+		if errors.Is(err, storage.ErrNotFound) {
+			return Event{}, false, nil
+		}
+		if err != nil {
+			return Event{}, false, fmt.Errorf("get room: %w", err)
+		}
+		if closed, err := paused(ctx, r, roomRow); err != nil || closed {
+			return Event{}, false, err
+		}
+		msgRow, err := r.GetMessage(ctx, row.SubjectID)
+		if errors.Is(err, storage.ErrNotFound) {
+			return Event{}, false, nil
+		}
+		if err != nil {
+			return Event{}, false, fmt.Errorf("get message: %w", err)
+		}
+		msgs, err := messagesFromRows(ctx, r, []storage.Message{msgRow})
+		if err != nil {
+			return Event{}, false, err
+		}
+		// an expired prompt hands over nothing; nor does one answered twice
+		if msgs[0].Prompt == nil || msgs[0].Prompt.State != PromptAnswered {
+			return Event{}, false, nil
 		}
 		e.Message = &msgs[0]
 	case EventAgentPresence:
