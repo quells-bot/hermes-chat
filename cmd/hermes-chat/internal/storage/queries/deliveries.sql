@@ -43,3 +43,8 @@ UPDATE deliveries SET state = 'cancelled' WHERE room_id = ? AND agent_id = ? AND
 
 -- name: ListAgentRoomIDs :many
 SELECT room_id FROM room_agents WHERE agent_id = ? ORDER BY room_id;
+
+-- name: GetWorkingDelivery :one
+SELECT room_id, agent_id, message_id, state FROM deliveries
+WHERE room_id = ? AND agent_id = ? AND state = 'working'
+ORDER BY message_id LIMIT 1;

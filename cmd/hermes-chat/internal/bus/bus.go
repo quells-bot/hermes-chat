@@ -4,6 +4,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -19,6 +20,7 @@ var (
 	ErrUnauthenticated = errors.New("unauthenticated")
 	ErrForbidden       = errors.New("forbidden")
 	ErrNothingWaiting  = errors.New("no waiting delivery for this message")
+	ErrNoTurn          = errors.New("no turn is running")
 
 	// ErrUnavailable reports that the server is shutting down.
 	ErrUnavailable = errors.New("unavailable")
@@ -73,23 +75,45 @@ type Service interface {
 	ListMessages(ctx context.Context, actor Actor, roomID, before ulid.ULID, limit int) ([]Message, error) // ErrNotFound
 	MarkRoomRead(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) error                      // ErrNotFound, ErrValidation
 
+	EditMessage(ctx context.Context, actor Actor, messageID ulid.ULID, text string, final bool) error // ErrNotFound, ErrValidation, ErrForbidden
+	TurnWorking(ctx context.Context, actor Actor, messageID ulid.ULID) error                          // ErrNotFound, ErrNoTurn
+	TurnDone(ctx context.Context, actor Actor, messageID ulid.ULID) error                             // ErrNotFound, ErrNoTurn
+	TurnFailed(ctx context.Context, actor Actor, messageID ulid.ULID) error                           // ErrNotFound, ErrNoTurn
+	ReportRemark(ctx context.Context, actor Actor, messageID ulid.ULID, text string) error            // ErrNotFound, ErrValidation
+	StartTool(ctx context.Context, actor Actor, messageID ulid.ULID, tool, preview, arguments string) (Activity, error)
+	FinishTool(ctx context.Context, actor Actor, activityID ulid.ULID, durationMs int64, succeeded bool) (Activity, error)
+	ListActivity(ctx context.Context, actor Actor, roomID, messageID ulid.ULID) ([]Activity, error)   // human viewer only
+	StopTurn(ctx context.Context, actor Actor, roomID, agentID ulid.ULID) error                       // human only; ErrNotFound
+	Steer(ctx context.Context, actor Actor, roomID, agentID ulid.ULID, text string) (Message, error)  // human only; ErrNotFound, ErrValidation, ErrNoTurn, ErrRoomArchived
+
 	// Subscribe opens a stream of the actor's events after the given event ID; FromNow starts at the end of the log.
 	Subscribe(ctx context.Context, actor Actor, after int64) (*Subscription, error) // ErrForbidden, ErrValidation, ErrUnavailable
 }
 
 var _ Service = (*service)(nil)
 
+// editWrites throttles non-final message edits: per message, when its body was
+// last written, so a non-final edit touches the row only once a second.
+type editWrites struct {
+	mu   sync.Mutex
+	last map[string]time.Time // keyed by message id
+}
+
 type service struct {
-	repo     storage.Repository
-	clock    Clock
-	throttle *throttle
-	argon    argonLimiter
-	hub      *Hub
+	repo       storage.Repository
+	clock      Clock
+	throttle   *throttle
+	argon      argonLimiter
+	hub        *Hub
+	editWrites editWrites
 }
 
 // NewService returns a Service backed by repo, reading time from clock.
 func NewService(repo storage.Repository, clock Clock) *service {
-	return &service{repo: repo, clock: clock, throttle: newThrottle(), argon: newArgonLimiter(), hub: newHub()}
+	return &service{
+		repo: repo, clock: clock, throttle: newThrottle(), argon: newArgonLimiter(), hub: newHub(),
+		editWrites: editWrites{last: map[string]time.Time{}},
+	}
 }
 
 // Health reports whether storage is reachable.

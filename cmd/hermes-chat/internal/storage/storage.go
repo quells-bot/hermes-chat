@@ -75,6 +75,8 @@ type Repository interface {
 	ListMessages(ctx context.Context, roomID, beforeID string, limit int64) ([]Message, error) // newest first; beforeID "" starts at the newest; empty, not nil
 	GetLastMessageID(ctx context.Context, roomID string) (string, error)                       // ErrNotFound when the room has no messages
 
+	SetMessageBody(ctx context.Context, id, body string) error                                          // ErrNotFound
+
 	PutEvent(ctx context.Context, e Event) (int64, error)                                          // e.ID is ignored; returns the id the log assigned
 	ListEventsForHuman(ctx context.Context, humanID string, afterID, limit int64) ([]Event, error) // ascending id; only rooms the human is a member of now, and only non-agent-targeted rows; empty, not nil
 	ListEventsForAgent(ctx context.Context, agentID string, afterID, limit int64) ([]Event, error) // ascending id; agent-targeted rows only; empty, not nil
@@ -82,6 +84,7 @@ type Repository interface {
 
 	PutDelivery(ctx context.Context, d Delivery) error                                             // ErrConflict on duplicate (room, agent, message)
 	GetDelivery(ctx context.Context, agentID, messageID string) (Delivery, error)                  // ErrNotFound
+	GetWorkingDelivery(ctx context.Context, roomID, agentID string) (Delivery, error)              // ErrNotFound: the pair's only working turn is its currently-working delivery
 	ListDeliveriesForMessage(ctx context.Context, roomID, messageID string) ([]Delivery, error)    // by agent handle; empty, not nil
 	ListDeliveriesInRange(ctx context.Context, roomID, firstID, lastID string) ([]Delivery, error) // by message id, then handle; empty, not nil
 	HeadWaiting(ctx context.Context, roomID, agentID string) (Delivery, bool, error)               // the pair's releasable head; false when none

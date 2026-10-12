@@ -337,3 +337,63 @@ func (s *service) MarkRoomRead(ctx context.Context, actor Actor, roomID, message
 	}
 	return nil
 }
+
+// editThrottleInterval is how long a non-final edit may skip writing the row.
+const editThrottleInterval = time.Second
+
+// EditMessage rewrites the body of a message the actor agent wrote. A final
+// edit always writes the row and one message.edited event; a non-final edit
+// writes the row only when the last write for that message is at least
+// editThrottleInterval old. Every edit, final included, is broadcast to live
+// human streams.
+func (s *service) EditMessage(ctx context.Context, actor Actor, messageID ulid.ULID, text string, final bool) error {
+	if !validMessageText(text) {
+		return errMessageText
+	}
+	at := s.now()
+	// Decide before the transaction whether this edit writes the row. The
+	// single write connection means no two writers race on one message.
+	var write bool
+	s.editWrites.mu.Lock()
+	if last, ok := s.editWrites.last[messageID.String()]; ok && !final && at.Sub(last) < editThrottleInterval {
+		write = false
+	} else {
+		write = true
+	}
+	s.editWrites.mu.Unlock()
+	err := s.record(ctx, func(r storage.Repository) error {
+		row, err := r.GetMessage(ctx, messageID.String())
+		if errors.Is(err, storage.ErrNotFound) {
+			return fmt.Errorf("message %s: %w", messageID, ErrNotFound)
+		}
+		if err != nil {
+			return fmt.Errorf("get message: %w", err)
+		}
+		if row.AuthorAgentID == nil || *row.AuthorAgentID != actor.ID.String() {
+			return ErrForbidden
+		}
+		if write {
+			if err := r.SetMessageBody(ctx, messageID.String(), text); err != nil {
+				return fmt.Errorf("set message body: %w", err)
+			}
+			s.editWrites.mu.Lock()
+			s.editWrites.last[messageID.String()] = at
+			s.editWrites.mu.Unlock()
+		}
+		if final {
+			if err := putEvent(ctx, r, EventMessageEdited, row.RoomID, messageID.String(), at); err != nil {
+				return err
+			}
+			s.editWrites.mu.Lock()
+			delete(s.editWrites.last, messageID.String())
+			s.editWrites.mu.Unlock()
+		}
+		return nil
+	})
+	if err != nil {
+		return wrapOp("edit message", err)
+	}
+	// Live browsers see every edit immediately, so broadcast after the commit.
+	s.hub.broadcastEdit(LiveEdit{MessageID: messageID, Text: text})
+	return nil
+}

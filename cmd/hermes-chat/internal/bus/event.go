@@ -18,6 +18,10 @@ const (
 	EventMessagePosted EventKind = "message.posted" // subject: the message's id
 	EventDelivery      EventKind = "delivery"       // agent: subject is the delivered message
 	EventDeliveryChanged EventKind = "delivery.changed" // human: subject is the message
+	EventActivityPosted   EventKind = "activity.posted" // human: subject is the activity
+	EventMessageEdited    EventKind = "message.edited"  // human: subject is the message, finalize only
+	EventControlStop      EventKind = "stop"            // agent: subject is the room
+	EventControlSteer     EventKind = "steer"           // agent: subject is the steer message
 )
 
 // contextMessages and contextTextBytes bound the context an agent-targeted
@@ -30,13 +34,14 @@ const (
 
 // Event is one entry of the log, as one subscriber sees it.
 type Event struct {
-	ID      int64 // the stream cursor
-	Kind    EventKind
-	RoomID  ulid.ULID
-	At      time.Time
-	Room    *Room       // room.changed, and delivery for an agent: the room as it is now
-	Message *Message    // message.posted, delivery, and delivery.changed
-	Context []Message   // delivery on a channel: the messages leading up to the delivered one
+	ID       int64 // the stream cursor
+	Kind     EventKind
+	RoomID   ulid.ULID
+	At       time.Time
+	Room     *Room       // room.changed, and delivery for an agent: the room as it is now
+	Message  *Message    // message.posted, delivery, delivery.changed, message.edited, and steer
+	Activity *Activity   // activity.posted: the activity, which carries its turn's message id
+	Context  []Message   // delivery on a channel: the messages leading up to the delivered one
 }
 
 // putEvent appends an event to the log. Call it inside the transaction that

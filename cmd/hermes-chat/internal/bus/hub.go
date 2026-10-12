@@ -258,7 +258,36 @@ func (s *Subscription) event(ctx context.Context, r storage.Repository, row stor
 			return Event{}, false, err
 		}
 		e.Room = &room
-	case EventMessagePosted, EventDeliveryChanged:
+	case EventMessagePosted, EventMessageEdited, EventDeliveryChanged:
+		msgRow, err := r.GetMessage(ctx, row.SubjectID)
+		if errors.Is(err, storage.ErrNotFound) {
+			return Event{}, false, nil
+		}
+		if err != nil {
+			return Event{}, false, fmt.Errorf("get message: %w", err)
+		}
+		msgs, err := messagesFromRows(ctx, r, []storage.Message{msgRow})
+		if err != nil {
+			return Event{}, false, err
+		}
+		e.Message = &msgs[0]
+	case EventActivityPosted:
+		act, err := r.GetActivity(ctx, row.SubjectID)
+		if errors.Is(err, storage.ErrNotFound) {
+			return Event{}, false, nil
+		}
+		if err != nil {
+			return Event{}, false, fmt.Errorf("get activity: %w", err)
+		}
+		a, err := activityFromRow(act)
+		if err != nil {
+			return Event{}, false, err
+		}
+		e.Activity = &a // the activity carries its turn's message id
+	case EventControlStop:
+		// There is nothing to load: the event's subject is the room itself,
+		// which names the turn's room, already set on e.RoomID.
+	case EventControlSteer:
 		msgRow, err := r.GetMessage(ctx, row.SubjectID)
 		if errors.Is(err, storage.ErrNotFound) {
 			return Event{}, false, nil

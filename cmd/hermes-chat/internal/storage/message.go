@@ -66,3 +66,7 @@ func (r *repo) GetLastMessageID(ctx context.Context, roomID string) (string, err
 	}
 	return id, nil
 }
+
+func (r *repo) SetMessageBody(ctx context.Context, id, body string) error {
+	return requireRow(r.writes.SetMessageBody(ctx, sqlcgen.SetMessageBodyParams{Body: body, ID: id}))
+}

@@ -151,3 +151,20 @@ func (q *Queries) ListNewestMessages(ctx context.Context, arg ListNewestMessages
 	}
 	return items, nil
 }
+
+const setMessageBody = `-- name: SetMessageBody :execrows
+UPDATE messages SET body = ? WHERE id = ?
+`
+
+type SetMessageBodyParams struct {
+	Body string
+	ID   string
+}
+
+func (q *Queries) SetMessageBody(ctx context.Context, arg SetMessageBodyParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setMessageBody, arg.Body, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}

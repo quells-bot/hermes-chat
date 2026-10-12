@@ -47,6 +47,29 @@ func (q *Queries) GetDelivery(ctx context.Context, arg GetDeliveryParams) (Deliv
 	return i, err
 }
 
+const getWorkingDelivery = `-- name: GetWorkingDelivery :one
+SELECT room_id, agent_id, message_id, state FROM deliveries
+WHERE room_id = ? AND agent_id = ? AND state = 'working'
+ORDER BY message_id LIMIT 1
+`
+
+type GetWorkingDeliveryParams struct {
+	RoomID  string
+	AgentID string
+}
+
+func (q *Queries) GetWorkingDelivery(ctx context.Context, arg GetWorkingDeliveryParams) (Delivery, error) {
+	row := q.db.QueryRowContext(ctx, getWorkingDelivery, arg.RoomID, arg.AgentID)
+	var i Delivery
+	err := row.Scan(
+		&i.RoomID,
+		&i.AgentID,
+		&i.MessageID,
+		&i.State,
+	)
+	return i, err
+}
+
 const headWaiting = `-- name: HeadWaiting :one
 SELECT d.room_id, d.agent_id, d.message_id, d.state FROM deliveries d
 WHERE d.room_id = ? AND d.agent_id = ? AND d.state = 'waiting'

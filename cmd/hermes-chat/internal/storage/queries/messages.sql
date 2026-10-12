@@ -16,3 +16,6 @@ ORDER BY id DESC LIMIT ?;
 
 -- name: GetLastMessageID :one
 SELECT id FROM messages WHERE room_id = ? ORDER BY id DESC LIMIT 1;
+
+-- name: SetMessageBody :execrows
+UPDATE messages SET body = ? WHERE id = ?;
