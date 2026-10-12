@@ -93,7 +93,8 @@ func TestRooms_CreateGetAndList(t *testing.T) {
 	want := fmt.Sprintf(`{"id":%q,"flavor":"conversation","topic":"Trip planning","archived":false,"created_at":%q,
         "humans":[{"id":%q,"username":"kai"}],
         "agents":[{"id":%q,"handle":"scout","display_name":"Scout","revoked":false,"connected":false}],
-        "last_message_id":null,"last_read_message_id":null}`, id, stamp(rooms[0].CreatedAt), c.kaiH.ID, c.scout.ID)
+        "last_message_id":null,"last_read_message_id":null,
+        "paused":false,"pause_reason":null,"turn_cap":6,"halted":false}`, id, stamp(rooms[0].CreatedAt), c.kaiH.ID, c.scout.ID)
 	assert.JSONEq(t, want, w.Body.String())
 	assert.JSONEq(t, want, c.call(c.kai, "GET", "/api/rooms/"+id, "").Body.String())
 	assert.JSONEq(t, `{"rooms":[`+want+`]}`, c.call(c.kai, "GET", "/api/rooms", "").Body.String())

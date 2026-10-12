@@ -1,6 +1,7 @@
 package app_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http/httptest"
@@ -335,4 +336,26 @@ func TestAgentRoutes_RequireTheToken(t *testing.T) {
 		require.Equal(t, 401, w.Code, "%s %s", tc.method, tc.path)
 		assert.JSONEq(t, `{"error":{"code":"unauthenticated","message":"authentication required"}}`, w.Body.String(), "%s %s", tc.method, tc.path)
 	}
+}
+
+func TestAgentRoutes_PausedRoom(t *testing.T) {
+	r := newAgentRig(t)
+	kai := bus.Actor{Kind: bus.ActorHuman, ID: r.kai.ID}
+	r.connect(t, r.scout.ID)
+	m := r.kaiPost(t, r.room, "go", ulid.Zero)
+	_, err := r.svc.PauseRoom(ctx, kai, r.room.ID)
+	require.NoError(t, err)
+
+	w := agentReq(r.e, r.scoutT, "POST", "/agent/rooms/"+r.room.ID.String()+"/messages", `{"text":"hi"}`)
+	assert.Equal(t, 409, w.Code)
+	assert.JSONEq(t, pausedBody, w.Body.String())
+	w = agentReq(r.e, r.scoutT, "POST", "/agent/deliveries/"+m.ID.String()+"/remarks", `{"text":"hm"}`)
+	assert.Equal(t, 409, w.Code)
+	assert.Equal(t, 204, agentReq(r.e, r.scoutT, "POST", "/agent/deliveries/"+m.ID.String()+"/done", "").Code)
+
+	w = agentReq(r.e, r.scoutT, "GET", "/agent/rooms", "")
+	var body struct{ Rooms []map[string]any }
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Len(t, body.Rooms, 1)
+	assert.Equal(t, true, body.Rooms[0]["paused"])
 }

@@ -764,3 +764,15 @@ func TestAgentEvents_Cursor(t *testing.T) {
 		assert.JSONEq(t, badReq("cursor must be a non-negative integer"), string(body), bad)
 	}
 }
+
+func TestAgentEvents_PauseFrame(t *testing.T) {
+	r := newRig(t, app.Options{}, nil)
+	_, d := r.openAgent(t, r.scoutToken, "")
+	require.Equal(t, "ready", next(t, d).Event)
+	_, err := r.svc.PauseRoom(ctx, r.kai, r.room.ID)
+	require.NoError(t, err)
+	f := next(t, d)
+	assert.Equal(t, "pause", f.Event)
+	assert.JSONEq(t, fmt.Sprintf(`{"room_id":%q}`, r.room.ID.String()), f.Data)
+	assert.NotEmpty(t, f.ID)
+}

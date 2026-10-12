@@ -96,7 +96,7 @@ func agentEventFrame(e bus.Event) (sse.Frame, error) {
 			"room":    agentRoomJSON(*e.Room),
 			"context": context,
 		}
-	case e.Kind == bus.EventControlStop:
+	case e.Kind == bus.EventControlStop, e.Kind == bus.EventControlPause:
 		body = map[string]any{"room_id": e.RoomID.String()}
 	case e.Kind == bus.EventControlSteer && e.Message != nil:
 		body = map[string]any{"room_id": e.RoomID.String(), "message": agentMessageJSON(*e.Message)}

@@ -42,6 +42,10 @@ type roomBody struct {
 	Agents            []roomAgentBody `json:"agents"`
 	LastMessageID     *ulid.ULID      `json:"last_message_id"`
 	LastReadMessageID *ulid.ULID      `json:"last_read_message_id"`
+	Paused            bool            `json:"paused"`
+	PauseReason       *string         `json:"pause_reason"` // "human" or "turn_cap" while paused
+	TurnCap           int             `json:"turn_cap"`
+	Halted            bool            `json:"halted"`
 }
 
 type authorBody struct {
@@ -71,6 +75,7 @@ type agentRoomBody struct {
 	Flavor string      `json:"flavor"`
 	Topic  string      `json:"topic"`
 	Humans []humanBody `json:"humans"`
+	Paused bool        `json:"paused"` // the room is paused or everything is stopped
 }
 
 type agentAuthorBody struct {
@@ -127,6 +132,11 @@ func roomJSON(r bus.Room) any {
 		ID: r.ID, Flavor: string(r.Flavor), Topic: r.Topic, Archived: r.Archived(), CreatedAt: r.CreatedAt,
 		Humans: make([]humanBody, 0, len(r.Humans)), Agents: make([]roomAgentBody, 0, len(r.Agents)),
 		LastMessageID: optionalID(r.LastMessageID), LastReadMessageID: optionalID(r.LastReadMessageID),
+		Paused: r.Paused(), TurnCap: r.TurnCap, Halted: r.Halted,
+	}
+	if r.Paused() {
+		reason := string(r.PauseReason)
+		out.PauseReason = &reason
 	}
 	for _, h := range r.Humans {
 		out.Humans = append(out.Humans, humanJSON(h))
@@ -155,7 +165,8 @@ func messageJSON(m bus.Message) any {
 // agentRoomJSON is the room as an agent sees it: members, flavor, and topic.
 // Its arrays are never null.
 func agentRoomJSON(r bus.Room) any {
-	out := agentRoomBody{ID: r.ID, Flavor: string(r.Flavor), Topic: r.Topic, Humans: make([]humanBody, 0, len(r.Humans))}
+	out := agentRoomBody{ID: r.ID, Flavor: string(r.Flavor), Topic: r.Topic, Humans: make([]humanBody, 0, len(r.Humans)),
+		Paused: r.Paused() || r.Halted}
 	for _, h := range r.Humans {
 		out.Humans = append(out.Humans, humanJSON(h))
 	}
