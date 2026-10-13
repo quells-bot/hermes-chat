@@ -66,6 +66,21 @@ def agent():
 
 
 @pytest.fixture
+def resume_event():
+    """What Hermes sends to resume an interrupted session: an internal
+    MessageEvent with empty text, no message_id, for a room."""
+    def build(adapter, room_id):
+        from gateway.platforms.event import MessageEvent, MessageType
+        return MessageEvent(
+            text="", message_type=MessageType.TEXT,
+            source=adapter.build_source(chat_id=room_id, chat_name=room_id),
+            internal=True,
+        )
+
+    return build
+
+
+@pytest.fixture
 def adapter_factory(stub, tmp_path, monkeypatch):
     """Build a HermesChatAdapter pointed at the stub, its open-turn record
     under tmp_path. Adapter tests need the Hermes checkout (they skip at

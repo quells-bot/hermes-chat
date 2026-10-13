@@ -58,6 +58,15 @@ class HermesChatAdapter(BasePlatformAdapter):
         self._turn_tasks: dict[str, asyncio.Task] = {}
         self._turn_outcomes: dict[str, ProcessingOutcome] = {}
         self._turn_callbacks: set[str] = set()
+        # Restart: deliveries left open from a previous run, awaiting Hermes's
+        # resume event, and the shutdown flag.
+        self._awaiting_resume: set[str] = set()
+        self._resume_watcher: asyncio.Task | None = None
+        self._shutting_down = False
+
+    # How long connect() waits for Hermes to resume an interrupted session
+    # before reporting that delivery failed. Overridable per instance in tests.
+    RESUME_GRACE_SECONDS = 90.0
 
     @property
     def message_len_fn(self):
@@ -128,6 +137,12 @@ class HermesChatAdapter(BasePlatformAdapter):
         else:
             for line in display_warnings(user_config):
                 logger.warning("%s", line)
+        # Every delivery left open from a previous run is awaiting Hermes's
+        # resume event; its room is busy until then.
+        self._awaiting_resume = set(self._open_turns.all())
+        for room_id in set(self._open_turns.all().values()):
+            self._room_busy_rooms.add(room_id)
+        self._resume_watcher = asyncio.create_task(self._resume_grace_watch())
         self._stream = EventStream(
             self._client,
             self._on_stream_event,
@@ -142,6 +157,10 @@ class HermesChatAdapter(BasePlatformAdapter):
         return True
 
     async def disconnect(self) -> None:
+        if self._resume_watcher is not None:
+            self._resume_watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._resume_watcher
         if self._stream_task is not None:
             self._stream_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -181,6 +200,10 @@ class HermesChatAdapter(BasePlatformAdapter):
             logger.info("dropping repeat delivery of message %s", message["id"])
             return
         room_id = data["room"]["id"]
+        if message["id"] in self._awaiting_resume:
+            # A repeat of the open turn itself; it is not handed over again.
+            logger.info("dropping redelivery of awaiting message %s", message["id"])
+            return
         self._open_turns.add(message["id"], room_id)
         event = self.event_from_delivery(data)
         if room_id in self._room_busy_rooms:
@@ -196,9 +219,41 @@ class HermesChatAdapter(BasePlatformAdapter):
             if event.message_id:
                 self._close_turn(event.message_id, "failed")
 
+    async def _resume_grace_watch(self) -> None:
+        try:
+            await asyncio.sleep(self.RESUME_GRACE_SECONDS)
+        except asyncio.CancelledError:
+            return
+        for delivery_id in list(self._awaiting_resume):
+            self._awaiting_resume.discard(delivery_id)
+            self._close_turn(delivery_id, "failed")
+
+    async def handle_message(self, event: MessageEvent) -> None:
+        """Attach an interrupted turn's delivery to Hermes's resume event, so
+        its hooks report against that delivery and its reply quotes it."""
+        if event.internal and not event.message_id:
+            delivery_id = self._open_turns.for_room(event.source.chat_id)
+            if delivery_id in self._awaiting_resume:
+                self._awaiting_resume.discard(delivery_id)
+                event.metadata["hermes_chat_delivery"] = delivery_id
+                event.reply_anchor_override = delivery_id
+                await super().handle_message(event)
+                if not event._gateway_accepted:
+                    self._close_turn(delivery_id, "failed")
+                return
+        await super().handle_message(event)
+
+    async def cancel_background_tasks(self) -> None:
+        """Shutdown: a CANCELLED turn is left open for the next start."""
+        self._shutting_down = True
+        await super().cancel_background_tasks()
+
     def _delivery_for(self, event: MessageEvent) -> str | None:
-        """The delivery this event's turn belongs to, or None. Task 8 extends
-        this for events resumed after a restart."""
+        """The delivery this event's turn belongs to, or None. A resume event
+        carries its delivery in metadata; a fresh delivery is its own id."""
+        metadata_delivery = (event.metadata or {}).get("hermes_chat_delivery")
+        if metadata_delivery:
+            return metadata_delivery
         if event.message_id and event.message_id in self._open_turns.all():
             return event.message_id
         return None
@@ -219,6 +274,10 @@ class HermesChatAdapter(BasePlatformAdapter):
             "on_processing_complete delivery=%s room=%s outcome=%s",
             delivery_id, event.source.chat_id, outcome.value,
         )
+        if self._shutting_down and outcome is ProcessingOutcome.CANCELLED:
+            # The interrupted turn continues after the next start; leave the
+            # delivery open in the record.
+            return
         self._turn_outcomes[delivery_id] = outcome
         task = self._turn_tasks.get(delivery_id)
         if task is not None and delivery_id not in self._turn_callbacks:
