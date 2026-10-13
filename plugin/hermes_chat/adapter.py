@@ -37,13 +37,17 @@ MAX_TEXT_BYTES = 262_144  # the server's MessageText limit, in bytes
 # Hermes ends in-progress text with this cursor (its `streaming.cursor`
 # default). The server already says whether a message is still streaming.
 _STREAMING_CURSOR = re.compile(r"\s*▉\Z")
+# A later stretch of a reply starts with the blank lines that separated it
+# from the stretch before, which is now a message of its own.
+_LEADING_BLANK_LINES = re.compile(r"\A\s*\n\s*")
 
 
-def _without_cursor(content: str) -> str:
-    stripped = _STREAMING_CURSOR.sub("", content)
-    # Text that is only the cursor stays as it is: the server refuses a blank
+def _outgoing(content: str) -> str:
+    """The text as the room should store it."""
+    cleaned = _LEADING_BLANK_LINES.sub("", _STREAMING_CURSOR.sub("", content))
+    # Text that is nothing else stays as it is: the server refuses a blank
     # message, and Hermes needs the message id to edit.
-    return stripped if stripped.strip() else content
+    return cleaned if cleaned.strip() else content
 
 
 class HermesChatAdapter(BasePlatformAdapter):
@@ -86,7 +90,7 @@ class HermesChatAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to=None, metadata=None):
         try:
-            message_id = await self._client.post_message(chat_id, _without_cursor(content), reply_to_id=reply_to)
+            message_id = await self._client.post_message(chat_id, _outgoing(content), reply_to_id=reply_to)
         except ApiError as exc:
             self._log_send_error("send", chat_id, exc)
             return SendResult(success=False, error=f"{exc.code}: {exc.message}")
@@ -98,7 +102,7 @@ class HermesChatAdapter(BasePlatformAdapter):
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False):
         try:
-            await self._client.edit_message(message_id, _without_cursor(content), finalize)
+            await self._client.edit_message(message_id, _outgoing(content), finalize)
         except ApiError as exc:
             self._log_send_error("edit_message", chat_id, exc)
             return SendResult(success=False, error=f"{exc.code}: {exc.message}")

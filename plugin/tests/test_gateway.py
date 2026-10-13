@@ -63,4 +63,5 @@ def test_no_stored_message_keeps_the_streaming_cursor(gateway_factory):
     first = g.post("run the two echoes")
     g.wait(lambda: g.state(first) == "done")
     assert not [m for m in g.messages() if "▉" in m["text"]]
+    assert not [m for m in g.messages() if m["text"] != m["text"].lstrip()]
     assert "probe hook=on_interim_message" in g.log()  # removed in Task 3 with the probe

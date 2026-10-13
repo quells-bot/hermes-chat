@@ -257,3 +257,13 @@ async def test_text_that_is_only_the_cursor_is_sent_as_it_is(adapter_factory, st
     assert result.success
     assert stub.requests[0].json["text"] == " ▉"
     await a._client.aclose()
+
+
+async def test_leading_blank_lines_are_trimmed_from_what_is_sent(adapter_factory, stub):
+    stub.script("POST", "/agent/rooms/R1/messages", (201, {"id": "M2"}))
+    stub.script("PUT", "/agent/messages/M2", (204,))
+    a = adapter_factory()
+    await a.send("R1", "\n\nNext I will run it. ▉")
+    await a.edit_message("R1", "M2", "\n\n  Next I will run it.", finalize=True)
+    assert [r.json["text"] for r in stub.requests] == ["Next I will run it.", "Next I will run it."]
+    await a._client.aclose()
