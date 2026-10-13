@@ -5,14 +5,17 @@
 import {
   ApiError,
   getHalt,
+  getMessage,
   getRoom,
   listAgents,
   listMessages,
   listRooms,
+  markRoomRead,
   resumeEverything,
   stopEverything,
 } from './api';
 import { mergeNewest, pageSize, upsert } from './feed';
+import { isUnread } from './rooms';
 import { openStream, type Stream, type StreamState } from './stream';
 import type { Agent, Message, Room } from './types';
 
@@ -34,6 +37,8 @@ type Store = {
   halted: boolean;
   open: string | null; // the room on screen
   feeds: Record<string, Feed>; // by room id
+  latest: Record<string, Message>; // by room id: the newest message known
+  quoted: Record<string, Message>; // by message id: fetched because a reply names it
 };
 
 function initial(): Store {
@@ -46,6 +51,8 @@ function initial(): Store {
     halted: false,
     open: null,
     feeds: {},
+    latest: {},
+    quoted: {},
   };
 }
 
@@ -82,6 +89,17 @@ let workingOn = new Map<string, Map<string, string>>();
 // been seen. A live edit can arrive after it, and must not put back the
 // unfinished text.
 let finalized = new Set<string>();
+
+// marking holds the read markers being put, and fetchingLatest the newest
+// messages being fetched, each as a room id and a message id. The same one is
+// not asked for again while it is in flight.
+let marking = new Set<string>();
+let fetchingLatest = new Set<string>();
+
+// askedQuoted holds the ids of the quoted messages that have been asked for,
+// whatever the answer was. One that failed is not asked for again: a reply
+// can name a message that no longer exists, and every drawing of it would ask.
+let askedQuoted = new Set<string>();
 
 // refetching holds the rooms being fetched again, each with the value of
 // loads it started under. Once loads has moved on, that fetch will write
@@ -127,6 +145,9 @@ export function disconnect(): void {
   held = [];
   workingOn = new Map();
   finalized = new Set();
+  marking = new Set();
+  fetchingLatest = new Set();
+  askedQuoted = new Set();
   resets += 1; // a fetch still in flight must neither write nor be counted when it settles
   Object.assign(store, initial());
 }
@@ -206,7 +227,9 @@ function fetchSettled(epoch: number): void {
 // load replaces the rooms, the agents and the halt with the server's, so a
 // room the person has left disappears, and brings the open room's newest
 // messages. A load that settles after a later one started is discarded. It
-// never rejects.
+// leaves latest and quoted alone: the events replayed after it keep them
+// current, and an entry is only shown while its id still matches. It never
+// rejects.
 export async function load(): Promise<void> {
   loads += 1;
   const seq = loads;
@@ -369,6 +392,133 @@ export async function loadOlder(id: string): Promise<void> {
   feed.loading = false;
 }
 
+// markRead tells the server that the person has read a room up to a message.
+// A failure changes and records nothing: the marker is asked for again the
+// next time the end of the feed is seen. It never rejects.
+export async function markRead(roomId: string, messageId: string): Promise<void> {
+  try {
+    await putMarker(roomId, messageId);
+  } catch {
+    // ignored
+  }
+}
+
+// markAllRead marks every unread room read up to its newest message, all at
+// once. The first failure among them is recorded. It never rejects.
+export async function markAllRead(): Promise<void> {
+  const epoch = resets;
+  const marks: Promise<void>[] = [];
+  for (const room of Object.values(store.rooms)) {
+    if (isUnread(room) && room.last_message_id !== null) {
+      marks.push(putMarker(room.id, room.last_message_id));
+    }
+  }
+  const failure = (await Promise.allSettled(marks)).find((r) => r.status === 'rejected');
+  if (failure !== undefined && epoch === resets) {
+    failed(failure.reason);
+  }
+}
+
+// putMarker is markRead, except that it rejects when the request fails. It
+// does nothing when the room is not held, when its marker is already there or
+// newer, or when the same marker is in flight.
+async function putMarker(roomId: string, messageId: string): Promise<void> {
+  if (!Object.hasOwn(store.rooms, roomId)) {
+    return;
+  }
+  const read = store.rooms[roomId].last_read_message_id;
+  // ULIDs sort by time, and the server only moves a marker forward.
+  if (read !== null && read >= messageId) {
+    return;
+  }
+  const key = `${roomId} ${messageId}`;
+  if (marking.has(key)) {
+    return;
+  }
+  const epoch = resets;
+  marking.add(key);
+  try {
+    await markRoomRead(roomId, messageId);
+  } finally {
+    if (epoch === resets) {
+      marking.delete(key); // after a disconnect() the set is another connection's
+    }
+  }
+  if (epoch !== resets || !Object.hasOwn(store.rooms, roomId)) {
+    return;
+  }
+  // No event announces a marker, so it is set here. The room is read again:
+  // it may have been replaced meanwhile, and a later marker may have settled
+  // first, which this one must not move back.
+  const room = store.rooms[roomId];
+  if (room.last_read_message_id === null || room.last_read_message_id < messageId) {
+    room.last_read_message_id = messageId;
+  }
+}
+
+// putLatest makes a message the newest known of its room, unless a newer one
+// is held there. The same message replaces itself, so a change to it shows.
+function putLatest(message: Message): void {
+  const id = message.room_id;
+  if (Object.hasOwn(store.latest, id) && store.latest[id].id > message.id) {
+    return;
+  }
+  store.latest[id] = message;
+}
+
+// loadLatest fetches a room's newest message when it is not the one held in
+// latest, for a room that is listed without its feed being held. A failure is
+// ignored. It never rejects.
+export async function loadLatest(roomId: string): Promise<void> {
+  if (!Object.hasOwn(store.rooms, roomId)) {
+    return;
+  }
+  const messageId = store.rooms[roomId].last_message_id;
+  if (messageId === null) {
+    return;
+  }
+  if (Object.hasOwn(store.latest, roomId) && store.latest[roomId].id === messageId) {
+    return;
+  }
+  const key = `${roomId} ${messageId}`;
+  if (fetchingLatest.has(key)) {
+    return;
+  }
+  const epoch = resets;
+  fetchingLatest.add(key);
+  try {
+    const message = await getMessage(roomId, messageId);
+    if (epoch === resets) {
+      // An event may have brought a newer one while this was in flight.
+      putLatest(message);
+    }
+  } catch {
+    // ignored
+  } finally {
+    if (epoch === resets) {
+      fetchingLatest.delete(key);
+    }
+  }
+}
+
+// loadQuoted fetches a message that a reply names, once per id for the life
+// of the connection, whether or not the fetch succeeds. It never rejects.
+export async function loadQuoted(roomId: string, messageId: string): Promise<void> {
+  if (askedQuoted.has(messageId)) {
+    return;
+  }
+  const epoch = resets;
+  askedQuoted.add(messageId);
+  try {
+    const message = await getMessage(roomId, messageId);
+    if (epoch === resets) {
+      store.quoted[messageId] = message;
+    }
+  } catch {
+    // ignored: it stays absent
+  }
+}
+
 // receive takes an event from the stream: held while a snapshot fetch is in
 // flight, applied at once otherwise.
 function receive(name: string, data: unknown): void {
@@ -460,7 +610,7 @@ function isMessage(v: Fields): v is Fields & Message {
   );
 }
 
-// applyToFeeds keeps the held messages current.
+// applyToFeeds keeps the held messages, and the newest of each room, current.
 function applyToFeeds(name: string, data: unknown): void {
   switch (name) {
     case 'message.posted':
@@ -482,6 +632,9 @@ function applyToFeeds(name: string, data: unknown): void {
         // bring it later, and a late live edit must still be ignored.
         finalized.add(message.id);
       }
+      // Whether or not the room's feed is held: the Unread page shows rooms
+      // that have never been opened.
+      putLatest(message);
       const feed = heldFeed(message.room_id);
       if (feed === null) {
         return;
@@ -512,7 +665,14 @@ function liveEdit(data: unknown): void {
     if (message !== undefined) {
       message.text = data.text;
       message.streaming = true;
-      return;
+      break;
+    }
+  }
+  // The newest message of a room is held on its own, feed or no feed.
+  for (const message of Object.values(store.latest)) {
+    if (message.id === data.message_id) {
+      message.text = data.text;
+      break;
     }
   }
 }

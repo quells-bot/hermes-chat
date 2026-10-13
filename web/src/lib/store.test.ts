@@ -7,7 +7,11 @@ import {
   connect,
   disconnect,
   load,
+  loadLatest,
   loadOlder,
+  loadQuoted,
+  markAllRead,
+  markRead,
   openRoom,
   putRoom,
   resumeAll,
@@ -24,6 +28,8 @@ vi.mock('./api', async (importOriginal) => ({
   listAgents: vi.fn(),
   getHalt: vi.fn(),
   listMessages: vi.fn(),
+  getMessage: vi.fn(),
+  markRoomRead: vi.fn(),
   stopEverything: vi.fn(),
   resumeEverything: vi.fn(),
 }));
@@ -109,6 +115,8 @@ beforeEach(() => {
   vi.mocked(api.getRoom).mockReset();
   vi.mocked(api.getHalt).mockReset().mockResolvedValue(false);
   vi.mocked(api.listMessages).mockReset().mockResolvedValue([]);
+  vi.mocked(api.getMessage).mockReset();
+  vi.mocked(api.markRoomRead).mockReset();
   vi.mocked(api.stopEverything).mockReset();
   vi.mocked(api.resumeEverything).mockReset();
 });
@@ -544,6 +552,8 @@ test('disconnect closes the stream, resets the store, and stops listening', asyn
     halted: false,
     open: null,
     feeds: {},
+    latest: {},
+    quoted: {},
   });
 
   becomeVisible();
@@ -1299,4 +1309,330 @@ test('a page that fails inside load again replaces the reason on a failed feed',
 
   expect(store.feeds['01R']).toEqual({ messages: [], more: false, loading: false, error: 'internal error' });
   expect(store.error).toBe('');
+});
+
+test('markRead puts the marker and then sets it on the room', async () => {
+  await loaded([room({ id: '01R', last_message_id: '01M2', last_read_message_id: '01M1' })]);
+  vi.mocked(api.markRoomRead).mockResolvedValue();
+  await markRead('01R', '01M2');
+  expect(api.markRoomRead).toHaveBeenCalledWith('01R', '01M2');
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M2');
+});
+
+test('markRead sets the first marker of a room that had none', async () => {
+  await loaded([room({ id: '01R', last_message_id: '01M2' })]);
+  vi.mocked(api.markRoomRead).mockResolvedValue();
+  await markRead('01R', '01M2');
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M2');
+});
+
+test('markRead does nothing when the marker is already there or newer', async () => {
+  await loaded([room({ id: '01R', last_message_id: '01M3', last_read_message_id: '01M2' })]);
+  await markRead('01R', '01M2');
+  await markRead('01R', '01M1');
+  await markRead('01X', '01M9'); // a room that is not held
+  await markRead('constructor', '01M9');
+  expect(api.markRoomRead).not.toHaveBeenCalled();
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M2');
+});
+
+test('the same marker asked twice while in flight is one request', async () => {
+  await loaded([room({ id: '01R', last_message_id: '01M2', last_read_message_id: '01M1' })]);
+  const put = deferred<void>();
+  vi.mocked(api.markRoomRead).mockReturnValueOnce(put.promise);
+
+  const first = markRead('01R', '01M2');
+  await markRead('01R', '01M2');
+  expect(api.markRoomRead).toHaveBeenCalledTimes(1);
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M1');
+
+  put.resolve();
+  await first;
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M2');
+});
+
+test('a failed markRead leaves the room unread and store.error empty', async () => {
+  await loaded([room({ id: '01R', last_message_id: '01M2', last_read_message_id: '01M1' })]);
+  vi.mocked(api.markRoomRead).mockRejectedValueOnce(unreachable());
+
+  await expect(markRead('01R', '01M2')).resolves.toBeUndefined();
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M1');
+  expect(store.error).toBe('');
+
+  // It is no longer in flight, so the next time it is asked for it is tried again.
+  vi.mocked(api.markRoomRead).mockResolvedValueOnce();
+  await markRead('01R', '01M2');
+  expect(api.markRoomRead).toHaveBeenCalledTimes(2);
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M2');
+});
+
+test('a marker that settles after a newer one was set does not move it back', async () => {
+  await loaded([room({ id: '01R', last_message_id: '01M3', last_read_message_id: '01M1' })]);
+  const slow = deferred<void>();
+  vi.mocked(api.markRoomRead).mockReturnValueOnce(slow.promise).mockResolvedValueOnce();
+
+  const older = markRead('01R', '01M2');
+  await markRead('01R', '01M3');
+  expect(api.markRoomRead).toHaveBeenCalledTimes(2);
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M3');
+
+  slow.resolve();
+  await older;
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M3');
+});
+
+test('a marker that settles after disconnect writes nothing, and one the room has left is dropped', async () => {
+  await loaded([room({ id: '01R', last_message_id: '01M2' }), room({ id: '01S', last_message_id: '01M2' })]);
+  const gone = deferred<void>();
+  const late = deferred<void>();
+  vi.mocked(api.markRoomRead).mockReturnValueOnce(gone.promise).mockReturnValueOnce(late.promise);
+
+  const leaving = markRead('01S', '01M2');
+  vi.mocked(api.listRooms).mockResolvedValue([room({ id: '01R', last_message_id: '01M2' })]);
+  await load(); // 01S is no longer among the rooms
+  gone.resolve();
+  await expect(leaving).resolves.toBeUndefined();
+  expect(Object.keys(store.rooms)).toEqual(['01R']);
+
+  const marking = markRead('01R', '01M2');
+  disconnect();
+  // The same room, held again by the next connection.
+  await loaded([room({ id: '01R', last_message_id: '01M2' })]);
+  late.resolve();
+  await marking;
+  expect(store.rooms['01R'].last_read_message_id).toBeNull();
+
+  // What was in flight before the disconnect does not count as in flight now.
+  vi.mocked(api.markRoomRead).mockResolvedValueOnce();
+  await markRead('01R', '01M2');
+  expect(api.markRoomRead).toHaveBeenCalledTimes(3);
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M2');
+});
+
+test('markAllRead marks every unread room to its newest message and skips read and archived rooms', async () => {
+  await loaded([
+    room({ id: '01A', last_message_id: '01M2', last_read_message_id: '01M1' }),
+    room({ id: '01B', last_message_id: '01M5' }),
+    room({ id: '01C', last_message_id: '01M3', last_read_message_id: '01M3' }),
+    room({ id: '01D', last_message_id: '01M4', archived: true }),
+    room({ id: '01E' }), // nothing was ever posted in it
+  ]);
+  const first = deferred<void>();
+  vi.mocked(api.markRoomRead).mockReturnValueOnce(first.promise).mockResolvedValueOnce();
+
+  const marking = markAllRead();
+  // Together: the second is asked for while the first is still in flight.
+  expect(vi.mocked(api.markRoomRead).mock.calls).toEqual([
+    ['01A', '01M2'],
+    ['01B', '01M5'],
+  ]);
+  first.resolve();
+  await marking;
+
+  expect(Object.values(store.rooms).map((r) => r.last_read_message_id)).toEqual(['01M2', '01M5', '01M3', null, null]);
+  expect(store.error).toBe('');
+});
+
+test('markAllRead records a failure', async () => {
+  await loaded([
+    room({ id: '01A', last_message_id: '01M2' }),
+    room({ id: '01B', last_message_id: '01M5' }),
+    room({ id: '01C', last_message_id: '01M7' }),
+  ]);
+  vi.mocked(api.markRoomRead)
+    .mockResolvedValueOnce()
+    .mockRejectedValueOnce(unreachable())
+    .mockRejectedValueOnce(new api.ApiError(500, 'internal', 'internal error'));
+
+  await expect(markAllRead()).resolves.toBeUndefined();
+
+  expect(store.error).toBe('cannot reach the server'); // the first of the two
+  expect(Object.values(store.rooms).map((r) => r.last_read_message_id)).toEqual(['01M2', null, null]);
+});
+
+test('a markAllRead that fails with a 401, or after disconnect, records nothing', async () => {
+  await loaded([room({ id: '01A', last_message_id: '01M2' })]);
+  vi.mocked(api.markRoomRead).mockRejectedValueOnce(noSession());
+  await markAllRead();
+  expect(store.error).toBe('');
+
+  let reject!: (err: Error) => void;
+  vi.mocked(api.markRoomRead).mockReturnValueOnce(new Promise((_, r) => (reject = r)));
+  const marking = markAllRead();
+  disconnect();
+  reject(unreachable());
+  await marking;
+  expect(store.error).toBe('');
+});
+
+test('a posted message becomes its room\'s latest, and an older one does not replace it', async () => {
+  await loaded([room({ id: '01R' }), room({ id: '01S' })]);
+  const second = message({ id: '01M2', room_id: '01R', text: 'second' });
+  apply('message.posted', { message: second });
+  expect(store.latest).toEqual({ '01R': second });
+  expect(store.feeds).toEqual({}); // no feed is needed for it
+
+  apply('message.posted', { message: message({ id: '01M1', room_id: '01R', text: 'first' }) });
+  expect(store.latest['01R']).toEqual(second);
+
+  // The same message, as it is now, replaces the one held.
+  const changed = message({ id: '01M2', room_id: '01R', text: 'second, edited' });
+  apply('message.edited', { message: changed });
+  expect(store.latest['01R']).toEqual(changed);
+
+  const other = message({ id: '01M1', room_id: '01S' });
+  apply('delivery.changed', { message: other });
+  expect(store.latest).toEqual({ '01R': changed, '01S': other });
+
+  // One the shape check refuses is not put.
+  const { text: _text, ...noText } = message({ id: '01M9', room_id: '01R' });
+  apply('message.posted', { message: noText });
+  expect(store.latest['01R']).toEqual(changed);
+});
+
+test('a live edit reaches latest', async () => {
+  await opened('01R', run(1, 1), [room({ id: '01R' }), room({ id: '01S' })]);
+  // One in a room whose feed is held, and one in a room whose feed is not.
+  apply('message.posted', { message: message({ id: '01M002', room_id: '01R', text: '' }) });
+  apply('message.posted', { message: message({ id: '01M003', room_id: '01S', text: '' }) });
+
+  apply('message.edited', { message_id: '01M002', text: 'Bottom li', final: false });
+  apply('message.edited', { message_id: '01M003', text: 'Else', final: false });
+  expect(store.feeds['01R'].messages[1]).toMatchObject({ text: 'Bottom li', streaming: true });
+  expect(store.latest['01R'].text).toBe('Bottom li');
+  expect(store.latest['01S'].text).toBe('Else');
+
+  apply('message.edited', { message: message({ id: '01M003', room_id: '01S', text: 'Elsewhere.' }) });
+  apply('message.edited', { message_id: '01M003', text: 'Else', final: false });
+  expect(store.latest['01S'].text).toBe('Elsewhere.');
+
+  // One for a message that is not the latest of any room changes none.
+  apply('message.edited', { message_id: '01M001', text: 'older', final: false });
+  expect(store.latest['01R'].text).toBe('Bottom li');
+});
+
+test('loadLatest fetches last_message_id once, and not at all when latest already has it', async () => {
+  await loaded([room({ id: '01R', last_message_id: '01M2' }), room({ id: '01S' })]);
+  const newest = message({ id: '01M2', room_id: '01R', text: 'newest' });
+  const answer = deferred<Message>();
+  vi.mocked(api.getMessage).mockReturnValueOnce(answer.promise);
+
+  const loading = loadLatest('01R');
+  await loadLatest('01R'); // in flight
+  expect(api.getMessage).toHaveBeenCalledTimes(1);
+  expect(api.getMessage).toHaveBeenCalledWith('01R', '01M2');
+  answer.resolve(newest);
+  await loading;
+  expect(store.latest).toEqual({ '01R': newest });
+
+  await loadLatest('01R'); // latest has it
+  await loadLatest('01S'); // nothing was posted in it
+  await loadLatest('01X'); // not held
+  expect(api.getMessage).toHaveBeenCalledTimes(1);
+
+  // The room has a newer one now, which latest does not hold.
+  store.rooms['01R'].last_message_id = '01M3';
+  vi.mocked(api.getMessage).mockResolvedValueOnce(message({ id: '01M3', room_id: '01R' }));
+  await loadLatest('01R');
+  expect(api.getMessage).toHaveBeenLastCalledWith('01R', '01M3');
+  expect(store.latest['01R'].id).toBe('01M3');
+});
+
+test('a loadLatest answer does not replace a newer message, and a failure is ignored', async () => {
+  await loaded([room({ id: '01R', last_message_id: '01M2' })]);
+  const answer = deferred<Message>();
+  vi.mocked(api.getMessage).mockReturnValueOnce(answer.promise);
+  const loading = loadLatest('01R');
+  const posted = message({ id: '01M3', room_id: '01R' });
+  handlers.event('message.posted', { message: posted }); // not held: this is no snapshot fetch
+  expect(store.latest['01R']).toEqual(posted);
+  answer.resolve(message({ id: '01M2', room_id: '01R' }));
+  await loading;
+  expect(store.latest['01R']).toEqual(posted);
+
+  store.rooms['01R'].last_message_id = '01M4';
+  vi.mocked(api.getMessage).mockRejectedValueOnce(unreachable());
+  await expect(loadLatest('01R')).resolves.toBeUndefined();
+  expect(store.latest['01R']).toEqual(posted);
+  expect(store.error).toBe('');
+
+  // It is no longer in flight, so it can be asked for again.
+  vi.mocked(api.getMessage).mockResolvedValueOnce(message({ id: '01M4', room_id: '01R' }));
+  await loadLatest('01R');
+  expect(api.getMessage).toHaveBeenCalledTimes(3);
+  expect(store.latest['01R'].id).toBe('01M4');
+});
+
+test('loadQuoted fetches once, and a 404 is not asked again', async () => {
+  await loaded([room({ id: '01R' })]);
+  const original = message({ id: '01M1', room_id: '01R', text: 'original' });
+  const answer = deferred<Message>();
+  vi.mocked(api.getMessage).mockReturnValueOnce(answer.promise);
+
+  const loading = loadQuoted('01R', '01M1');
+  await loadQuoted('01R', '01M1'); // in flight
+  expect(api.getMessage).toHaveBeenCalledTimes(1);
+  expect(api.getMessage).toHaveBeenCalledWith('01R', '01M1');
+  answer.resolve(original);
+  await loading;
+  expect(store.quoted).toEqual({ '01M1': original });
+  await loadQuoted('01R', '01M1');
+  expect(api.getMessage).toHaveBeenCalledTimes(1);
+
+  vi.mocked(api.getMessage).mockRejectedValueOnce(new api.ApiError(404, 'not_found', 'not found'));
+  await expect(loadQuoted('01R', '01M9')).resolves.toBeUndefined();
+  await loadQuoted('01R', '01M9');
+  expect(api.getMessage).toHaveBeenCalledTimes(2);
+  expect(store.quoted).toEqual({ '01M1': original });
+  expect(store.error).toBe('');
+});
+
+test('a load leaves latest and quoted alone', async () => {
+  await loaded([room({ id: '01R', last_message_id: '01M2' })]);
+  const posted = message({ id: '01M2', room_id: '01R' });
+  const original = message({ id: '01M1', room_id: '01R' });
+  apply('message.posted', { message: posted });
+  vi.mocked(api.getMessage).mockResolvedValueOnce(original);
+  await loadQuoted('01R', '01M1');
+
+  await load();
+
+  expect(store.latest).toEqual({ '01R': posted });
+  expect(store.quoted).toEqual({ '01M1': original });
+  await loadQuoted('01R', '01M1');
+  expect(api.getMessage).toHaveBeenCalledTimes(1);
+});
+
+test('disconnect empties latest and quoted', async () => {
+  await loaded([room({ id: '01R', last_message_id: '01M3' }), room({ id: '01S', last_message_id: '01M5' })]);
+  apply('message.posted', { message: message({ id: '01M3', room_id: '01R' }) });
+  vi.mocked(api.getMessage).mockResolvedValueOnce(message({ id: '01M1', room_id: '01R' }));
+  await loadQuoted('01R', '01M1');
+  expect(Object.keys(store.latest)).toEqual(['01R']);
+  expect(Object.keys(store.quoted)).toEqual(['01M1']);
+  const newest = deferred<Message>();
+  const original = deferred<Message>();
+  vi.mocked(api.getMessage).mockReturnValueOnce(newest.promise).mockReturnValueOnce(original.promise);
+  const latest = loadLatest('01S');
+  const quoting = loadQuoted('01R', '01M2');
+
+  disconnect();
+  expect(store.latest).toEqual({});
+  expect(store.quoted).toEqual({});
+
+  // Answers that arrive afterwards write nothing.
+  newest.resolve(message({ id: '01M5', room_id: '01S' }));
+  original.resolve(message({ id: '01M2', room_id: '01R' }));
+  await latest;
+  await quoting;
+  expect(store.latest).toEqual({});
+  expect(store.quoted).toEqual({});
+
+  // The next connection asks again for what the last one had, or was fetching.
+  await loaded([room({ id: '01S', last_message_id: '01M5' })]);
+  vi.mocked(api.getMessage).mockResolvedValue(message({ id: '01M5', room_id: '01S' }));
+  await loadLatest('01S');
+  await loadQuoted('01R', '01M1');
+  await loadQuoted('01R', '01M2');
+  expect(api.getMessage).toHaveBeenCalledTimes(6);
 });
