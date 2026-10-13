@@ -165,6 +165,9 @@ def test_register_passes_the_spec_values():
         def register_platform(self, **kwargs):
             recorded.update(kwargs)
 
+        def register_hook(self, hook_name, callback):
+            recorded.setdefault("hooks", []).append(hook_name)
+
     register(Ctx())
     assert recorded["name"] == "hermes_chat"
     assert recorded["label"] == "Hermes Chat"

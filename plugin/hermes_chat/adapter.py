@@ -378,6 +378,9 @@ def _env_enablement() -> dict | None:
 
 
 def register(ctx) -> None:
+    from hermes_chat.probe import register_probe
+
+    register_probe(ctx)
     ctx.register_platform(
         name="hermes_chat",
         label="Hermes Chat",
