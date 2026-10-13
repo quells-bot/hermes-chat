@@ -77,16 +77,18 @@
     }
   }
 
-  // placed: the feed has been put where it opens. drawnFirst: the first
-  // message as last drawn. before: the feed as it was before the change now
-  // being drawn.
-  let placed = false;
+  // placed: the feed has been put where it opens. It is state because the end
+  // sentinel is drawn only once it is true; the two effects below read it
+  // untracked, so that setting it does not run them again. drawnFirst: the
+  // first message as last drawn. before: the feed as it was before the change
+  // now being drawn.
+  let placed = $state(false);
   let drawnFirst = '';
   let before: { height: number; atEnd: boolean } | null = null;
 
   $effect.pre(() => {
     watchMessages();
-    if (!placed || feedEl === undefined) {
+    if (!untrack(() => placed) || feedEl === undefined) {
       return;
     }
     const height = feedEl.scrollHeight;
@@ -99,7 +101,7 @@
       return;
     }
     const first = messages[0].id;
-    if (!placed) {
+    if (!untrack(() => placed)) {
       if (!arrived) {
         return;
       }
@@ -130,6 +132,10 @@
 
   // The marker moves when the end of the feed has been seen on a page that
   // is itself seen, and again for each message that arrives while both hold.
+  // The end is watched only once the feed has been placed: the end of an
+  // empty feed, or of one not yet put where it opens, is in view without
+  // anything having been read. Its sentinel's first report then says whether
+  // the end really is in view.
   let endSeen = $state(false);
   let visible = $state(document.visibilityState === 'visible');
 
@@ -168,7 +174,9 @@
       {/if}
       <Message {message} />
     {/each}
-    <div class="edge" data-edge="end" use:whenSeen={(seen) => (endSeen = seen)}></div>
+    {#if placed}
+      <div class="edge" data-edge="end" use:whenSeen={(seen) => (endSeen = seen)}></div>
+    {/if}
     {#if standing}
       <div class="state">{standing}</div>
     {/if}

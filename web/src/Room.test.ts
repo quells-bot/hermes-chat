@@ -90,7 +90,7 @@ function post(id: string, text = id): void {
 }
 
 function feedOf(container: HTMLElement): HTMLElement {
-  const feed = container.querySelector<HTMLElement>('[data-edge="end"]')?.parentElement;
+  const feed = container.querySelector<HTMLElement>('.feed');
   expect(feed).toBeTruthy();
   return feed as HTMLElement;
 }
@@ -225,6 +225,108 @@ test('the divider stays where it was after the marker moves', async () => {
   expect(drawn(container)).toEqual(['01M1', 'NEW', '01M2', '01M3', '01M4']);
   // Placed once: the feed does not jump back to the divider.
   expect(scrollIntoView).toHaveBeenCalledTimes(1);
+});
+
+// deferred is a promise the test settles when it chooses.
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+function numbered(prefix: string, count: number): string[] {
+  return Array.from({ length: count }, (_, i) => `${prefix}${String(i).padStart(2, '0')}`);
+}
+
+test('the end is not watched until the feed has been placed', async () => {
+  const page = deferred<ReturnType<typeof messages>>();
+  vi.mocked(api.listMessages).mockReturnValueOnce(page.promise);
+  putRoom(room({ last_read_message_id: '01M1', last_message_id: '01M2' }));
+  const { container } = render(Room, { id: 'room-1' });
+  await tick();
+  expect(api.listMessages).toHaveBeenCalledTimes(1);
+  // An empty feed's end would be in view, and say nothing about reading.
+  expect(container.querySelector('[data-edge="end"]')).toBeNull();
+  expect(edges.has('end')).toBe(false);
+
+  page.resolve(messages(['01M1', '01M2']));
+
+  await waitFor(() => expect(edges.has('end')).toBe(true));
+  expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  expect(drawn(container)).toEqual(['01M1', 'NEW', '01M2']);
+});
+
+test('a page that lands does not mark the room read until the end is seen', async () => {
+  const page = deferred<ReturnType<typeof messages>>();
+  vi.mocked(api.listMessages).mockReturnValueOnce(page.promise);
+  putRoom(room({ last_read_message_id: '01M10', last_message_id: '01M49' }));
+  render(Room, { id: 'room-1' });
+  await tick();
+  // Were the end of the empty feed watched, this is what it would report.
+  edges.get('end')?.(true);
+  await tick();
+
+  page.resolve(messages(numbered('01M', 50)));
+
+  await waitFor(() => expect(edges.has('end')).toBe(true));
+  await tick();
+  expect(screen.getByRole('separator').nextElementSibling).toHaveTextContent('01M11');
+  expect(api.markRoomRead).not.toHaveBeenCalled();
+  expect(store.rooms['room-1'].last_read_message_id).toBe('01M10');
+
+  edges.get('end')!(true);
+
+  await waitFor(() => expect(api.markRoomRead).toHaveBeenCalledWith('room-1', '01M49'));
+  expect(api.markRoomRead).toHaveBeenCalledTimes(1);
+});
+
+test('a page and its backlog do not mark the room read until the end is seen', async () => {
+  const backlog = deferred<ReturnType<typeof messages>>();
+  vi.mocked(api.listMessages)
+    .mockResolvedValueOnce(messages(numbered('01M', 50)))
+    .mockReturnValueOnce(backlog.promise);
+  putRoom(room({ last_read_message_id: '01K10', last_message_id: '01M49' }));
+  const { container } = render(Room, { id: 'room-1' });
+  edges.get('end')?.(true); // as above: the empty feed's end, if it were watched
+
+  // The newest page is drawn while the messages before it are fetched.
+  await waitFor(() => expect(screen.getByText('01M49')).toBeInTheDocument());
+  expect(api.listMessages).toHaveBeenCalledTimes(2);
+  expect(store.feeds['room-1'].loading).toBe(true);
+  await tick();
+  expect(edges.has('end')).toBe(false);
+  expect(screen.queryByRole('separator')).toBeNull();
+  expect(scrollIntoView).not.toHaveBeenCalled();
+  expect(api.markRoomRead).not.toHaveBeenCalled();
+
+  backlog.resolve(messages(numbered('01K', 21)));
+
+  await waitFor(() => expect(edges.has('end')).toBe(true));
+  const divider = screen.getByRole('separator');
+  expect(divider.previousElementSibling).toHaveTextContent('01K10');
+  expect(divider.nextElementSibling).toHaveTextContent('01K11');
+  expect(scrollIntoView.mock.contexts).toEqual([divider]);
+  expect(drawn(container)).toHaveLength(72);
+  await tick();
+  expect(api.markRoomRead).not.toHaveBeenCalled();
+  expect(store.rooms['room-1'].last_read_message_id).toBe('01K10');
+
+  edges.get('end')!(true);
+
+  await waitFor(() => expect(api.markRoomRead).toHaveBeenCalledWith('room-1', '01M49'));
+  expect(api.markRoomRead).toHaveBeenCalledTimes(1);
+});
+
+test('a short feed whose end is in view is marked once the sentinel reports', async () => {
+  await showRoom({ last_read_message_id: '01M1' }, ['01M1', '01M2']);
+  await tick();
+  expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  expect(api.markRoomRead).not.toHaveBeenCalled();
+
+  edges.get('end')!(true);
+
+  await waitFor(() => expect(api.markRoomRead).toHaveBeenCalledWith('room-1', '01M2'));
+  await waitFor(() => expect(store.rooms['room-1'].last_read_message_id).toBe('01M2'));
 });
 
 test('the marker does not move until the end has been seen', async () => {
