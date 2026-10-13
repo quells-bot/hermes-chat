@@ -60,3 +60,10 @@ test('a 200-character topic renders in one element with the badges after it', ()
   const paused = screen.getByText('paused');
   expect(badge.compareDocumentPosition(paused) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
+
+test('the row links to its room', () => {
+  render(RoomRow, { room: room({ id: '01R', topic: 'Trip' }) });
+  const link = within(screen.getByRole('listitem')).getByRole('link');
+  expect(link).toHaveAttribute('href', '#/rooms/01R');
+  expect(within(link).getByText('Trip')).toBeInTheDocument();
+});

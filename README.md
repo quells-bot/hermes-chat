@@ -119,24 +119,105 @@ connected. The header has **Stop all**, which stops everything in one tap and
 shows `Stopped` and **Resume all** while stopped, and a **+** that opens
 `#/new`: a button per agent that opens its direct message, and a form with a
 topic, a checkbox per agent and **Create**. Either way the person lands back on
-the list. Rooms do not open yet.
+the list.
 
-One store holds what the screens show. The page reads `GET /api/events` with
+While any room that is not archived is unread, an **Unread** row stands above
+the groups. It names the unread rooms, counts them, says how many questions
+are open in them, and leads to `#/unread`. That page lists the unread rooms,
+those with an open question first and then the one with the newest message
+first, each with its name, the age of its newest message, and that message's
+author and the start of its text (the names of its attachments when it has no
+text). **Mark all read** moves every one of those rooms' read markers to its
+newest message and returns to the list. A room opened from the page leads back
+to the page.
+
+A row opens its room at `#/rooms/<id>`. The header names the room, says
+whether each agent is working, idle or offline, and, like the list's, says
+`reconnecting` while the store is loaded and the stream is not live. The feed
+starts with the room's newest 50 messages; when the read marker is older than
+all of them and older messages exist, the 150 before them are fetched too, and
+the feed is not placed until that fetch has settled. A room with no read
+marker gets the same 150 fetched before its newest page, so only a room with
+more than 200 unread messages loses the `New` line. The feed is then placed on
+a `New` divider above the first unread message it holds; when the oldest held
+message is itself unread and older ones remain, there is no `New` and the feed
+opens at its oldest held message; and it opens at its end when nothing is
+unread. The divider stays where it was drawn while the room stays open; it
+moves only when new unread messages arrive that the view cannot hold, and the
+feed then stands on it above the first of them. Scrolling to the top loads the
+50 messages before the oldest one held and keeps what was being read in
+place. A message that fits arrives while the end is in view keeps the end in
+view; new unread messages that do not all fit in the view are never followed
+past the first of them, so the person is not carried past the unread. A hidden
+page does not follow the feed at all, and coming back to the room leaves the
+unread unread and the feed standing on `New` until it is scrolled to. The read
+marker moves to the newest message when the end of the feed is in view on a
+visible page, and again for each message that arrives while both hold; it is
+not moved on a report taken before new messages were drawn. The end is watched
+only once the feed has been placed, so a room that opens on its divider is not
+read until the person scrolls to its end.
+
+A message shows its author, its time, a line of the message it replies to, its
+text, its attachments (an image inline, any other file as a download link with
+its size), and each agent's copy: `waiting`, `delivered` or `cancelled` as a
+line, and a copy that is `working`, `done` or `failed` as an activity block. A
+prompt is a card with the question and its choices, or its answer, or
+`Expired`. An activity block says the agent, the state and, once its list is
+held, the number of steps; a working one also says what the agent is doing now
+when its newest step is an unfinished tool or a remark, and an open one lists
+the steps with the remarks too, each tool with its result, its duration and,
+on a tap, its arguments when it has any. The list is fetched without being
+asked for a turn that is working in a room whose messages are held, and for a
+finished turn when its block is opened; `activity.posted` keeps a held list
+current, and a reload does not empty the lists — a block that is open keeps
+its list on screen, and a turn still working is asked for again. Under the
+feed a line says when the room is paused, archived, or stopped with everything
+else, and the Unread page states `Everything is stopped` under its header when
+the store is halted. Posting, answering a prompt and the room's controls are
+not there yet.
+
+Message text is markdown and is untrusted. `marked` lexes it, and the page
+copies the tokens it knows into a tree of its own and draws that tree as
+elements; it never builds an HTML string. Raw HTML and any token the tree does
+not name are shown as text. A link is kept only when its address is `http`,
+`https` or `mailto` (otherwise its text stands alone) and opens in a new tab; a
+markdown image is shown as a link under the same rule, never loaded. Inline
+lexing is bounded, because `marked` is slow on some inputs: an inline run
+longer than 4096 characters, and every run after one message has spent 150 ms
+on them, is shown as plain text.
+
+One store holds what the screens show: the rooms, the agents, the halt, the
+messages of the rooms that have been opened, the newest message known of a room
+(fetched for the Unread page when no event brought it), the messages that
+replies name, and the lists of activity. The page reads `GET /api/events` with
 `fetch` (not `EventSource`, which hides the status code and the heartbeat),
-loads the rooms, the agents and the halt on every `ready` and when the page
-becomes visible again, and applies each later event to the store; events that
-arrive during a load are held and applied after it. It resumes a dropped
-connection with `?cursor=` set to the last id it received, reconnecting after
-1, 2, 4, 8, 16, then 30 seconds. It drops a connection that has been silent
-for 60 seconds and then reconnects. Once the list has loaded, the list's
-header says `reconnecting` while the stream is not live. Routes are
-hash-based: `#/` is the list, `#/new` the form.
+loads on every `ready` and when the page becomes visible again, and applies
+each later event to the store. A fetch whose answer is a snapshot (a load, a
+page of messages, a list of activity) replaces what it covers, so events that
+arrive while any of them is in flight are held, in order, and applied when none
+is. A load replaces the rooms, the agents and the halt, keeping a read marker
+the page holds when it is newer than the one that arrives. It drops the
+messages of every room but the open one, and fetches that room's newest page:
+the page is merged into the messages held, or replaces them when it is full and
+wholly newer, since messages may be missing between the two. It empties the
+lists of activity and fetches again those of the turns still working in the
+open room. A room keeps its messages after it is left, until the next load, so
+going straight back fetches nothing. A room whose first page failed holds no
+messages, only the reason and a **Retry**; events are not put into it. The page
+resumes a dropped connection with `?cursor=` set to the last id it received,
+reconnecting after 1, 2, 4, 8, 16, then 30 seconds. It drops a connection that
+has been silent for 60 seconds and then reconnects. Once the list has loaded,
+the list's header says `reconnecting` while the stream is not live. Routes are
+hash-based: `#/` is the list, `#/new` the form, `#/unread` the Unread page, and
+`#/rooms/<id>` a room; an id that names no room the person is in leads back to
+the list.
 
 The source is a Svelte 5 and TypeScript project in `web/src`, built by Vite
 into `web/dist`, which `web/embed.go` embeds. `web/dist` is never committed
 apart from a `.gitkeep` that lets `go build` and `go test ./...` work on a
 clone that has no Node and has never built the UI. Dependencies are pinned to
-exact versions and installed from `web/package-lock.json`. TypeScript stays on
+exact versions and installed from `web/package-lock.json`; `marked` is the
+only one that runs in the browser. TypeScript stays on
 6.x: `svelte-check` does not start under TypeScript 7.
 
 To work on the UI, run the server without TLS and the dev server beside it:

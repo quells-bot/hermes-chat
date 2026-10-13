@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 import { agent, room } from './fixtures';
-import { groupRooms, isUnread, isWorking, roomName } from './rooms';
+import { groupRooms, isUnread, isWorking, roomName, unreadRooms } from './rooms';
 
 test('rooms sort by topic ignoring case, conversations and channels together', () => {
   const g = groupRooms([
@@ -64,4 +64,16 @@ test('isWorking is true when any agent is working', () => {
   expect(isWorking(room())).toBe(false);
   expect(isWorking(room({ agents: [agent({ id: '1' }), agent({ id: '2' })] }))).toBe(false);
   expect(isWorking(room({ agents: [agent({ id: '1' }), agent({ id: '2', working: true })] }))).toBe(true);
+});
+
+test('unreadRooms puts open prompts first, then newest first, and leaves out read and archived rooms', () => {
+  const rs = [
+    room({ id: 'old', last_message_id: '01A' }),
+    room({ id: 'read', last_message_id: '01Z', last_read_message_id: '01Z' }),
+    room({ id: 'arch', last_message_id: '01Y', archived: true }),
+    room({ id: 'new', last_message_id: '01C' }),
+    room({ id: 'prompt', last_message_id: '01B', open_prompts: 1 }),
+    room({ id: 'nullid', last_message_id: null, last_read_message_id: '01A' }),
+  ];
+  expect(unreadRooms(rs).map((r) => r.id)).toEqual(['prompt', 'new', 'old', 'nullid']);
 });

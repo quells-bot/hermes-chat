@@ -30,5 +30,43 @@ export type DeliveryState = 'waiting' | 'delivered' | 'working' | 'done' | 'fail
 
 export type Delivery = { agent: Agent; state: DeliveryState };
 
-// Only what slice 2 reads; slice 3 completes it.
-export type Message = { id: string; room_id: string; deliveries: Delivery[] };
+export type Author = { kind: 'human' | 'agent'; id: string; name: string };
+
+export type Prompt = {
+  kind: 'approval' | 'clarify';
+  choices: string[];
+  state: 'open' | 'answered' | 'expired';
+  answer: string | null;
+  answered_by: Human | null;
+  closed_at: string | null;
+};
+
+export type Attachment = { id: string; name: string; content_type: string; size: number; image: boolean };
+
+export type Message = {
+  id: string;
+  room_id: string;
+  author: Author | null;
+  text: string;
+  reply_to_id: string | null;
+  deliveries: Delivery[];
+  created_at: string;
+  prompt: Prompt | null;
+  attachments: Attachment[];
+  client_id: string | null;
+  streaming: boolean;
+};
+
+export type Activity = {
+  id: string;
+  message_id: string;
+  agent: Agent;
+  kind: 'remark' | 'tool';
+  text: string;
+  tool: string;
+  preview: string;
+  arguments: string;
+  duration_ms: number | null;
+  succeeded: boolean | null;
+  created_at: string;
+};

@@ -36,3 +36,14 @@ export function groupRooms(rooms: Room[]): Groups {
     rooms: live.filter((r) => r.flavor !== 'dm').sort(byRoomName),
   };
 }
+
+// The Unread page's order: rooms waiting on a human first, then the newest
+// activity first. It is separate from groupRooms, which never follows traffic.
+export function unreadRooms(rooms: Room[]): Room[] {
+  const newest = (r: Room) => r.last_message_id ?? '';
+  return rooms.filter(isUnread).sort((a, b) => {
+    const prompts = Number(b.open_prompts > 0) - Number(a.open_prompts > 0);
+    if (prompts) return prompts;
+    return newest(a) < newest(b) ? 1 : newest(a) > newest(b) ? -1 : 0;
+  });
+}

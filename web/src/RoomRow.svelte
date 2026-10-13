@@ -10,41 +10,48 @@
 </script>
 
 <li class:unread>
-  {#if room.flavor === 'dm'}
-    <span class="avatar">
-      <span class="icon"><Icon name={agent?.handle ?? ''} /></span>
-      <i
-        class="presence"
-        class:on={agent?.connected}
-        role="img"
-        aria-label={agent?.connected ? 'connected' : 'offline'}
-      ></i>
-    </span>
-  {:else}
-    <span class="hash">#</span>
-  {/if}
-  <span class="name">{roomName(room)}</span>
-  {#if room.open_prompts > 0}
-    <span class="tag ask" aria-label="{room.open_prompts} open prompts">{room.open_prompts}</span>
-  {/if}
-  {#if isWorking(room)}
-    <span class="tag work">working</span>
-  {/if}
-  {#if room.paused}
-    <span class="tag pause">paused</span>
-  {/if}
-  {#if unread}
-    <i class="dot" role="img" aria-label="unread"></i>
-  {/if}
+  <a href="#/rooms/{room.id}">
+    {#if room.flavor === 'dm'}
+      <span class="avatar">
+        <span class="icon"><Icon name={agent?.handle ?? ''} /></span>
+        <i
+          class="presence"
+          class:on={agent?.connected}
+          role="img"
+          aria-label={agent?.connected ? 'connected' : 'offline'}
+        ></i>
+      </span>
+    {:else}
+      <span class="hash">#</span>
+    {/if}
+    <span class="name">{roomName(room)}</span>
+    {#if room.open_prompts > 0}
+      <span class="tag ask" aria-label="{room.open_prompts} open prompts">{room.open_prompts}</span>
+    {/if}
+    {#if isWorking(room)}
+      <span class="tag work">working</span>
+    {/if}
+    {#if room.paused}
+      <span class="tag pause">paused</span>
+    {/if}
+    {#if unread}
+      <i class="dot" role="img" aria-label="unread"></i>
+    {/if}
+  </a>
 </li>
 
 <style>
   li {
+    list-style: none;
+  }
+
+  a {
     display: flex;
     align-items: center;
     gap: 9px;
     padding: 7px 14px;
-    list-style: none;
+    color: inherit;
+    text-decoration: none;
   }
 
   .name {

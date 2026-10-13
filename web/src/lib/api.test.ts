@@ -1,13 +1,18 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import {
   ApiError,
+  attachmentUrl,
   createRoom,
   getHalt,
+  getMessage,
   getRoom,
+  listActivity,
   listAgents,
+  listMessages,
   listRooms,
   login,
   logout,
+  markRoomRead,
   me,
   onUnauthenticated,
   openDM,
@@ -259,6 +264,61 @@ test.each([200, 201])('openDM posts the agent id and accepts %i', async (status)
   expect(path).toBe('/api/dms');
   expect(init.method).toBe('POST');
   expect(init.body).toBe('{"agent_id":"01A"}');
+});
+
+test('listMessages with no arguments asks for limit=50 and no before', async () => {
+  fetchMock.mockResolvedValue(json(200, { messages: [] }));
+
+  await expect(listMessages('01R')).resolves.toEqual([]);
+
+  const [path, init] = fetchMock.mock.calls[0];
+  expect(path).toBe('/api/rooms/01R/messages?limit=50');
+  expect(init.method).toBe('GET');
+});
+
+test('listMessages asks for a page before a message', async () => {
+  fetchMock.mockResolvedValue(json(200, { messages: [{ id: '01M' }] }));
+
+  await expect(listMessages('01R', '01N', 150)).resolves.toEqual([{ id: '01M' }]);
+
+  const [path, init] = fetchMock.mock.calls[0];
+  expect(path).toBe('/api/rooms/01R/messages?limit=150&before=01N');
+  expect(init.method).toBe('GET');
+});
+
+test('getMessage gets one message, which is the body itself', async () => {
+  fetchMock.mockResolvedValue(json(200, { id: '01M', text: 'hi' }));
+
+  await expect(getMessage('01R', '01M')).resolves.toEqual({ id: '01M', text: 'hi' });
+
+  const [path, init] = fetchMock.mock.calls[0];
+  expect(path).toBe('/api/rooms/01R/messages/01M');
+  expect(init.method).toBe('GET');
+});
+
+test('listActivity unwraps the activities', async () => {
+  fetchMock.mockResolvedValue(json(200, { activities: [{ id: '01X' }] }));
+
+  await expect(listActivity('01R', '01M')).resolves.toEqual([{ id: '01X' }]);
+
+  const [path, init] = fetchMock.mock.calls[0];
+  expect(path).toBe('/api/rooms/01R/messages/01M/activity');
+  expect(init.method).toBe('GET');
+});
+
+test('markRoomRead puts the marker', async () => {
+  fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+  await expect(markRoomRead('01R', '01M')).resolves.toBeUndefined();
+
+  const [path, init] = fetchMock.mock.calls[0];
+  expect(path).toBe('/api/rooms/01R/read');
+  expect(init.method).toBe('PUT');
+  expect(init.body).toBe('{"message_id":"01M"}');
+});
+
+test('attachmentUrl encodes both ids', () => {
+  expect(attachmentUrl('a/b', 'c d')).toBe('/api/rooms/a%2Fb/attachments/c%20d');
 });
 
 test('sessionLost runs the unauthenticated handler', () => {

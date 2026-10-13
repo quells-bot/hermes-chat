@@ -1,4 +1,5 @@
 <script lang="ts">
+  import UnreadRow from './UnreadRow.svelte';
   import RoomRow from './RoomRow.svelte';
   import { loadCollapsed, saveCollapsed, type Collapsed } from './lib/collapsed';
   import { groupRooms, isUnread } from './lib/rooms';
@@ -34,6 +35,7 @@
 {/snippet}
 
 <nav>
+  <UnreadRow />
   {@render section('dms', 'Direct messages', groups.dms)}
   {@render section('rooms', 'Rooms', groups.rooms)}
 </nav>

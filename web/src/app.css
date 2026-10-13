@@ -21,6 +21,8 @@
   --unread: #ff8fb8;
   --ask: #f0b34a;
   --on-ask: #3b2600;
+  --ask-bg: #fdf1d8;
+  --ask-ink: #6b4400;
   --ok: #3fbf85;
 }
 
@@ -40,6 +42,8 @@
     --btn: #c98ad6;
     --on-btn: #1b131e;
     --accent: #c98ad6;
+    --ask-bg: #3a2b12;
+    --ask-ink: #f6cf86;
   }
 }
 

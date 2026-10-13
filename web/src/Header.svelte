@@ -1,19 +1,26 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
 
-  // The one fixed strip on a screen. Children sit at its right edge.
+  // The one fixed strip on a screen. Children sit at its right edge; sub is a
+  // second, smaller line under the title.
   let {
     title = 'Hermes Chat',
     back,
+    sub = '',
     children,
-  }: { title?: string; back?: string; children?: Snippet } = $props();
+  }: { title?: string; back?: string; sub?: string; children?: Snippet } = $props();
 </script>
 
 <header>
   {#if back}
     <a class="back" href={back} aria-label="Back">‹</a>
   {/if}
-  <h1>{title}</h1>
+  <div class="titles">
+    <h1>{title}</h1>
+    {#if sub}
+      <div class="sub">{sub}</div>
+    {/if}
+  </div>
   <div class="end">{@render children?.()}</div>
 </header>
 
@@ -28,15 +35,27 @@
     color: var(--on-aub);
   }
 
-  h1 {
+  .titles {
     flex: 1;
     min-width: 0;
-    margin: 0;
+  }
+
+  h1,
+  .sub {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  h1 {
+    margin: 0;
     font-size: 1rem;
     font-weight: 600;
+  }
+
+  .sub {
+    color: var(--on-aub2);
+    font-size: 0.75rem;
   }
 
   .back {
