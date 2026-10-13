@@ -90,11 +90,13 @@ test('waiting, delivered and cancelled copies are stated; working, done and fail
     agent: { id: `a${i}`, handle: `h${i}`, display_name: `Agent${i}`, revoked: false },
     state,
   }));
-  render(Message, { message: message({ deliveries }) });
+  const { container } = render(Message, { message: message({ deliveries }) });
   expect(screen.getByText('Agent0 · waiting')).toBeInTheDocument();
   expect(screen.getByText('Agent1 · delivered')).toBeInTheDocument();
   expect(screen.getByText('Agent2 · cancelled')).toBeInTheDocument();
-  for (const n of [3, 4, 5]) expect(screen.queryByText(new RegExp(`Agent${n}`))).toBeNull();
+  const lines = [...container.querySelectorAll('.state')].map((el) => el.textContent ?? '');
+  expect(lines).toHaveLength(3);
+  for (const line of lines) expect(line).not.toMatch(/Agent[345]/);
 });
 
 test('a prompt renders as a card, not as a plain message', () => {
@@ -131,4 +133,17 @@ test('an image attachment shows inline from the server, and anything else is a d
   expect(file).toHaveAttribute('href', '/api/rooms/01R/attachments/01B');
   expect(screen.getByText('1.4 MB')).toBeInTheDocument();
   expect(screen.getAllByRole('img')).toHaveLength(1);
+});
+
+test('working, done and failed copies are activity blocks', () => {
+  const states = ['waiting', 'working', 'done', 'failed'] as const;
+  const deliveries: Delivery[] = states.map((state, i) => ({
+    agent: { id: `a${i}`, handle: `h${i}`, display_name: `Agent${i}`, revoked: false },
+    state,
+  }));
+  render(Message, { message: message({ deliveries }) });
+  for (const name of ['Agent1 · working', 'Agent2 · done', 'Agent3 · failed']) {
+    expect(screen.getByRole('button', { name })).toHaveAttribute('aria-expanded', 'false');
+  }
+  expect(screen.getAllByRole('button')).toHaveLength(3);
 });

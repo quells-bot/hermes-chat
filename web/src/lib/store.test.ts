@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import * as api from './api';
-import { agent, message, room } from './fixtures';
+import { activity, agent, message, room } from './fixtures';
 import {
   apply,
   closeRoom,
   connect,
   disconnect,
   load,
+  loadActivity,
   loadLatest,
   loadOlder,
   loadQuoted,
@@ -19,7 +20,7 @@ import {
   store,
 } from './store.svelte';
 import { openStream, type StreamHandlers } from './stream';
-import type { Agent, Message, Room } from './types';
+import type { Activity, Agent, Message, Room } from './types';
 
 vi.mock('./api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./api')>()),
@@ -28,6 +29,7 @@ vi.mock('./api', async (importOriginal) => ({
   listAgents: vi.fn(),
   getHalt: vi.fn(),
   listMessages: vi.fn(),
+  listActivity: vi.fn(),
   getMessage: vi.fn(),
   markRoomRead: vi.fn(),
   stopEverything: vi.fn(),
@@ -115,6 +117,7 @@ beforeEach(() => {
   vi.mocked(api.getRoom).mockReset();
   vi.mocked(api.getHalt).mockReset().mockResolvedValue(false);
   vi.mocked(api.listMessages).mockReset().mockResolvedValue([]);
+  vi.mocked(api.listActivity).mockReset().mockResolvedValue([]);
   vi.mocked(api.getMessage).mockReset();
   vi.mocked(api.markRoomRead).mockReset();
   vi.mocked(api.stopEverything).mockReset();
@@ -554,6 +557,7 @@ test('disconnect closes the stream, resets the store, and stops listening', asyn
     feeds: {},
     latest: {},
     quoted: {},
+    activity: {},
   });
 
   becomeVisible();
@@ -1762,4 +1766,190 @@ test('a loadLatest answer read before an edit to the same message does not put t
   await loading;
 
   expect(store.latest['01R']).toEqual(edited);
+});
+
+// turn makes a message in room 01R with one copy, agent 01A's, in this state.
+function turn(id: string, state: 'working' | 'done'): Message {
+  return message({ id, room_id: '01R', deliveries: [{ agent: agent({ id: '01A' }), state }] });
+}
+
+// running makes a tool step of a message that has not finished.
+function running(id: string, messageId: string): Activity {
+  return activity({ id, message_id: messageId, duration_ms: null, succeeded: null });
+}
+
+test('a tool that finishes replaces its running entry', async () => {
+  vi.mocked(api.listActivity).mockResolvedValue([running('01S1', '01M1')]);
+  await opened('01R', [message({ id: '01M1', room_id: '01R', deliveries: [{ agent: agent({ id: '01A' }), state: 'working' }] })]);
+  // the working copy loaded the list: one running step
+  expect(api.listActivity).toHaveBeenCalledWith('01R', '01M1');
+  apply('activity.posted', { message_id: '01M1', activity: activity({ id: '01S1', message_id: '01M1', duration_ms: 2100, succeeded: true }) });
+  expect(store.activity['01M1']).toHaveLength(1);
+  expect(store.activity['01M1'][0]).toMatchObject({ duration_ms: 2100, succeeded: true });
+});
+
+test('a message that starts working loads its activity', async () => {
+  vi.mocked(api.listActivity).mockResolvedValue([running('01S1', '01M1')]);
+  await opened('01R', [message({ id: '01M1', room_id: '01R' })]);
+  expect(api.listActivity).not.toHaveBeenCalled();
+
+  apply('delivery.changed', { message: turn('01M1', 'working') });
+  expect(api.listActivity).toHaveBeenCalledTimes(1);
+  expect(api.listActivity).toHaveBeenCalledWith('01R', '01M1');
+  await vi.waitFor(() => expect(store.activity['01M1']).toEqual([running('01S1', '01M1')]));
+
+  // The list is held now, and kept current by its own events.
+  apply('message.edited', { message: turn('01M1', 'working') });
+  expect(api.listActivity).toHaveBeenCalledTimes(1);
+});
+
+test('a finished message loads none until asked', async () => {
+  vi.mocked(api.listActivity).mockResolvedValue([activity({ id: '01S1', message_id: '01M1' })]);
+  await opened('01R', [turn('01M1', 'done')]);
+  apply('delivery.changed', { message: turn('01M1', 'done') });
+  expect(api.listActivity).not.toHaveBeenCalled();
+  expect(store.activity).toEqual({});
+
+  await loadActivity('01R', '01M1');
+  expect(store.activity).toEqual({ '01M1': [activity({ id: '01S1', message_id: '01M1' })] });
+});
+
+test('a working turn on an older page loads its activity', async () => {
+  await opened('01R', run(51, 50));
+  vi.mocked(api.listMessages).mockResolvedValueOnce([turn('01M050', 'working')]);
+  await loadOlder('01R');
+  expect(api.listActivity).toHaveBeenCalledTimes(1);
+  expect(api.listActivity).toHaveBeenCalledWith('01R', '01M050');
+});
+
+test('a working turn in a room whose feed is not held loads nothing', async () => {
+  await loaded([room({ id: '01R' })]);
+  apply('delivery.changed', { message: turn('01M1', 'working') });
+  expect(api.listActivity).not.toHaveBeenCalled();
+});
+
+test('activity.posted appends a new step', async () => {
+  vi.mocked(api.listActivity).mockResolvedValue([activity({ id: '01S1', message_id: '01M1' })]);
+  await loaded();
+  await loadActivity('01R', '01M1');
+  const remark = activity({ id: '01S2', message_id: '01M1', kind: 'remark', text: 'two more', tool: '' });
+  apply('activity.posted', { message_id: '01M1', activity: remark });
+  apply('activity.posted', { message_id: '01M1', activity: remark }); // replayed
+  expect(store.activity['01M1']).toEqual([activity({ id: '01S1', message_id: '01M1' }), remark]);
+});
+
+test('activity.posted for a message with no entry changes nothing', async () => {
+  await opened('01R', [turn('01M1', 'done')]);
+  apply('activity.posted', { message_id: '01M1', activity: activity({ id: '01S1', message_id: '01M1' }) });
+  expect(store.activity).toEqual({});
+  expect(api.listActivity).not.toHaveBeenCalled();
+});
+
+test('a malformed activity.posted changes nothing', async () => {
+  await loaded();
+  await loadActivity('01R', '01M1');
+  for (const data of [
+    null,
+    {},
+    { message_id: '01M1' },
+    { message_id: '01M1', activity: 'x' },
+    { message_id: '01M1', activity: {} },
+    { message_id: '01M1', activity: { ...activity(), id: 7 } },
+    { message_id: '01M1', activity: { ...activity(), agent: null } },
+    { message_id: '01M1', activity: { ...activity(), kind: 'other' } },
+    { message_id: '01M1', activity: { ...activity(), preview: null } },
+    { message_id: 7, activity: activity() },
+  ]) {
+    apply('activity.posted', data);
+  }
+  expect(store.activity).toEqual({ '01M1': [] });
+});
+
+test('a step posted while the list is loading is not lost', async () => {
+  await loaded();
+  const list = deferred<Activity[]>();
+  vi.mocked(api.listActivity).mockReturnValueOnce(list.promise);
+  const loading = loadActivity('01R', '01M1');
+
+  // Applied now it would find no entry, and the list was read before it.
+  handlers.event('activity.posted', { message_id: '01M1', activity: running('01S2', '01M1') });
+  expect(store.activity).toEqual({});
+  list.resolve([activity({ id: '01S1', message_id: '01M1' })]);
+  await loading;
+
+  expect(store.activity['01M1'].map((a) => a.id)).toEqual(['01S1', '01S2']);
+});
+
+test('two loadActivity calls for one message are one request', async () => {
+  await loaded();
+  const list = deferred<Activity[]>();
+  vi.mocked(api.listActivity).mockReturnValueOnce(list.promise);
+  const first = loadActivity('01R', '01M1');
+  await loadActivity('01R', '01M1');
+  void loadActivity('01R', '01M2'); // another message is another request
+  expect(api.listActivity).toHaveBeenCalledTimes(2);
+  list.resolve([]);
+  await first;
+
+  // Once it has settled, the list can be asked for again, and is replaced.
+  vi.mocked(api.listActivity).mockResolvedValueOnce([activity({ id: '01S1', message_id: '01M1' })]);
+  await loadActivity('01R', '01M1');
+  expect(api.listActivity).toHaveBeenCalledTimes(3);
+  expect(store.activity['01M1']).toHaveLength(1);
+});
+
+test('a loadActivity that fails leaves the entry absent and records nothing', async () => {
+  await loaded();
+  vi.mocked(api.listActivity).mockRejectedValueOnce(unreachable());
+  await expect(loadActivity('01R', '01M1')).resolves.toBeUndefined();
+  expect(store.activity).toEqual({});
+  expect(store.error).toBe('');
+
+  // Neither the request nor the events held behind it are stuck.
+  handlers.event('room.changed', { room: room({ id: '01NEW' }) });
+  expect(Object.keys(store.rooms)).toEqual(['01NEW']);
+  await loadActivity('01R', '01M1');
+  expect(store.activity).toEqual({ '01M1': [] });
+});
+
+test('load empties activity and reloads it for a turn still working in the open room', async () => {
+  vi.mocked(api.listActivity).mockResolvedValue([running('01S1', '01M001')]);
+  // Older pages remain, and the load's page will not reach back to 01M1.
+  const page = [turn('01M001', 'working'), turn('01M002', 'done'), ...run(3, 48)];
+  await opened('01R', page);
+  await loadActivity('01R', '01M002');
+  await vi.waitFor(() => expect(Object.keys(store.activity)).toEqual(['01M001', '01M002']));
+
+  const again = deferred<Activity[]>();
+  vi.mocked(api.listActivity).mockReturnValueOnce(again.promise);
+  vi.mocked(api.listMessages).mockResolvedValueOnce(run(3, 50));
+  const loading = load();
+  await vi.waitFor(() => expect(api.listActivity).toHaveBeenCalledTimes(3));
+  expect(api.listActivity).toHaveBeenLastCalledWith('01R', '01M001');
+  expect(store.activity).toEqual({});
+
+  again.resolve([running('01S1', '01M001'), running('01S2', '01M001')]);
+  await loading;
+  await vi.waitFor(() => expect(Object.keys(store.activity)).toEqual(['01M001']));
+  expect(store.activity['01M001']).toHaveLength(2);
+});
+
+test('disconnect empties activity', async () => {
+  await loaded();
+  await loadActivity('01R', '01M1');
+  const list = deferred<Activity[]>();
+  vi.mocked(api.listActivity).mockReturnValueOnce(list.promise);
+  const loading = loadActivity('01R', '01M2');
+
+  disconnect();
+  expect(store.activity).toEqual({});
+  list.resolve([activity({ id: '01S1', message_id: '01M2' })]);
+  await loading;
+  expect(store.activity).toEqual({});
+
+  // The request in flight belonged to the old connection: the new one asks.
+  connect();
+  await loadActivity('01R', '01M2');
+  expect(api.listActivity).toHaveBeenCalledTimes(3);
+  expect(store.activity).toEqual({ '01M2': [] });
 });

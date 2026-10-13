@@ -7,6 +7,7 @@ import {
   getHalt,
   getMessage,
   getRoom,
+  listActivity,
   listAgents,
   listMessages,
   listRooms,
@@ -17,7 +18,7 @@ import {
 import { mergeNewest, pageSize, upsert } from './feed';
 import { isUnread } from './rooms';
 import { openStream, type Stream, type StreamState } from './stream';
-import type { Agent, Message, Room } from './types';
+import type { Activity, Agent, Message, Room } from './types';
 
 // The messages held for one room: its newest ones, and the pages before them
 // that have been asked for.
@@ -39,6 +40,7 @@ type Store = {
   feeds: Record<string, Feed>; // by room id
   latest: Record<string, Message>; // by room id: the newest message known
   quoted: Record<string, Message>; // by message id: fetched because a reply names it
+  activity: Record<string, Activity[]>; // by message id, oldest first; absent until loaded
 };
 
 function initial(): Store {
@@ -53,6 +55,7 @@ function initial(): Store {
     feeds: {},
     latest: {},
     quoted: {},
+    activity: {},
   };
 }
 
@@ -67,8 +70,8 @@ let stream: Stream | null = null;
 // loads numbers the calls to load(), so that only the newest one writes.
 let loads = 0;
 
-// fetching counts the snapshot fetches in flight: loads, and pages of
-// messages. Events that arrive while it is above zero are held, in order, and
+// fetching counts the snapshot fetches in flight: loads, pages of messages,
+// and lists of activity. Events that arrive while it is above zero are held, in order, and
 // applied when it returns to zero. A snapshot replaces what it covers, so an
 // event applied before it would be lost; and an event for a message on a page
 // still being fetched has nowhere to go until the page is written.
@@ -100,6 +103,10 @@ let fetchingLatest = new Set<string>();
 // whatever the answer was. One that failed is not asked for again: a reply
 // can name a message that no longer exists, and every drawing of it would ask.
 let askedQuoted = new Set<string>();
+
+// loadingActivity holds the ids of the messages whose activity is being
+// fetched.
+let loadingActivity = new Set<string>();
 
 // refetching holds the rooms being fetched again, each with the value of
 // loads it started under. Once loads has moved on, that fetch will write
@@ -148,6 +155,7 @@ export function disconnect(): void {
   marking = new Set();
   fetchingLatest = new Set();
   askedQuoted = new Set();
+  loadingActivity = new Set();
   resets += 1; // a fetch still in flight must neither write nor be counted when it settles
   Object.assign(store, initial());
 }
@@ -228,8 +236,9 @@ function fetchSettled(epoch: number): void {
 // room the person has left disappears, and brings the open room's newest
 // messages. A load that settles after a later one started is discarded. It
 // leaves latest and quoted alone: the events replayed after it keep them
-// current, and an entry is only shown while its id still matches. It never
-// rejects.
+// current, and an entry is only shown while its id still matches. It empties
+// activity: a list may have missed steps while the stream was down, and
+// nothing says which. It never rejects.
 export async function load(): Promise<void> {
   loads += 1;
   const seq = loads;
@@ -252,7 +261,15 @@ export async function load(): Promise<void> {
       store.halted = halted;
       store.error = '';
       store.loaded = true;
+      store.activity = {};
       rest = loadedPage(asked, page);
+      // Whatever became of the page, the turns still working in the open
+      // room have just lost their lists. A feed that newest() is fetching is
+      // empty here, and is looked at when its page is written.
+      const feed = store.open === null ? null : heldFeed(store.open);
+      if (feed !== null) {
+        followWorking(feed.messages);
+      }
     }
   } catch (err) {
     if (seq === loads) {
@@ -316,6 +333,7 @@ async function newest(id: string): Promise<void> {
     const page = await listMessages(id);
     if (epoch === resets) {
       store.feeds[id] = { messages: page, more: page.length === pageSize, loading: false, error: '' };
+      followWorking(page);
       rest = backlog(id);
     }
   } catch (err) {
@@ -359,6 +377,7 @@ async function older(id: string, limit: number): Promise<void> {
     if (feed !== null && feed.messages.length > 0 && feed.messages[0].id === before) {
       feed.messages.unshift(...page);
       feed.more = page.length === limit;
+      followWorking(page);
     }
   } catch {
     // ignored
@@ -529,6 +548,46 @@ export async function loadQuoted(roomId: string, messageId: string): Promise<voi
   }
 }
 
+// loadActivity replaces the list of what the agents did while working on a
+// message with the server's. It is a snapshot fetch, so the steps posted
+// while it is in flight are held and applied to its answer. One request per
+// message at a time. A failure is ignored and leaves the entry absent. It
+// never rejects.
+export async function loadActivity(roomId: string, messageId: string): Promise<void> {
+  if (loadingActivity.has(messageId)) {
+    return;
+  }
+  loadingActivity.add(messageId);
+  const epoch = fetchStarted();
+  try {
+    const list = await listActivity(roomId, messageId);
+    if (epoch === resets) {
+      store.activity[messageId] = list;
+    }
+  } catch {
+    // ignored: it stays absent
+  }
+  if (epoch === resets) {
+    loadingActivity.delete(messageId); // after a disconnect() the set is another connection's
+  }
+  fetchSettled(epoch);
+}
+
+// followWorking is called with the messages just written into a held feed. A
+// turn that is working shows its steps without being asked, so its list is
+// fetched unless it is held already; a finished one waits to be opened.
+function followWorking(messages: Message[]): void {
+  for (const message of messages) {
+    if (Object.hasOwn(store.activity, message.id)) {
+      continue;
+    }
+    // A message off the wire may hold anything in deliveries.
+    if (message.deliveries.some((d: unknown) => isObject(d) && d.state === 'working')) {
+      void loadActivity(message.room_id, message.id);
+    }
+  }
+}
+
 // receive takes an event from the stream: held while a snapshot fetch is in
 // flight, applied at once otherwise.
 function receive(name: string, data: unknown): void {
@@ -623,6 +682,7 @@ function heldRoom(message: Fields | null): Room | null {
 export function apply(name: string, data: unknown): void {
   applyToRooms(name, data);
   applyToFeeds(name, data);
+  applyToActivity(name, data);
 }
 
 // isMessage checks what the feeds and the screens that draw them rely on.
@@ -673,8 +733,44 @@ function applyToFeeds(name: string, data: unknown): void {
         return;
       }
       upsert(feed.messages, message);
+      followWorking([message]);
       return;
     }
+  }
+}
+
+// isActivity checks what the activity block reads.
+function isActivity(v: Fields): v is Fields & Activity {
+  return (
+    typeof v.id === 'string' &&
+    typeof field(v, 'agent')?.id === 'string' &&
+    (v.kind === 'tool' || v.kind === 'remark') &&
+    typeof v.text === 'string' &&
+    typeof v.tool === 'string' &&
+    typeof v.preview === 'string' &&
+    typeof v.arguments === 'string'
+  );
+}
+
+// applyToActivity keeps the held lists of activity current. A step of a
+// message whose list is not held is dropped: the list is fetched whole when
+// it is wanted. A tool is posted when it starts and again, under the same id,
+// when it finishes; and a replayed event repeats one already held.
+function applyToActivity(name: string, data: unknown): void {
+  if (name !== 'activity.posted' || !isObject(data)) {
+    return;
+  }
+  const id = data.message_id;
+  const posted = field(data, 'activity');
+  if (typeof id !== 'string' || posted === null || !isActivity(posted) || !Object.hasOwn(store.activity, id)) {
+    return;
+  }
+  const list = store.activity[id];
+  const at = list.findIndex((a) => a.id === posted.id);
+  if (at === -1) {
+    list.push(posted);
+  } else {
+    list[at] = posted;
   }
 }
 

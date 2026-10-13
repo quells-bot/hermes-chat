@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ActivityBlock from './ActivityBlock.svelte';
   import Icon from './Icon.svelte';
   import { attachmentUrl } from './lib/api';
   import { clock, iconName, preview, size } from './lib/format';
@@ -23,6 +24,11 @@
 
   const stated = $derived(
     message.deliveries.filter((d) => d.state === 'waiting' || d.state === 'delivered' || d.state === 'cancelled'),
+  );
+
+  // A copy that was worked on shows what the agent did, not a line.
+  const turns = $derived(
+    message.deliveries.filter((d) => d.state === 'working' || d.state === 'done' || d.state === 'failed'),
   );
 </script>
 
@@ -66,6 +72,9 @@
     {/each}
     {#each stated as d (d.agent.id)}
       <div class="state">{d.agent.display_name} · {d.state}</div>
+    {/each}
+    {#each turns as d (d.agent.id)}
+      <ActivityBlock {message} delivery={d} />
     {/each}
   </div>
 </article>
