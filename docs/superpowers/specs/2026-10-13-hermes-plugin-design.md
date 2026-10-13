@@ -97,11 +97,15 @@ derisks the rest. Claude's call: the split below.)*
   streaming and a small frame parser of the plugin's own.
 - **Platform name** *(Claude's call)*: `hermes_chat`, label "Hermes Chat".
 - **Settings** *(Claude's call on names)*. Every one is read per profile, with
-  `get_scoped_secret` / `extra_or_secret` and never `os.getenv`. Hermes has no
-  gateway-wide place for a plugin's settings: when one gateway serves several
-  profiles, a profile that does not set a value does not inherit another
-  profile's. So all of them go in each profile's `.env`. They differ in
-  whether the value changes from one profile to the next.
+  `get_scoped_secret` / `extra_or_secret` and never `os.getenv`. When one
+  gateway serves several profiles, each profile's settings come from its own
+  `.env` (`build_profile_secret_scope`), and a value it does not set is not
+  taken from the default profile's `.env` or from the process environment. So
+  all of them go in each profile's `.env`. They differ in whether the value
+  changes from one profile to the next. (Two exceptions exist and the setup
+  does not rely on either: a gateway serving a single profile also sees its
+  process environment, and Hermes has an administrator-managed env file that
+  is applied to every profile.)
 
   The same value in every profile on a gateway (repeated in each `.env`):
 
