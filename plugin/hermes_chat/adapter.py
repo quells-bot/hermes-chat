@@ -206,6 +206,12 @@ class HermesChatAdapter(BasePlatformAdapter):
             # A repeat of the open turn itself; it is not handed over again.
             logger.info("dropping redelivery of awaiting message %s", message["id"])
             return
+        if self._gateway_stopping():
+            # Hermes refuses new work while it stops. Unrecorded and
+            # unreported, the delivery stays `delivered` on the server, which
+            # hands it over again on the next connect.
+            logger.info("leaving delivery of message %s for the next start; the gateway is stopping", message["id"])
+            return
         self._open_turns.add(message["id"], room_id)
         event = self.event_from_delivery(data)
         if room_id in self._room_busy_rooms:
@@ -276,15 +282,56 @@ class HermesChatAdapter(BasePlatformAdapter):
             "on_processing_complete delivery=%s room=%s outcome=%s",
             delivery_id, event.source.chat_id, outcome.value,
         )
-        if self._shutting_down and outcome is ProcessingOutcome.CANCELLED:
+        if self._interrupted_by_shutdown(event, outcome):
             # The interrupted turn continues after the next start; leave the
             # delivery open in the record.
+            logger.info("delivery=%s interrupted by the gateway stopping; left open for resume", delivery_id)
+            return
+        if self._turn_still_to_come(event):
+            logger.info("delivery=%s was queued by Hermes, not run; its turn is still to come", delivery_id)
             return
         self._turn_outcomes[delivery_id] = outcome
         task = self._turn_tasks.get(delivery_id)
         if task is not None and delivery_id not in self._turn_callbacks:
             self._turn_callbacks.add(delivery_id)
             task.add_done_callback(functools.partial(self._on_turn_task_done, delivery_id))
+
+    def _gateway_stopping(self) -> bool:
+        return bool(getattr(getattr(self, "gateway_runner", None), "_draining", False))
+
+    def _interrupted_by_shutdown(self, event: MessageEvent, outcome: ProcessingOutcome) -> bool:
+        """True when the turn did not finish but was cut short by the gateway
+        stopping. Hermes cancels some such turns and ends others as a success
+        with the session marked for resume; either way it resumes the session
+        after the next start."""
+        if self._shutting_down and outcome is ProcessingOutcome.CANCELLED:
+            return True
+        if not self._gateway_stopping():
+            return False
+        try:
+            entry = self.gateway_runner.session_store.lookup_by_session_key(self._event_session_key(event))
+        except Exception:
+            logger.debug("could not read the session's resume flag", exc_info=True)
+            return False
+        return bool(getattr(entry, "resume_pending", False))
+
+    def _turn_still_to_come(self, event: MessageEvent) -> bool:
+        """True when Hermes ran the processing hooks around an event it only
+        queued. It dispatches the same event again, and that pass is the turn.
+        Two places hold such an event: the gateway's startup queue, while it is
+        still starting, and the session's pending slot, when the handler found
+        the session busy elsewhere (Hermes's own resume after a restart does)."""
+        queue = getattr(getattr(self, "gateway_runner", None), "_startup_restore_queue", None) or ()
+        if any(queued is event for queued in queue):
+            return True
+        pending = self._pending_messages.get(self._event_session_key(event))
+        if pending is None:
+            return False
+        # The base adapter's own test for "the event just dispatched came
+        # straight back": the same id, or for an id-less event the same time.
+        if pending.message_id or event.message_id:
+            return pending.message_id == event.message_id
+        return pending.timestamp == event.timestamp
 
     def _on_turn_task_done(self, delivery_id: str, task: asyncio.Task) -> None:
         outcome = self._turn_outcomes.pop(delivery_id, None)

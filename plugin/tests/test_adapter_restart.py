@@ -248,3 +248,163 @@ async def test_turn_that_finishes_during_shutdown_is_reported(adapter_factory, s
     await wait_until(lambda: any(x.endswith("/M1/done") for x in paths(stub)))
     assert a._open_turns.all() == {}
     await a.disconnect()
+
+async def test_delivery_queued_during_gateway_startup_closes_after_its_replay(adapter_factory, stub, delivery):
+    """While the gateway is still starting, Hermes queues an inbound message
+    and returns at once, then hands the same event back when startup is over.
+    The turn is the replay, so that is what `done` must follow."""
+    me_ok(stub)
+    stub.script("POST", "/agent/rooms/R1/messages", (201, {"id": "M2"}))
+    stub.events(ready(), frame("delivery", delivery(), 1), Hang)
+    a = adapter_factory()
+
+    class Runner:
+        _startup_restore_queue = []
+
+        def _profile_name_for_source(self, *args, **kwargs):
+            return None
+
+    a.gateway_runner = Runner()
+    passes = []
+
+    async def handler(event):
+        if not getattr(event, "_hermes_startup_restore_replay", False):
+            Runner._startup_restore_queue.append(event)
+            passes.append("queued")
+            return None
+        passes.append("replayed")
+        return "hello"
+
+    a.set_message_handler(handler)
+    assert await a.connect() is True
+    await wait_until(lambda: passes == ["queued"])
+    await asyncio.sleep(0.2)
+    p = paths(stub)
+    assert not any(x.endswith("/M1/done") for x in p), p
+    assert a._open_turns.all() == {"M1": "R1"}
+
+    event = Runner._startup_restore_queue.pop(0)
+    event._hermes_startup_restore_replay = True
+    await a.handle_message(event)
+    await wait_until(lambda: any(x.endswith("/M1/done") for x in paths(stub)))
+    p = paths(stub)
+    assert p.index("/agent/rooms/R1/messages") < p.index("/agent/deliveries/M1/done"), p
+    assert a._open_turns.all() == {}
+    await a.disconnect()
+
+
+class StoppingRunner:
+    """What the adapter reads from the gateway runner while it is stopping."""
+
+    def __init__(self, resume_pending):
+        self._draining = False
+        self._startup_restore_queue = []
+        self.session_store = self
+        self._resume_pending = resume_pending
+
+    def lookup_by_session_key(self, session_key):
+        class Entry:
+            resume_pending = self._resume_pending
+
+        return Entry()
+
+    def _profile_name_for_source(self, *args, **kwargs):
+        return None
+
+
+async def test_turn_interrupted_by_a_stopping_gateway_is_left_open(adapter_factory, stub, delivery):
+    """A stopping gateway interrupts the turn, which then ends as a success
+    with its session marked for resume. Reporting it done would release the
+    room's next message into a gateway that refuses new work."""
+    me_ok(stub)
+    stub.events(ready(), frame("delivery", delivery(), 1), Hang)
+    a = adapter_factory()
+    a.gateway_runner = StoppingRunner(resume_pending=True)
+    finished = []
+
+    async def handler(event):
+        a.gateway_runner._draining = True
+        finished.append(event.message_id)
+        return None
+
+    a.set_message_handler(handler)
+    assert await a.connect() is True
+    await wait_until(lambda: finished == ["M1"])
+    await asyncio.sleep(0.2)
+    await a.disconnect()
+    p = paths(stub)
+    assert not any(x.endswith("/M1/done") for x in p), p
+    assert not any(x.endswith("/M1/failed") for x in p), p
+    assert a._open_turns.all() == {"M1": "R1"}
+
+
+async def test_turn_that_finishes_while_the_gateway_stops_is_reported(adapter_factory, stub, delivery):
+    me_ok(stub)
+    stub.events(ready(), frame("delivery", delivery(), 1), Hang)
+    a = adapter_factory()
+    a.gateway_runner = StoppingRunner(resume_pending=False)
+
+    async def handler(event):
+        a.gateway_runner._draining = True
+        return None
+
+    a.set_message_handler(handler)
+    assert await a.connect() is True
+    await wait_until(lambda: any(x.endswith("/M1/done") for x in paths(stub)))
+    assert a._open_turns.all() == {}
+    await a.disconnect()
+
+
+async def test_delivery_arriving_while_the_gateway_stops_is_left_for_the_next_start(adapter_factory, stub, delivery):
+    """Hermes answers new work with a canned refusal while it stops. The
+    delivery is not handed over and not recorded, so the server still has it
+    `delivered` and hands it over again on the next connect."""
+    me_ok(stub)
+    stub.events(ready(), frame("delivery", delivery(), 1), Hang)
+    a = adapter_factory()
+    a.gateway_runner = StoppingRunner(resume_pending=False)
+    a.gateway_runner._draining = True
+    seen = []
+
+    async def handler(event):
+        seen.append(event.message_id)
+        return None
+
+    a.set_message_handler(handler)
+    assert await a.connect() is True
+    await wait_until(lambda: any(r.path == "/agent/events" for r in stub.requests))
+    await asyncio.sleep(0.3)
+    await a.disconnect()
+    assert seen == []
+    assert a._open_turns.all() == {}
+    assert not any("/deliveries/" in x for x in paths(stub)), paths(stub)
+
+
+async def test_event_the_handler_puts_back_closes_after_its_real_turn(adapter_factory, stub, delivery):
+    """When the session is busy elsewhere (as it is for Hermes's own resume
+    after a restart), the handler puts the event back and returns; Hermes
+    dispatches it again. The processing hooks run on every pass, and only the
+    last one is the turn."""
+    me_ok(stub)
+    stub.script("POST", "/agent/rooms/R1/messages", (201, {"id": "M2"}))
+    stub.events(ready(), frame("delivery", delivery(), 1), Hang)
+    a = adapter_factory()
+    passes = []
+
+    async def handler(event):
+        passes.append(event.message_id)
+        if len(passes) == 1:
+            a._pending_messages[a._event_session_key(event)] = event
+            return None
+        await asyncio.sleep(0.2)
+        return "hello"
+
+    a.set_message_handler(handler)
+    assert await a.connect() is True
+    await wait_until(lambda: len(passes) == 2)
+    assert not any(x.endswith("/M1/done") for x in paths(stub)), paths(stub)
+    await wait_until(lambda: any(x.endswith("/M1/done") for x in paths(stub)))
+    p = paths(stub)
+    assert p.index("/agent/rooms/R1/messages") < p.index("/agent/deliveries/M1/done"), p
+    assert p.count("/agent/deliveries/M1/done") == 1, p
+    await a.disconnect()
