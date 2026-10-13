@@ -96,17 +96,27 @@ derisks the rest. Claude's call: the split below.)*
   so the plugin installs nothing. The event stream is read with `httpx`
   streaming and a small frame parser of the plugin's own.
 - **Platform name** *(Claude's call)*: `hermes_chat`, label "Hermes Chat".
-- **Settings** *(Claude's call on names)*, read with `get_scoped_secret` /
-  `extra_or_secret` and never `os.getenv`, so several profiles in one gateway
-  each get their own:
+- **Settings** *(Claude's call on names)*. Every one is read per profile, with
+  `get_scoped_secret` / `extra_or_secret` and never `os.getenv`. Hermes has no
+  gateway-wide place for a plugin's settings: when one gateway serves several
+  profiles, a profile that does not set a value does not inherit another
+  profile's. So all of them go in each profile's `.env`. They differ in
+  whether the value changes from one profile to the next.
+
+  The same value in every profile on a gateway (repeated in each `.env`):
 
   | Env var | Meaning |
   |---|---|
   | `HERMES_CHAT_URL` | Base URL of the chat server. Required. |
-  | `HERMES_CHAT_TOKEN` | The agent's bearer token. Required. |
-  | `HERMES_CHAT_HOME_ROOM` | Room ID for scheduled-job delivery. Registered in stage 1, used in stage 2. |
   | `HERMES_CHAT_ALLOW_ALL_USERS` | Set to `true` in the documented setup: who may talk to the agent is the chat server's decision. |
   | `HERMES_CHAT_ALLOWED_USERS` | Registered because Hermes expects it; not used by the documented setup. |
+
+  A different value in each profile:
+
+  | Env var | Meaning |
+  |---|---|
+  | `HERMES_CHAT_TOKEN` | The bearer token of the chat-server agent this profile is. Required. Two profiles must not share one; the plugin refuses the second. |
+  | `HERMES_CHAT_HOME_ROOM` | A room this profile's agent is in, normally Kai's DM with it. Optional. It is the fallback for output with no room to go back to: a scheduled job created outside any room, and Hermes's own notices to the profile. A job created in a room delivers to that room and does not use it. Registered in stage 1, exercised in stage 2. |
 
   These share a prefix with the server's own settings. They are read on a
   different machine by a different program, and none of the names collide.
