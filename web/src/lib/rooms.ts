@@ -25,7 +25,7 @@ export function isWorking(room: Room): boolean {
   return room.agents.some((a) => a.working);
 }
 
-function byRoomName(a: Room, b: Room): number {
+export function byRoomName(a: Room, b: Room): number {
   return byName(roomName(a), roomName(b)) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
@@ -35,6 +35,12 @@ export function groupRooms(rooms: Room[]): Groups {
     dms: live.filter((r) => r.flavor === 'dm').sort(byRoomName),
     rooms: live.filter((r) => r.flavor !== 'dm').sort(byRoomName),
   };
+}
+
+// The list top to bottom: direct messages, then rooms, archived ones left out.
+export function listOrder(rooms: Room[]): Room[] {
+  const g = groupRooms(rooms);
+  return [...g.dms, ...g.rooms];
 }
 
 // The Unread page's order: rooms waiting on a human first, then the newest
