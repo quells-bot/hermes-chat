@@ -9,6 +9,7 @@ import { room } from './lib/fixtures';
 import { route, startRouting } from './lib/route.svelte';
 import { note } from './lib/note.svelte';
 import { note as fixture, noteEntry } from './lib/fixtures';
+import { startKeys } from './lib/keys';
 import Home from './Home.svelte';
 
 vi.mock('./lib/session.svelte', () => ({
@@ -43,6 +44,7 @@ vi.mock('./lib/route.svelte', async (importOriginal) => ({
   startRouting: vi.fn(),
   navigate: vi.fn(),
 }));
+vi.mock('./lib/keys', () => ({ startKeys: vi.fn() }));
 vi.mock('./lib/seen', () => ({ whenSeen: () => ({ destroy: () => {} }) }));
 vi.mock('./lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./lib/api')>()),
@@ -59,6 +61,7 @@ const stopRouting = vi.fn();
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(startRouting).mockReturnValue(stopRouting);
+  vi.mocked(startKeys).mockReturnValue(vi.fn());
   store.link = 'live';
   store.loaded = true;
   store.error = '';
@@ -77,6 +80,16 @@ test('connects on mount and disconnects on unmount', () => {
 
   expect(disconnect).toHaveBeenCalledTimes(1);
   expect(stopRouting).toHaveBeenCalledTimes(1);
+});
+
+test('Home starts the shortcuts and stops them on unmount', () => {
+  const stopKeys = vi.fn();
+  vi.mocked(startKeys).mockReturnValue(stopKeys);
+  const { unmount } = render(Home);
+  expect(startKeys).toHaveBeenCalledTimes(1);
+  expect(stopKeys).not.toHaveBeenCalled();
+  unmount();
+  expect(stopKeys).toHaveBeenCalledTimes(1);
 });
 
 test('shows nothing in place of the list until loaded', () => {

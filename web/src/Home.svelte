@@ -8,6 +8,7 @@
   import Room from './Room.svelte';
   import RoomSettings from './RoomSettings.svelte';
   import Unread from './Unread.svelte';
+  import { startKeys } from './lib/keys';
   import { layout, startLayout } from './lib/layout.svelte';
   import { closeSearch } from './lib/search.svelte';
   import { roomIdOf, route, settingsIdOf, startRouting } from './lib/route.svelte';
@@ -19,9 +20,11 @@
     connect();
     const stop = startRouting();
     const stopLayout = startLayout();
+    const stopKeys = startKeys();
     return () => {
       disconnect();
       closeSearch();
+      stopKeys();
       stopLayout();
       stop();
     };

@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 import { agent, room } from './fixtures';
-import { groupRooms, isUnread, listOrder, isWorking, roomName, unreadRooms } from './rooms';
+import { groupRooms, isUnread, listOrder, isWorking, neighbour, roomName, unreadRooms } from './rooms';
 
 test('rooms sort by topic ignoring case, conversations and channels together', () => {
   const g = groupRooms([
@@ -88,4 +88,39 @@ test('listOrder puts direct messages before rooms and leaves archived ones out',
     room({ id: 'd1', flavor: 'dm', topic: '', agents: [scout] }),
   ];
   expect(listOrder(rooms).map((r) => r.id)).toEqual(['d1', 'r2', 'r1']);
+});
+
+test('neighbour steps through listOrder without wrapping', () => {
+  const rooms = [
+    room({ id: 'd1', flavor: 'dm', agents: [agent({ id: 'a', display_name: 'Ann' })] }),
+    room({ id: 'r1', topic: 'Alpha' }),
+    room({ id: 'r2', topic: 'Beta' }),
+  ];
+  expect(neighbour(rooms, 'd1', 1)).toBe('r1');
+  expect(neighbour(rooms, 'r2', 1)).toBeNull();
+  expect(neighbour(rooms, 'r1', -1)).toBe('d1');
+  expect(neighbour(rooms, 'd1', -1)).toBeNull();
+  expect(neighbour(rooms, null, 1)).toBe('d1');
+  expect(neighbour(rooms, null, -1)).toBe('r2');
+  expect(neighbour(rooms, 'gone', 1)).toBe('d1');
+  expect(neighbour([], null, 1)).toBeNull();
+});
+
+test('neighbour from an archived room is as from none', () => {
+  const rooms = [room({ id: 'r1', topic: 'Alpha' }), room({ id: 'x', topic: 'Old', archived: true }), room({ id: 'r2', topic: 'Beta' })];
+  expect(neighbour(rooms, 'x', 1)).toBe('r1');
+  expect(neighbour(rooms, 'x', -1)).toBe('r2');
+});
+
+test('neighbour with unreadOnly skips read rooms, and gives null when none is unread', () => {
+  const read = { last_message_id: '01A', last_read_message_id: '01A' };
+  const rooms = [
+    room({ id: 'r1', topic: 'A', ...read }),
+    room({ id: 'r2', topic: 'B', last_message_id: '01B', last_read_message_id: null }),
+    room({ id: 'r3', topic: 'C', ...read }),
+  ];
+  expect(neighbour(rooms, 'r1', 1, true)).toBe('r2');
+  expect(neighbour(rooms, 'r3', -1, true)).toBe('r2');
+  expect(neighbour(rooms, 'r2', 1, true)).toBeNull();
+  expect(neighbour(rooms.filter((r) => r.id !== 'r2'), null, 1, true)).toBeNull();
 });

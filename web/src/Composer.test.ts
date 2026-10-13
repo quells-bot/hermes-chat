@@ -235,3 +235,41 @@ test('a send that lands says so, and a failed one does not', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
   await waitFor(() => expect(onsent).toHaveBeenCalledTimes(1));
 });
+
+test.each([
+  ['Ctrl+Enter', '{Control>}{Enter}{/Control}'],
+  ['⌘Enter', '{Meta>}{Enter}{/Meta}'],
+])('%s sends', async (_name, keys) => {
+  store.rooms['room-1'] = room({ id: 'room-1' });
+  vi.mocked(api.postMessage).mockResolvedValue(message({ id: '01M', room_id: 'room-1', text: 'hi' }));
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), 'hi');
+  await userEvent.keyboard(keys);
+  await waitFor(() => expect(api.postMessage).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(api.postMessage).mock.calls[0][1]).toBe('hi');
+});
+
+test('Enter alone is a newline and sends nothing', async () => {
+  store.rooms['room-1'] = room({ id: 'room-1' });
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), 'a{Enter}b');
+  expect(screen.getByLabelText('Message')).toHaveValue('a\nb');
+  expect(api.postMessage).not.toHaveBeenCalled();
+});
+
+test('Ctrl+Enter with nothing typed sends nothing', async () => {
+  store.rooms['room-1'] = room({ id: 'room-1' });
+  render(Composer, { id: 'room-1', replyTo: null });
+  screen.getByLabelText('Message').focus();
+  await userEvent.keyboard('{Control>}{Enter}{/Control}');
+  expect(api.postMessage).not.toHaveBeenCalled();
+});
+
+test('Ctrl+Enter while a send is in flight sends nothing more', async () => {
+  store.rooms['room-1'] = room({ id: 'room-1' });
+  vi.mocked(api.postMessage).mockReturnValue(new Promise(() => {}));
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), 'hi');
+  await userEvent.keyboard('{Control>}{Enter}{Enter}{/Control}');
+  expect(api.postMessage).toHaveBeenCalledTimes(1);
+});

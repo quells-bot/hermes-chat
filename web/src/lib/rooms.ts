@@ -53,3 +53,17 @@ export function unreadRooms(rooms: Room[]): Room[] {
     return newest(a) < newest(b) ? 1 : newest(a) > newest(b) ? -1 : 0;
   });
 }
+
+// The id of the next (step 1) or previous (step -1) room after current in
+// listOrder, skipping read rooms when unreadOnly. It does not wrap: null at
+// an end. With current null or not in the list, step 1 gives the first and
+// step -1 the last.
+export function neighbour(rooms: Room[], current: string | null, step: 1 | -1, unreadOnly = false): string | null {
+  const order = listOrder(rooms);
+  const at = current === null ? -1 : order.findIndex((r) => r.id === current);
+  let i = at === -1 ? (step === 1 ? 0 : order.length - 1) : at + step;
+  for (; i >= 0 && i < order.length; i += step) {
+    if (!unreadOnly || isUnread(order[i])) return order[i].id;
+  }
+  return null;
+}

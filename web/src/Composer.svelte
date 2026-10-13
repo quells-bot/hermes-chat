@@ -52,6 +52,15 @@
     attempt = '';
   }
 
+  // Ctrl or ⌘ with Enter sends, when the Send button would be enabled; plain
+  // Enter stays a newline.
+  function onKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) {
+      e.preventDefault();
+      if (text.trim() !== '' && !busy) void submit();
+    }
+  }
+
   async function submit() {
     if (busy) return;
     const client = attempt || crypto.randomUUID();
@@ -102,6 +111,7 @@
       bind:this={input}
       readonly={busy}
       oninput={onInput}
+      onkeydown={onKeydown}
     ></textarea>
     <button type="button" class="send" disabled={text.trim() === '' || busy} onclick={submit}>
       {attempt === '' ? 'Send' : 'Retry'}
