@@ -31,6 +31,11 @@ export function replace(path: string): void {
   location.replace(`#${path}`);
 }
 
+// settingsIdOf gives the id in '/rooms/<id>/settings', and null for any other path.
+export function settingsIdOf(path: string): string | null {
+  return /^\/rooms\/([^/]+)\/settings$/.exec(path)?.[1] ?? null;
+}
+
 // roomIdOf gives the id in '/rooms/<id>', and null for any other path.
 export function roomIdOf(path: string): string | null {
   return /^\/rooms\/([^/]+)$/.exec(path)?.[1] ?? null;

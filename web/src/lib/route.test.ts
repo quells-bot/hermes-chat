@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest';
-import { navigate, replace, roomIdOf, route, startRouting } from './route.svelte';
+import { navigate, replace, roomIdOf, route, settingsIdOf, startRouting } from './route.svelte';
 
 afterEach(() => {
   location.hash = '';
@@ -77,6 +77,15 @@ test('prev is the path before the current one', () => {
   expect(route.prev).toBe('/rooms/01R');
 
   stop();
+});
+
+test('settingsIdOf', () => {
+  expect(settingsIdOf('/rooms/01R/settings')).toBe('01R');
+  expect(settingsIdOf('/rooms/01R')).toBeNull();
+  expect(settingsIdOf('/rooms//settings')).toBeNull();
+  expect(settingsIdOf('/rooms/01R/settings/x')).toBeNull();
+  expect(settingsIdOf('/note')).toBeNull();
+  expect(roomIdOf('/rooms/01R/settings')).toBeNull();
 });
 
 test('roomIdOf', () => {

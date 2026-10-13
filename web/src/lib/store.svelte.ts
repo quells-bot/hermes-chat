@@ -4,11 +4,13 @@
 
 import {
   ApiError,
+  addRoomAgent,
   answerPrompt,
   cancelMessage,
   getHalt,
   getMessage,
   getRoom,
+  inviteHuman,
   listActivity,
   listAgents,
   listMessages,
@@ -16,11 +18,14 @@ import {
   markRoomRead,
   pauseRoom,
   postMessage,
+  removeRoomAgent,
   resumeEverything,
   resumeRoom,
   steer,
   stopEverything,
   stopTurn,
+  updateRoom,
+  type RoomChanges,
 } from './api';
 import { mergeNewest, pageSize, upsert } from './feed';
 import { loadNote, resetNote } from './note.svelte';
@@ -588,17 +593,33 @@ export async function stopTurns(roomId: string): Promise<void> {
 // as its room.changed event would be. They reject with the ApiError, which is
 // for the room to show.
 export async function pause(roomId: string): Promise<void> {
-  await setPaused(roomId, pauseRoom);
+  await roomWrite(() => pauseRoom(roomId));
 }
 export async function resume(roomId: string): Promise<void> {
-  await setPaused(roomId, resumeRoom);
+  await roomWrite(() => resumeRoom(roomId));
 }
 
-// setPaused makes the call and writes the answer's room after it. An answer
+// changeRoom renames a room, sets its turn cap or archives it; addAgent,
+// removeAgent and invite change who is in it. Each writes the answer's room
+// as pause does, and rejects with the ApiError.
+export async function changeRoom(roomId: string, changes: RoomChanges): Promise<void> {
+  await roomWrite(() => updateRoom(roomId, changes));
+}
+export async function addAgent(roomId: string, agentId: string): Promise<void> {
+  await roomWrite(() => addRoomAgent(roomId, agentId));
+}
+export async function removeAgent(roomId: string, agentId: string): Promise<void> {
+  await roomWrite(() => removeRoomAgent(roomId, agentId));
+}
+export async function invite(roomId: string, humanId: string): Promise<void> {
+  await roomWrite(() => inviteHuman(roomId, humanId));
+}
+
+// roomWrite makes the call and writes the answer's room after it. An answer
 // that arrives after disconnect() is dropped.
-async function setPaused(roomId: string, call: (id: string) => Promise<Room>): Promise<void> {
+async function roomWrite(call: () => Promise<Room>): Promise<void> {
   const epoch = resets;
-  const room = await call(roomId);
+  const room = await call();
   if (epoch === resets) {
     receive('room.changed', { room });
   }
