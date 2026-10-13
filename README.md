@@ -131,18 +131,29 @@ text). **Mark all read** moves every one of those rooms' read markers to its
 newest message and returns to the list. A room opened from the page leads back
 to the page.
 
-A row opens its room at `#/rooms/<id>`. The header names the room and says
-whether each agent is working, idle or offline. The feed starts with the room's
-newest 50 messages; when the read marker is older than all of them and older
-messages exist, the 150 before them are fetched too, and the feed is not placed
-until that fetch has settled. A room with no read marker gets the newest 50
-only. The feed is then placed on a `New` divider above the first unread message
-it holds, or at its end when nothing is unread. The divider stays where it was
-drawn while the room is open. Scrolling to the top loads the 50 messages before
-the oldest one held and keeps what was being read in place; a message that
-arrives while the end is in view keeps the end in view. The read marker moves
-to the newest message when the end of the feed is in view on a visible page,
-and again for each message that arrives while both hold. The end is watched
+A row opens its room at `#/rooms/<id>`. The header names the room, says
+whether each agent is working, idle or offline, and, like the list's, says
+`reconnecting` while the store is loaded and the stream is not live. The feed
+starts with the room's newest 50 messages; when the read marker is older than
+all of them and older messages exist, the 150 before them are fetched too, and
+the feed is not placed until that fetch has settled. A room with no read
+marker gets the same 150 fetched before its newest page, so only a room with
+more than 200 unread messages loses the `New` line. The feed is then placed on
+a `New` divider above the first unread message it holds; when the oldest held
+message is itself unread and older ones remain, there is no `New` and the feed
+opens at its oldest held message; and it opens at its end when nothing is
+unread. The divider stays where it was drawn while the room stays open; it
+moves only when new unread messages arrive that the view cannot hold, and the
+feed then stands on it above the first of them. Scrolling to the top loads the
+50 messages before the oldest one held and keeps what was being read in
+place. A message that fits arrives while the end is in view keeps the end in
+view; new unread messages that do not all fit in the view are never followed
+past the first of them, so the person is not carried past the unread. A hidden
+page does not follow the feed at all, and coming back to the room leaves the
+unread unread and the feed standing on `New` until it is scrolled to. The read
+marker moves to the newest message when the end of the feed is in view on a
+visible page, and again for each message that arrives while both hold; it is
+not moved on a report taken before new messages were drawn. The end is watched
 only once the feed has been placed, so a room that opens on its divider is not
 read until the person scrolls to its end.
 
@@ -152,14 +163,18 @@ its size), and each agent's copy: `waiting`, `delivered` or `cancelled` as a
 line, and a copy that is `working`, `done` or `failed` as an activity block. A
 prompt is a card with the question and its choices, or its answer, or
 `Expired`. An activity block says the agent, the state and, once its list is
-held, the number of steps; a working one also says what the agent is doing now,
-and an open one lists the steps, each tool with its result, its duration and,
+held, the number of steps; a working one also says what the agent is doing now
+when its newest step is an unfinished tool or a remark, and an open one lists
+the steps with the remarks too, each tool with its result, its duration and,
 on a tap, its arguments when it has any. The list is fetched without being
 asked for a turn that is working in a room whose messages are held, and for a
 finished turn when its block is opened; `activity.posted` keeps a held list
-current. Under the feed a line says when the room is paused, archived, or
-stopped with everything else. Posting, answering a prompt and the room's
-controls are not there yet.
+current, and a reload does not empty the lists — a block that is open keeps
+its list on screen, and a turn still working is asked for again. Under the
+feed a line says when the room is paused, archived, or stopped with everything
+else, and the Unread page states `Everything is stopped` under its header when
+the store is halted. Posting, answering a prompt and the room's controls are
+not there yet.
 
 Message text is markdown and is untrusted. `marked` lexes it, and the page
 copies the tokens it knows into a tree of its own and draws that tree as
