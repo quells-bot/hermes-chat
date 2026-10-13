@@ -22,11 +22,11 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import MessageDeduplicator
 from hermes_constants import get_hermes_home
 
-from hermes_chat.client import ApiError, ChatClient, Unauthorized, Unreachable
-from hermes_chat.checks import display_warnings
-from hermes_chat.record import OpenTurns
-from hermes_chat.reports import TurnReporter
-from hermes_chat.stream import EventStream
+from .client import ApiError, ChatClient, Unauthorized, Unreachable
+from .checks import display_warnings
+from .record import OpenTurns
+from .reports import TurnReporter
+from .stream import EventStream
 
 logger = logging.getLogger("hermes_chat.adapter")
 
@@ -380,7 +380,7 @@ def _env_enablement() -> dict | None:
 
 
 def register(ctx) -> None:
-    from hermes_chat.probe import register_probe
+    from .probe import register_probe
 
     register_probe(ctx)
     ctx.register_platform(

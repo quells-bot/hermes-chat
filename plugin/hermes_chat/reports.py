@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from hermes_chat.client import ApiError, Unreachable
+from .client import ApiError, Unreachable
 
 logger = logging.getLogger("hermes_chat.reports")
 

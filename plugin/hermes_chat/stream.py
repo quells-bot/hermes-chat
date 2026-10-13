@@ -10,8 +10,8 @@ import json
 import logging
 from typing import Callable
 
-from hermes_chat.client import ApiError, Unauthorized, Unreachable
-from hermes_chat.sse import Frame, FrameParser
+from .client import ApiError, Unauthorized, Unreachable
+from .sse import Frame, FrameParser
 
 logger = logging.getLogger("hermes_chat.stream")
 
