@@ -115,9 +115,8 @@ class HermesChatAdapter(BasePlatformAdapter):
             logger.warning("token already in use by another profile; not connecting")
             return False
         self._lock_held = True
-        name = self._fallback_name()
         try:
-            name = (await self._client.me())["id"]
+            await self._client.me()
         except Unauthorized as exc:
             self._set_fatal_error(
                 "unauthorized",
@@ -128,8 +127,11 @@ class HermesChatAdapter(BasePlatformAdapter):
             return False
         except Unreachable as exc:
             logger.warning("chat server unreachable at connect (%s); connecting anyway", exc)
+        # The record name comes from the token, not from /agent/me: a restart
+        # while the server is down must open the same record as the run before,
+        # or an interrupted turn is never resumed and never reported.
         self._open_turns = OpenTurns(
-            get_hermes_home() / "hermes_chat" / f"open-turns-{name}.json")
+            get_hermes_home() / "hermes_chat" / f"open-turns-{self._record_name()}.json")
         try:
             user_config = load_config() or {}
         except Exception:
@@ -172,7 +174,7 @@ class HermesChatAdapter(BasePlatformAdapter):
         self._release_lock()
         self._mark_disconnected()
 
-    def _fallback_name(self) -> str:
+    def _record_name(self) -> str:
         digest = hashlib.sha256(self._token.encode("utf-8")).hexdigest()
         return digest[:16]
 

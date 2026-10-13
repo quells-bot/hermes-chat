@@ -37,7 +37,40 @@ def paths(stub):
 
 def seed_record(tmp_path, entries):
     for delivery_id, room_id in entries.items():
-        OpenTurns(tmp_path / "hermes_chat" / "open-turns-A1.json").add(delivery_id, room_id)
+        OpenTurns(_record_path(tmp_path)).add(delivery_id, room_id)
+
+
+def _record_path(tmp_path):
+    import hashlib
+    name = hashlib.sha256(b"hca_test_token").hexdigest()[:16]
+    return tmp_path / "hermes_chat" / f"open-turns-{name}.json"
+
+
+async def test_open_turn_survives_a_restart_while_the_server_is_down(adapter_factory, stub, delivery):
+    me_ok(stub)
+    blocked = asyncio.Event()
+    seen = []
+    stub.events(ready(), frame("delivery", delivery(), 1), Hang)
+    a1 = adapter_factory()
+
+    async def handler(event):
+        seen.append(event.message_id)
+        await blocked.wait()
+        return None
+
+    a1.set_message_handler(handler)
+    assert await a1.connect() is True
+    await wait_until(lambda: seen == ["M1"])
+    await a1.cancel_background_tasks()
+    await a1.disconnect()
+    assert a1._open_turns.all() == {"M1": "R1"}
+    # Restart while the server is down: the same record must be found, so the
+    # interrupted turn is still awaiting resume (Review finding: the record
+    # name must not depend on whether /agent/me answered).
+    a2 = adapter_factory(url="http://127.0.0.1:1")
+    assert await a2.connect() is True
+    assert a2._awaiting_resume == {"M1"}
+    await a2.disconnect()
 
 
 async def test_open_turn_is_attached_to_a_resume_event(adapter_factory, stub, tmp_path, resume_event):
