@@ -2250,3 +2250,66 @@ test('disconnect empties activity', async () => {
   expect(api.listActivity).toHaveBeenCalledTimes(3);
   expect(store.activity).toEqual({ '01M2': [] });
 });
+
+test('a post answer that lands after its message started work does not put it back to waiting', async () => {
+  const bot = agent({ id: '01A' });
+  await opened('01R', run(1, 1), [room({ id: '01R', agents: [bot] })]);
+  const answered = deferred<Message>();
+  vi.mocked(api.postMessage).mockReturnValueOnce(answered.promise);
+  const sending = send('01R', 'hello', 'queue', 'k-1');
+  // The stream is ahead of the answer: posted, then picked up.
+  const working = message({ id: '01M002', room_id: '01R', text: 'hello', deliveries: [{ agent: bot, state: 'working' }] });
+  apply('message.posted', { message: { ...working, deliveries: [{ agent: bot, state: 'waiting' }] } });
+  apply('delivery.changed', { message: working });
+  answered.resolve(message({ id: '01M002', room_id: '01R', text: 'hello', deliveries: [{ agent: bot, state: 'waiting' }] }));
+  await sending;
+  expect(store.feeds['01R'].messages.at(-1)?.deliveries[0].state).toBe('working');
+  expect(store.latest['01R'].deliveries[0].state).toBe('working');
+  expect(ids('01R')).toEqual(['01M001', '01M002']);
+});
+
+test('a write that answers after disconnect() writes nothing', async () => {
+  await opened('01R', run(1, 1), [room({ id: '01R', agents: [agent({ id: '01A', working: true })] })]);
+  const posted = deferred<Message>();
+  const paused = deferred<Room>();
+  const prompted = deferred<Message>();
+  vi.mocked(api.postMessage).mockReturnValueOnce(posted.promise);
+  vi.mocked(api.pauseRoom).mockReturnValueOnce(paused.promise);
+  vi.mocked(api.answerPrompt).mockReturnValueOnce(prompted.promise);
+  const writes = [send('01R', 'hello', 'queue', 'k-1'), pause('01R'), answer('01R', '01M001', 'yes')];
+  disconnect();
+  posted.resolve(message({ id: '01M002', room_id: '01R', text: 'hello' }));
+  paused.resolve(room({ id: '01R', paused: true }));
+  prompted.resolve(message({ id: '01M001', room_id: '01R' }));
+  await Promise.all(writes);
+  expect(store.rooms).toEqual({});
+  expect(store.feeds).toEqual({});
+  expect(store.latest).toEqual({});
+  expect(api.markRoomRead).not.toHaveBeenCalled();
+});
+
+test('a steer that fails midway says who was steered and who was not', async () => {
+  await opened('01R', run(1, 1), [
+    room({
+      id: '01R',
+      agents: [
+        agent({ id: '01A', display_name: 'Atlas', working: true }),
+        agent({ id: '01B', display_name: 'Bolt', working: true }),
+      ],
+    }),
+  ]);
+  vi.mocked(api.steer)
+    .mockResolvedValueOnce(message({ id: '01M002', room_id: '01R', text: 'go' }))
+    .mockRejectedValueOnce(new api.ApiError(409, 'no_turn', 'no turn is running'));
+  await expect(send('01R', 'go', 'steer', 'k-1')).rejects.toMatchObject({
+    status: 409,
+    code: 'no_turn',
+    message: 'Atlas was steered, Bolt was not: no turn is running',
+  });
+});
+
+test('a steer whose first agent refuses says only why', async () => {
+  await opened('01R', run(1, 1), [room({ id: '01R', agents: [agent({ id: '01A', working: true })] })]);
+  vi.mocked(api.steer).mockRejectedValueOnce(new api.ApiError(409, 'no_turn', 'no turn is running'));
+  await expect(send('01R', 'go', 'steer', 'k-1')).rejects.toMatchObject({ message: 'no turn is running' });
+});

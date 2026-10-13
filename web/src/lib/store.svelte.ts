@@ -477,7 +477,8 @@ export type SendMode = 'queue' | 'steer';
 // send posts text to the room ('queue') or steers every working agent in it
 // ('steer'). Each response is written as its message.posted event would be,
 // then the room's marker moves to the newest of them. It rejects with the
-// ApiError, and never throws anything else.
+// ApiError, and never throws anything else. An answer that arrives after
+// disconnect() is dropped, and the send stops there.
 export async function send(
   roomId: string,
   text: string,
@@ -485,6 +486,7 @@ export async function send(
   clientId: string,
   replyTo?: string | null,
 ): Promise<void> {
+  const epoch = resets;
   let newest: string | null = null;
   // Each response is written as it lands, so a failure behind it keeps what
   // came before. The marker waits for the whole send to succeed.
@@ -495,7 +497,11 @@ export async function send(
     }
   };
   if (mode === 'queue') {
-    written(await postMessage(roomId, text, clientId, replyTo ?? undefined));
+    const message = await postMessage(roomId, text, clientId, replyTo ?? undefined);
+    if (epoch !== resets) {
+      return;
+    }
+    written(message);
   } else {
     const working = store.rooms[roomId]?.agents.filter((a) => a.working) ?? [];
     if (working.length === 0) {
@@ -503,8 +509,28 @@ export async function send(
     }
     // Keyed by agent, not by position: the agents working can differ on a
     // retry, and a key must never name a different agent's steer.
+    const steered: string[] = [];
     for (const agent of working) {
-      written(await steer(roomId, agent.id, text, `${clientId}-${agent.id}`));
+      let message: Message;
+      try {
+        message = await steer(roomId, agent.id, text, `${clientId}-${agent.id}`);
+      } catch (err) {
+        // Some were steered and this one was not: the reason alone would
+        // read as if nothing had happened.
+        if (err instanceof ApiError && steered.length > 0) {
+          throw new ApiError(
+            err.status,
+            err.code,
+            `${steered.join(', ')} was steered, ${agent.display_name} was not: ${err.message}`,
+          );
+        }
+        throw err;
+      }
+      if (epoch !== resets) {
+        return;
+      }
+      written(message);
+      steered.push(agent.display_name);
     }
   }
   if (newest !== null) {
@@ -515,9 +541,13 @@ export async function send(
 // answer posts the answer to a message's open prompt. The response is written
 // as its prompt.changed event would be, so the prompt shown becomes the
 // answered one. It rejects with the ApiError, and never throws anything else.
+// An answer that arrives after disconnect() is dropped.
 export async function answer(roomId: string, messageId: string, text: string): Promise<void> {
+  const epoch = resets;
   const message = await answerPrompt(roomId, messageId, text);
-  receive('prompt.changed', { message });
+  if (epoch === resets) {
+    receive('prompt.changed', { message });
+  }
 }
 
 // cancel cancels a message's waiting deliveries. A 409 nothing_waiting is
@@ -561,10 +591,14 @@ export async function resume(roomId: string): Promise<void> {
   await setPaused(roomId, resumeRoom);
 }
 
-// setPaused makes the call and writes the answer's room after it.
+// setPaused makes the call and writes the answer's room after it. An answer
+// that arrives after disconnect() is dropped.
 async function setPaused(roomId: string, call: (id: string) => Promise<Room>): Promise<void> {
+  const epoch = resets;
   const room = await call(roomId);
-  receive('room.changed', { room });
+  if (epoch === resets) {
+    receive('room.changed', { room });
+  }
 }
 
 // putMarker is markRead, except that it rejects when the request fails. It
@@ -605,11 +639,15 @@ async function putMarker(roomId: string, messageId: string): Promise<void> {
 }
 
 // putLatest makes a message the newest known of its room, unless a newer one
-// is held there. The same message replaces itself, so a change to it shows.
-function putLatest(message: Message): void {
+// is held there. The same message replaces itself, so a change to it shows,
+// unless it is only being announced (posted): see applyToFeeds.
+function putLatest(message: Message, posted: boolean): void {
   const id = message.room_id;
-  if (Object.hasOwn(store.latest, id) && store.latest[id].id > message.id) {
-    return;
+  if (Object.hasOwn(store.latest, id)) {
+    const held = store.latest[id].id;
+    if (held > message.id || (posted && held === message.id)) {
+      return;
+    }
   }
   store.latest[id] = message;
 }
@@ -845,9 +883,17 @@ function applyToFeeds(name: string, data: unknown): void {
       }
       // Whether or not the room's feed is held: the Unread page shows rooms
       // that have never been opened.
-      putLatest(message);
+      // message.posted is the first thing said of a message, so one that is
+      // already held is as new or newer and is not replaced. The answer to a
+      // post is written as message.posted, and can land after the stream has
+      // brought the message and what happened to it since.
+      const posted = name === 'message.posted';
+      putLatest(message, posted);
       const feed = heldFeed(message.room_id);
       if (feed === null) {
+        return;
+      }
+      if (posted && feed.messages.some((m) => m.id === message.id)) {
         return;
       }
       // One older than everything held, while older pages remain, belongs to
