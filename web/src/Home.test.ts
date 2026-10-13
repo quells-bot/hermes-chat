@@ -14,7 +14,7 @@ vi.mock('./lib/session.svelte', () => ({
   signOut: vi.fn(),
 }));
 vi.mock('./lib/store.svelte', () => ({
-  store: { link: 'live', loaded: false, error: '', rooms: {}, agents: {}, halted: false, feeds: {} },
+  store: { link: 'live', loaded: false, error: '', rooms: {}, agents: {}, halted: false, feeds: {}, latest: {} },
   connect: vi.fn(),
   openRoom: vi.fn(),
   closeRoom: vi.fn(),
@@ -22,6 +22,8 @@ vi.mock('./lib/store.svelte', () => ({
   markRead: vi.fn(),
   disconnect: vi.fn(),
   load: vi.fn(),
+  loadLatest: vi.fn(),
+  markAllRead: vi.fn(),
   putRoom: vi.fn(),
   stopAll: vi.fn(),
   resumeAll: vi.fn(),
@@ -167,4 +169,12 @@ test('#/rooms/<id> shows the room, and another id shows another room', async () 
   expect(screen.queryByRole('heading', { name: 'Garden' })).toBeNull();
   expect(closeRoom).toHaveBeenCalledWith('01R');
   expect(openRoom).toHaveBeenLastCalledWith('01S');
+});
+
+test('#/unread shows the Unread page', () => {
+  route.path = '/unread';
+  render(Home);
+  expect(screen.getByRole('heading', { name: 'Unread' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Mark all read' })).toBeInTheDocument();
+  expect(screen.queryByRole('navigation')).toBeNull();
 });

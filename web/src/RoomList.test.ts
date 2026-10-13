@@ -22,7 +22,7 @@ test('a collapsed group with an unread room shows the dot on its header', async 
   expect(within(header).queryByLabelText('unread')).toBeNull();
   await userEvent.click(header);
   expect(header).toHaveAttribute('aria-expanded', 'false');
-  expect(screen.queryByText('Trip')).toBeNull();
+  expect(screen.queryByText('Trip', { selector: '.name' })).toBeNull();
   expect(within(header).getByLabelText('unread')).toBeInTheDocument();
   expect(saveCollapsed).toHaveBeenCalledWith({ dms: false, rooms: true });
 });
@@ -70,4 +70,25 @@ test('an empty group shows its header and no rows', () => {
   render(RoomList);
   expect(screen.getByRole('button', { name: /Rooms/ })).toHaveAttribute('aria-expanded', 'true');
   expect(screen.queryAllByRole('listitem')).toHaveLength(0);
+});
+
+test('the Unread row comes before both groups', () => {
+  store.rooms = { '1': room({ id: '1', topic: 'Trip', last_message_id: '01B' }) };
+  render(RoomList);
+  const row = screen.getByRole('link', { name: /^Unread/ });
+  const groups = screen.getAllByRole('button');
+  for (const g of groups) {
+    expect(row.compareDocumentPosition(g) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  }
+  expect(row.closest('li')).toBeNull();
+});
+
+test('a room in a collapsed group still counts', async () => {
+  store.rooms = { '1': room({ id: '1', topic: 'Trip', last_message_id: '01B' }) };
+  render(RoomList);
+  await userEvent.click(screen.getByRole('button', { name: /Rooms/ }));
+  expect(screen.queryByText('Trip', { selector: '.name' })).toBeNull();
+  const row = screen.getByRole('link', { name: /^Unread/ });
+  expect(row).toHaveTextContent('Trip');
+  expect(row).toHaveTextContent('1');
 });

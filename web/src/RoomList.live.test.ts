@@ -14,7 +14,7 @@ function names(): (string | undefined)[] {
 }
 
 function row(name: string): HTMLElement {
-  const li = screen.getByText(name).closest('li');
+  const li = screen.getByText(name, { selector: '.name' }).closest('li');
   expect(li).not.toBeNull();
   return li as HTMLElement;
 }

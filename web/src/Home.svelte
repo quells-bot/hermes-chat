@@ -5,6 +5,7 @@
   import NewRoom from './NewRoom.svelte';
   import Room from './Room.svelte';
   import RoomList from './RoomList.svelte';
+  import Unread from './Unread.svelte';
   import { roomIdOf, route, startRouting } from './lib/route.svelte';
   import { session, signOut } from './lib/session.svelte';
   import { connect, disconnect, load, store } from './lib/store.svelte';
@@ -36,6 +37,8 @@
   {#key roomId}
     <Room id={roomId} />
   {/key}
+{:else if route.path === '/unread'}
+  <Unread />
 {:else if route.path === '/new'}
   <Header title="New room" back="#/">
     <HaltControl />
