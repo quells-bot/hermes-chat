@@ -2,7 +2,7 @@
   import Icon from './Icon.svelte';
   import { ApiError, createRoom, openDM } from './lib/api';
   import { byName } from './lib/rooms';
-  import { navigate } from './lib/route.svelte';
+  import { replace } from './lib/route.svelte';
   import { putRoom, store } from './lib/store.svelte';
   import type { Room } from './lib/types';
 
@@ -25,8 +25,10 @@
     pending = true;
     error = '';
     try {
-      putRoom(await make());
-      navigate('/');
+      const room = await make();
+      putRoom(room);
+      // The form is left out of the history: back from the room is the list.
+      replace(`/rooms/${room.id}`);
     } catch (err) {
       error = err instanceof ApiError || err instanceof Error ? err.message : String(err);
     } finally {

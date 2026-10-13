@@ -118,8 +118,8 @@ posted message never moves a row. Direct messages show whether the agent is
 connected. The header has **Stop all**, which stops everything in one tap and
 shows `Stopped` and **Resume all** while stopped, and a **+** that opens
 `#/new`: a button per agent that opens its direct message, and a form with a
-topic, a checkbox per agent and **Create**. Either way the person lands back on
-the list.
+topic, a checkbox per agent and **Create**. Either way the person lands in the
+room.
 
 While any room that is not archived is unread, an **Unread** row stands above
 the groups. It names the unread rooms, counts them, says how many questions

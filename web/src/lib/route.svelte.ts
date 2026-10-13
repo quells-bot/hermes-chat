@@ -25,6 +25,12 @@ export function navigate(path: string): void {
   location.hash = path;
 }
 
+// replace goes to path in place of the current page, so the browser's back
+// skips the page being left.
+export function replace(path: string): void {
+  location.replace(`#${path}`);
+}
+
 // roomIdOf gives the id in '/rooms/<id>', and null for any other path.
 export function roomIdOf(path: string): string | null {
   return /^\/rooms\/([^/]+)$/.exec(path)?.[1] ?? null;

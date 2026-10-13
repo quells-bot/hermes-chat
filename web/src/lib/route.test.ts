@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest';
-import { navigate, roomIdOf, route, startRouting } from './route.svelte';
+import { navigate, replace, roomIdOf, route, startRouting } from './route.svelte';
 
 afterEach(() => {
   location.hash = '';
@@ -28,6 +28,20 @@ test('a hashchange updates the path', () => {
   navigate('/');
   window.dispatchEvent(new HashChangeEvent('hashchange'));
   expect(route.path).toBe('/');
+
+  stop();
+});
+
+test('replace changes the path without adding to the history', () => {
+  const stop = startRouting();
+  changeHash('#/new');
+  const before = history.length;
+
+  replace('/rooms/01R');
+  window.dispatchEvent(new HashChangeEvent('hashchange'));
+  expect(route.path).toBe('/rooms/01R');
+  expect(route.prev).toBe('/new');
+  expect(history.length).toBe(before);
 
   stop();
 });

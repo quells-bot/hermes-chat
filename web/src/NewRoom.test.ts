@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 import { ApiError, createRoom, openDM } from './lib/api';
 import { agent, room } from './lib/fixtures';
-import { navigate } from './lib/route.svelte';
+import { replace } from './lib/route.svelte';
 import { putRoom, store } from './lib/store.svelte';
 import NewRoom from './NewRoom.svelte';
 
@@ -13,7 +13,7 @@ vi.mock('./lib/api', async (importOriginal) => ({
   openDM: vi.fn(),
 }));
 vi.mock('./lib/store.svelte', () => ({ store: { agents: {} }, putRoom: vi.fn() }));
-vi.mock('./lib/route.svelte', () => ({ route: { path: '/new' }, navigate: vi.fn() }));
+vi.mock('./lib/route.svelte', () => ({ route: { path: '/new' }, replace: vi.fn() }));
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -23,7 +23,7 @@ beforeEach(() => {
   };
 });
 
-test('Create posts the trimmed topic and the checked agents, then returns to the list', async () => {
+test('Create posts the trimmed topic and the checked agents, then opens the room', async () => {
   const made = room({ id: '01R', topic: 'Trip' });
   vi.mocked(createRoom).mockResolvedValue(made);
   render(NewRoom);
@@ -32,7 +32,7 @@ test('Create posts the trimmed topic and the checked agents, then returns to the
   await userEvent.click(screen.getByRole('button', { name: 'Create' }));
   expect(createRoom).toHaveBeenCalledWith('Trip', ['01F']);
   expect(putRoom).toHaveBeenCalledWith(made);
-  expect(navigate).toHaveBeenCalledWith('/');
+  expect(replace).toHaveBeenCalledWith('/rooms/01R');
 });
 
 test('Create is disabled without a topic, with a blank topic, and with no agent checked', async () => {
@@ -48,14 +48,14 @@ test('Create is disabled without a topic, with a blank topic, and with no agent 
   expect(create).toBeDisabled();
 });
 
-test("an agent's DM button opens its DM and returns to the list", async () => {
+test("an agent's DM button opens its DM and lands in it", async () => {
   const made = room({ id: '01D', flavor: 'dm' });
   vi.mocked(openDM).mockResolvedValue(made);
   render(NewRoom);
   await userEvent.click(screen.getByRole('button', { name: 'Forge' }));
   expect(openDM).toHaveBeenCalledWith('01F');
   expect(putRoom).toHaveBeenCalledWith(made);
-  expect(navigate).toHaveBeenCalledWith('/');
+  expect(replace).toHaveBeenCalledWith('/rooms/01D');
 });
 
 test('a revoked agent is offered in neither section', () => {
@@ -92,7 +92,7 @@ test("the server's validation message is shown and the form keeps its values", a
   );
   expect(screen.getByLabelText('Topic')).toHaveValue('Trip');
   expect(screen.getByRole('checkbox', { name: 'Atlas' })).toBeChecked();
-  expect(navigate).not.toHaveBeenCalled();
+  expect(replace).not.toHaveBeenCalled();
 });
 
 test('an error that is not an ApiError still shows its message', async () => {
@@ -115,8 +115,8 @@ test('every button is disabled while a request is pending, and a second tap send
   await userEvent.type(screen.getByLabelText('Topic'), '{Enter}');
   expect(openDM).toHaveBeenCalledTimes(1);
   expect(createRoom).not.toHaveBeenCalled();
-  resolve(room());
-  await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith('/'));
+  resolve(room({ id: '01D' }));
+  await vi.waitFor(() => expect(replace).toHaveBeenCalledWith('/rooms/01D'));
 });
 
 test('with no agents there are no buttons but Create, which is disabled', () => {
