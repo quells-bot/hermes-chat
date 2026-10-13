@@ -1,5 +1,6 @@
 // Where the person is, from the hash: #/ is the room list, #/new the form,
-// #/unread the Unread page, #/rooms/<id> a room.
+// #/unread the Unread page, #/note the note, #/rooms/<id> a room,
+// #/rooms/<id>/settings its settings.
 
 // prev is the path before this one, '/' at the start: a room leads back to
 // the page the person came from.

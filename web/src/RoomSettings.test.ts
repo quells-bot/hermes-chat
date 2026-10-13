@@ -115,6 +115,14 @@ test('inviting takes a second tap', async () => {
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Invite' })).toBeNull());
 });
 
+test('Invite puts the focus on Confirm', async () => {
+  store.rooms['01R'] = room({ id: '01R', humans: [human()] });
+  vi.mocked(api.listHumans).mockResolvedValue([human(), human({ id: '01H2', username: 'sam' })]);
+  render(RoomSettings, { id: '01R' });
+  await userEvent.click(await screen.findByRole('button', { name: 'Invite' }));
+  expect(screen.getByRole('button', { name: 'Confirm' })).toHaveFocus();
+});
+
 test('Cancel disarms an invite', async () => {
   store.rooms['01R'] = room({ id: '01R', humans: [human()] });
   vi.mocked(api.listHumans).mockResolvedValue([human(), human({ id: '01H2', username: 'sam' })]);

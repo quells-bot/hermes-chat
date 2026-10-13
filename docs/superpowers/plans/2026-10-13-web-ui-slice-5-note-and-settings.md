@@ -31,12 +31,12 @@ Each is Claude's call. The four marked **(ask Kai)** change what the person sees
 | Question | Decision |
 |---|---|
 | Where the note is reached from | A `Note` link in the room list's footer, beside the username and Log out. The header keeps what it has. |
-| Knowing that suggestions wait | The footer link carries the count of pending entries as a badge. The note is fetched on every store load (each `ready`, and the page becoming visible), which is the only way to learn of one: no event announces a suggestion. **(ask Kai)** |
+| Knowing that suggestions wait | The footer link carries the count of pending entries as a badge. The note is fetched on every store load (each `ready`, and the page becoming visible), which is the only way to learn of one: no event announces a suggestion. The note screen also fetches when it opens. **(ask Kai)** |
 | Where the note is held | `lib/note.svelte.ts`, not the store. No event touches it, so the store's holding rule has nothing to do for it. |
 | Two note writes at once | Not possible: while one is in flight the others do nothing and the screen disables its controls. A load's answer is dropped if a write started after it did. |
 | Entry controls | Pending: `Approve`, `Edit`, `Delete`. Approved: `Edit`, `Unapprove`, `Delete`. Unapprove is `PATCH {approved:false}`, the API's "reject", and sends the entry back to the queue; a pending suggestion the person does not want is deleted, since leaving it would hold one of the 50 quarantine places. **(ask Kai)** |
 | Deleting an entry | One tap, no confirmation, though it cannot be undone. An entry is at most 300 characters. **(ask Kai)** |
-| Caps in the form | No `maxlength` attribute (it counts UTF-16 units and truncates a paste silently). A counter (`1234 / 2000`, and `3100 / 4000` for what agents are given) turns to `--err` past the cap and Save is disabled. The server stays the judge; its message is shown. |
+| Caps in the form | No `maxlength` attribute (it counts UTF-16 units and truncates a paste silently). A counter (`1234 / 2000`, and `3100 / 4000` for what agents are given) turns to `--err` past the cap. The 2,000 and 300 counters disable Save; the 4,000 total only turns to `--err`, because the held entries may be stale and the server is the judge. The server stays the judge; its message is shown. |
 | Where settings are reached from | A `Settings` item in the room's ⋯ menu. A DM has none: the server refuses every change to one. |
 | Topic and turn cap | One form, one Save, one `PATCH` carrying only the fields that changed. |
 | Removing an agent | One tap. It can be added back, though its waiting copies are cancelled and its open prompts expire. The room's last agent has no Remove. |

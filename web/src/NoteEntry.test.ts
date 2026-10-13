@@ -4,6 +4,7 @@ import { beforeEach, expect, test, vi } from 'vitest';
 import * as api from './lib/api';
 import { note as fixture, noteEntry } from './lib/fixtures';
 import { disconnect } from './lib/store.svelte';
+import type { Note as NoteData } from './lib/types';
 import NoteEntry from './NoteEntry.svelte';
 
 vi.mock('./lib/api', async (importOriginal) => ({
@@ -20,6 +21,12 @@ beforeEach(() => {
   vi.mocked(api.updateNoteEntry).mockReset().mockResolvedValue(fixture());
   vi.mocked(api.deleteNoteEntry).mockReset().mockResolvedValue(fixture());
 });
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+}
 
 const names = () => screen.getAllByRole('button').map((b) => b.textContent);
 
@@ -81,6 +88,28 @@ test('Edit saves the trimmed text', async () => {
   expect(api.updateNoteEntry).toHaveBeenCalledWith('e1', { text: 'likes coffee' });
   await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Entry' })).toBeNull());
   expect(onerror).toHaveBeenLastCalledWith('');
+});
+
+test('Edit puts the focus in the box', async () => {
+  render(NoteEntry, { entry: noteEntry(), disabled: false, onerror: vi.fn() });
+  await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+  expect(screen.getByRole('textbox', { name: 'Entry' })).toHaveFocus();
+});
+
+test('typing during an edit’s save is kept', async () => {
+  const page = deferred<NoteData>();
+  vi.mocked(api.updateNoteEntry).mockReturnValue(page.promise);
+  render(NoteEntry, { entry: noteEntry(), disabled: false, onerror: vi.fn() });
+  await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+  await userEvent.type(screen.getByRole('textbox', { name: 'Entry' }), '1');
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await userEvent.type(screen.getByRole('textbox', { name: 'Entry' }), '2');
+
+  page.resolve(fixture());
+
+  await waitFor(() => expect(api.updateNoteEntry).toHaveBeenCalledTimes(1));
+  await new Promise((r) => setTimeout(r, 0));
+  expect(screen.getByRole('textbox', { name: 'Entry' })).toHaveValue('likes tea12');
 });
 
 test('Cancel leaves the entry as it was', async () => {

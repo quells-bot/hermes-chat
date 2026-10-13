@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import HaltControl from './HaltControl.svelte';
   import Header from './Header.svelte';
   import NoteEntry from './NoteEntry.svelte';
@@ -12,7 +13,7 @@
     pending,
     saveText,
   } from './lib/note.svelte';
-  import { reason } from './lib/store.svelte';
+  import { load, reason, store } from './lib/store.svelte';
 
   // draft is what the person has typed and not yet saved; null while the box
   // is untouched, so that it follows each load of the note.
@@ -28,11 +29,17 @@
     draft !== null && note.value !== null && draft.trim() !== note.value.text && chars(draft) <= maxText && !note.busy,
   );
 
+  // The stream does not carry the note, so a suggestion made while the page
+  // was open is fetched here.
+  onMount(() => void loadNote());
+
   async function save() {
     if (draft === null) return;
+    // Typing that lands while the write is in flight stays in the box.
+    const sent = draft;
     try {
-      await saveText(draft);
-      draft = null;
+      await saveText(sent);
+      if (draft === sent) draft = null;
       problem = '';
     } catch (err) {
       problem = reason(err);
@@ -44,6 +51,12 @@
   <HaltControl />
 </Header>
 
+{#if store.error}
+  <div class="problem">
+    <p role="alert">{store.error}</p>
+    <button type="button" onclick={load}>Retry</button>
+  </div>
+{/if}
 {#if note.error}
   <div class="problem">
     <p role="alert">{note.error}</p>

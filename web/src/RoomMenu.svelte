@@ -111,10 +111,11 @@
 
   .dropdown a {
     padding: 0.25rem 0.6rem;
-    border: 1px solid var(--line);
+    border: 1px solid var(--aub-line);
     border-radius: 0.25rem;
-    background: var(--paper);
-    color: var(--ink);
+    background: var(--aub-hi);
+    color: var(--on-aub);
+    font-size: 0.875rem;
     text-decoration: none;
   }
 </style>

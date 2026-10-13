@@ -239,7 +239,7 @@ so does any other address.
 The list's footer has a **Note** link beside the username and **Log out**. The
 note is not part of the snapshot and no event announces a change to it, so the
 store fetches it with every load (each `ready`, and the page becoming visible)
-and the link carries a badge with the number of entries waiting for review. A
+and again when the note screen opens, and the link carries a badge with the number of entries waiting for review. A
 failed fetch fails nothing else. The note is held in memory only, outside the
 store, and is emptied when the stream is torn down; a person never sees
 another's. `#/note` shows the person's text in a box with a counter
@@ -254,7 +254,8 @@ them. The text and entry counters turn to the error colour past their limit and
 disable their **Save**; the 4000 counter only turns the colour, and the
 server's refusal is what is shown. The boxes have no `maxlength`. Only one
 note write is in flight at a time: while one is, the screen's controls are
-disabled and a second call does nothing. The answer to a
+disabled and a second call does nothing. Typing that lands while a save is in
+flight stays in the box; only a box still holding what was sent is cleared. The answer to a
 load is dropped when a write was in flight at any moment between the load's
 start and its answer.
 

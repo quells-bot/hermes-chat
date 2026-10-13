@@ -4,7 +4,7 @@ import { beforeEach, expect, test, vi } from 'vitest';
 import * as api from './lib/api';
 import { note as fixture, noteEntry } from './lib/fixtures';
 import { loadNote, maxApproved, maxText, note } from './lib/note.svelte';
-import { disconnect } from './lib/store.svelte';
+import { disconnect, store } from './lib/store.svelte';
 import type { Note as NoteData } from './lib/types';
 import Note from './Note.svelte';
 
@@ -19,7 +19,11 @@ vi.mock('./lib/stream', () => ({ openStream: vi.fn() }));
 
 beforeEach(() => {
   disconnect();
-  vi.mocked(api.getNote).mockReset();
+  // The screen fetches the note when it opens; unless a test says otherwise
+  // the server answers with the note the test holds.
+  vi.mocked(api.getNote)
+    .mockReset()
+    .mockImplementation(async () => JSON.parse(JSON.stringify(note.value)) as NoteData);
   vi.mocked(api.setNoteText).mockReset();
   vi.mocked(api.updateNoteEntry).mockReset();
   vi.mocked(api.deleteNoteEntry).mockReset();
@@ -174,16 +178,51 @@ test('the total is marked over past the limit', async () => {
 });
 
 test('a load that failed shows why and Retry loads again', async () => {
-  note.error = 'could not load the note';
-  vi.mocked(api.getNote).mockResolvedValue(fixture({ text: 'here' }));
+  vi.mocked(api.getNote).mockRejectedValueOnce(new Error('could not load the note'));
   render(Note);
-  expect(screen.getByRole('alert')).toHaveTextContent('could not load the note');
+  expect(await screen.findByRole('alert')).toHaveTextContent('could not load the note');
   expect(screen.queryByRole('textbox', { name: 'Note' })).toBeNull();
 
+  vi.mocked(api.getNote).mockResolvedValue(fixture({ text: 'here' }));
   await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
 
-  expect(api.getNote).toHaveBeenCalledTimes(1);
+  expect(api.getNote).toHaveBeenCalledTimes(2);
   expect(await screen.findByRole('textbox', { name: 'Note' })).toHaveValue('here');
+});
+
+test('a store error is shown and Retry loads again', async () => {
+  note.value = fixture();
+  store.error = 'could not stop everything';
+  render(Note);
+  expect(screen.getByRole('alert')).toHaveTextContent('could not stop everything');
+
+  vi.mocked(api.getNote).mockClear();
+  await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+  await waitFor(() => expect(api.getNote).toHaveBeenCalled());
+});
+
+test('opening the screen fetches the note', async () => {
+  note.value = fixture();
+  vi.mocked(api.getNote).mockResolvedValue(fixture({ entries: [noteEntry({ text: 'just suggested' })] }));
+  render(Note);
+  expect(await screen.findByText('just suggested')).toBeInTheDocument();
+  expect(api.getNote).toHaveBeenCalledTimes(1);
+});
+
+test('typing during a save is kept', async () => {
+  note.value = fixture({ text: 'old' });
+  const page = deferred<NoteData>();
+  vi.mocked(api.setNoteText).mockReturnValue(page.promise);
+  render(Note);
+  await userEvent.type(box(), '1');
+  await userEvent.click(save());
+  await userEvent.type(box(), '2');
+
+  page.resolve(fixture({ text: 'old1' }));
+
+  await waitFor(() => expect(save()).toBeEnabled());
+  expect(box()).toHaveValue('old12');
 });
 
 test('every control is disabled while a write is in flight', async () => {

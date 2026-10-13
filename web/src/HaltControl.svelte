@@ -3,7 +3,7 @@
 
   // One tap, no confirmation. The button stays disabled until the request
   // settles, so a second tap cannot send a second one. A failure shows as
-  // store.error, which Home displays.
+  // store.error, which the screen holding the control displays.
   let busy = $state(false);
 
   async function run(action: () => Promise<void>) {

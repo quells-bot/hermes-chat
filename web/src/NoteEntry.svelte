@@ -30,9 +30,17 @@
 
   async function saveEdit() {
     if (draft === null || !canSave) return;
-    if (await run(() => editEntry(entry.id, draft!.trim()))) {
+    // Typing that lands while the write is in flight keeps the box open.
+    const sent = draft;
+    if (await run(() => editEntry(entry.id, sent.trim())) && draft === sent) {
       draft = null;
     }
+  }
+
+  // focusing puts the focus on an element as it appears, for a control that
+  // has just replaced the one the person tapped.
+  function focusing(node: HTMLElement) {
+    node.focus();
   }
 </script>
 
@@ -55,7 +63,7 @@
       <button type="button" {disabled} onclick={() => run(() => removeEntry(entry.id))}>Delete</button>
     </div>
   {:else}
-    <textarea aria-label="Entry" rows="3" bind:value={draft}></textarea>
+    <textarea aria-label="Entry" rows="3" bind:value={draft} use:focusing></textarea>
     <div class="row">
       <span class="count" class:over={count > maxEntry}>{count} / {maxEntry}</span>
       <button type="button" disabled={disabled || !canSave} onclick={saveEdit}>Save</button>

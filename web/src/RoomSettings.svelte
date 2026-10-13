@@ -106,6 +106,12 @@
     }
   }
 
+  // focusing puts the focus on an element as it appears, for a control that
+  // has just replaced the one the person tapped.
+  function focusing(node: HTMLElement) {
+    node.focus();
+  }
+
   async function confirm(humanId: string): Promise<void> {
     if (await act(() => invite(id, humanId))) {
       armed = null;
@@ -194,7 +200,7 @@
           <li>
             <span class="name">{h.username}</span>
             {#if armed === h.id}
-              <button type="button" disabled={busy || frozen} onclick={() => confirm(h.id)}>Confirm</button>
+              <button type="button" disabled={busy || frozen} onclick={() => confirm(h.id)} use:focusing>Confirm</button>
               <button type="button" disabled={busy || frozen} onclick={() => (armed = null)}>Cancel</button>
             {:else}
               <button type="button" disabled={busy || frozen} onclick={() => (armed = h.id)}>Invite</button>
