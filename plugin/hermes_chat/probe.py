@@ -35,11 +35,15 @@ def describe(hook: str, kwargs: dict, session: dict) -> str:
     if hook == "post_tool_call":
         parts.append(f"duration_ms={kwargs.get('duration_ms') or '-'}")
         parts.append(f"status={kwargs.get('status') or '-'}")
+    if hook == "on_interim_message":
+        parts.append(f"already_streamed={kwargs.get('already_streamed')}")
     return " ".join(parts)
 
 
 def _make_callback(hook_name: str):
-    async def callback(**kwargs):
+    # A plain function: Hermes calls a stream hook (on_interim_message) from a
+    # worker thread without awaiting it, so a coroutine there would never run.
+    def callback(**kwargs):
         session = {name: get_session_env(env) for name, env in _SESSION_ENV.items()}
         try:
             logger.info("%s", describe(hook_name, kwargs, session))

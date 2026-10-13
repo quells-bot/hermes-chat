@@ -50,7 +50,7 @@ def test_register_probe_registers_three_hooks():
     assert names == ["pre_tool_call", "post_tool_call", "on_interim_message"]
 
 
-async def test_callback_never_raises(monkeypatch):
+def test_callback_never_raises(monkeypatch):
     def boom(*args, **kwargs):
         raise RuntimeError("boom")
 
@@ -62,8 +62,22 @@ async def test_callback_never_raises(monkeypatch):
             callbacks[hook_name] = callback
 
     register_probe(Ctx())
-    result = await callbacks["pre_tool_call"](tool_name="x", args={"secret": 1})
+    result = callbacks["pre_tool_call"](tool_name="x", args={"secret": 1})
     assert result is None
+
+
+def test_callbacks_are_plain_functions():
+    """Hermes runs a stream hook without awaiting it; a coroutine would be dropped."""
+    import inspect
+
+    callbacks = {}
+
+    class Ctx:
+        def register_hook(self, hook_name, callback):
+            callbacks[hook_name] = callback
+
+    register_probe(Ctx())
+    assert not [name for name, cb in callbacks.items() if inspect.iscoroutinefunction(cb)]
 
 
 def test_adapter_register_also_registers_the_probe():
