@@ -1,14 +1,17 @@
 <script lang="ts">
   import { ApiError } from './lib/api';
   import { preview } from './lib/format';
-  import { send, store, type SendMode } from './lib/store.svelte';
+  import { reason, send, store, type SendMode } from './lib/store.svelte';
   import type { Message } from './lib/types';
 
   let {
     id,
     replyTo = null,
     onclearReply,
-  }: { id: string; replyTo?: Message | null; onclearReply?: () => void } = $props();
+    onsent,
+  }: { id: string; replyTo?: Message | null; onclearReply?: () => void; onsent?: () => void } = $props();
+
+  let input: HTMLTextAreaElement | undefined = $state();
 
   let text = $state('');
   let mode = $state<SendMode>('queue');
@@ -23,6 +26,12 @@
   // The server refuses a steer when no turn runs, so the choice only appears
   // while an agent is working and the room is neither paused nor halted.
   const steerable = $derived(!!room && !room.paused && !store.halted && working.length > 0);
+  // A choice of Steer lasts only as long as there is a turn to steer: once
+  // the choice is gone, the composer posts.
+  const sending = $derived<SendMode>(steerable ? mode : 'queue');
+  // The steer route takes no reply, so the quote is shown, sent and cleared
+  // only with a post; it is kept through a steer for the post after it.
+  const quoted = $derived(sending === 'queue' ? replyTo : null);
   const placeholder = $derived(
     working.length === 0
       ? 'Message…'
@@ -30,6 +39,13 @@
         ? `Message, or steer ${working[0].display_name}…`
         : 'Message, or steer…',
   );
+
+  // Choosing a message to reply to is the start of writing the reply.
+  $effect(() => {
+    if (replyTo) {
+      input?.focus();
+    }
+  });
 
   function onInput() {
     // An edit is a new message: the failed attempt's id no longer applies.
@@ -39,18 +55,22 @@
   async function submit() {
     if (busy) return;
     const client = attempt || crypto.randomUUID();
+    const reply = quoted;
     busy = true;
     error = '';
     try {
-      await send(id, text.trim(), mode, client, replyTo?.id ?? null);
+      await send(id, text.trim(), sending, client, reply?.id ?? null);
       text = '';
       attempt = '';
       error = '';
-      onclearReply?.();
+      if (reply) {
+        onclearReply?.();
+      }
+      onsent?.();
     } catch (err) {
       if (err instanceof ApiError) {
         attempt = client;
-        error = err.message;
+        error = reason(err);
       }
     } finally {
       busy = false;
@@ -59,11 +79,11 @@
 </script>
 
 <div class="composer">
-  {#if replyTo}
+  {#if quoted}
     <div class="reply">
       <span class="glyph">↩</span>
       <div class="reply-text">
-        <b>{replyTo.author?.name ?? 'removed'}</b> {preview(replyTo.text)}
+        <b>{quoted.author?.name ?? 'removed'}</b> {preview(quoted.text)}
       </div>
       <button type="button" aria-label="Clear reply" onclick={() => onclearReply?.()}>×</button>
     </div>
@@ -79,6 +99,8 @@
       aria-label="Message"
       {placeholder}
       bind:value={text}
+      bind:this={input}
+      readonly={busy}
       oninput={onInput}
     ></textarea>
     <button type="button" class="send" disabled={text.trim() === '' || busy} onclick={submit}>
@@ -122,8 +144,11 @@
     color: var(--ink);
   }
 
+  /* The padding is the tap target; the margins take it back out of the row. */
   .reply button {
     flex: none;
+    margin: -6px -10px -6px 0;
+    padding: 8px 12px;
     border: none;
     background: none;
     color: var(--ink2);

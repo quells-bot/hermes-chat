@@ -9,6 +9,9 @@
   const prompt = $derived(message.prompt);
 
   let text = $state('');
+  // pending: an answer is on its way, or was taken. A taken answer keeps the
+  // card closed to a second one until the answered prompt is drawn, which
+  // can be a moment later when its event is held behind a fetch.
   let pending = $state(false);
   let error = $state('');
 
@@ -22,13 +25,13 @@
       await answer(message.room_id, message.id, value.trim());
     } catch (err) {
       error = err instanceof ApiError ? err.message : 'Answer failed.';
-    } finally {
       pending = false;
     }
   }
 
   function onkeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // An Enter that confirms an input method's composition is not a send.
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       void send(trimmed);
     }
@@ -62,7 +65,7 @@
     {/if}
     {#if prompt.state === 'open' && prompt.kind === 'clarify'}
       <div class="input">
-        <textarea rows={1} placeholder="Your answer" bind:value={text} onkeydown={onkeydown}></textarea>
+        <textarea rows={1} aria-label="Your answer" placeholder="Your answer" bind:value={text} onkeydown={onkeydown}></textarea>
         <button type="button" class="answer" disabled={pending || trimmed === ''} onclick={() => void send(trimmed)}>
           Answer
         </button>

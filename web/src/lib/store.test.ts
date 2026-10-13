@@ -1611,8 +1611,8 @@ test('send steers every working agent, one message each, and marks the newest re
     .mockResolvedValueOnce(message({ id: '01M004', room_id: '01R', text: 'go' }));
   await send('01R', 'go', 'steer', 'k-1');
   expect(vi.mocked(api.steer).mock.calls).toEqual([
-    ['01R', '01A', 'go', 'k-1-0'],
-    ['01R', '01B', 'go', 'k-1-1'],
+    ['01R', '01A', 'go', 'k-1-01A'],
+    ['01R', '01B', 'go', 'k-1-01B'],
   ]);
   expect(ids('01R')).toEqual(['01M001', '01M002', '01M003', '01M004']);
   expect(api.markRoomRead).toHaveBeenCalledWith('01R', '01M004');
@@ -1707,11 +1707,12 @@ test('cancel posts the cancel and nothing_waiting is quiet', async () => {
   expect(store.error).toBe('');
 });
 
-test('a failed cancel lands in store.error', async () => {
+test('a failed cancel rejects, and is not the store\'s error', async () => {
   await opened('01R', [message({ id: '01M001', room_id: '01R' })]);
-  vi.mocked(api.cancelMessage).mockRejectedValue(unreachable());
-  await expect(cancel('01R', '01M001')).resolves.toBeUndefined();
-  expect(store.error).toBe('cannot reach the server');
+  const failure = unreachable();
+  vi.mocked(api.cancelMessage).mockRejectedValue(failure);
+  await expect(cancel('01R', '01M001')).rejects.toBe(failure);
+  expect(store.error).toBe('');
 });
 
 test('stopTurns asks each working agent once', async () => {
@@ -1727,11 +1728,26 @@ test('stopTurns asks each working agent once', async () => {
   expect(store.error).toBe('');
 });
 
-test('stopTurns records a failure in store.error', async () => {
-  await opened('01R', run(1, 1), [room({ id: '01R', agents: [agent({ id: '01A', working: true })] })]);
-  vi.mocked(api.stopTurn).mockRejectedValue(unreachable());
-  await expect(stopTurns('01R')).resolves.toBeUndefined();
-  expect(store.error).toBe('cannot reach the server');
+test('stopTurns asks every agent, then rejects with the first failure', async () => {
+  await opened('01R', run(1, 1), [
+    room({ id: '01R', agents: [agent({ id: '01A', working: true }), agent({ id: '01B', working: true })] }),
+  ]);
+  const failure = unreachable();
+  vi.mocked(api.stopTurn).mockRejectedValueOnce(failure).mockResolvedValueOnce();
+  await expect(stopTurns('01R')).rejects.toBe(failure);
+  expect(api.stopTurn).toHaveBeenCalledTimes(2);
+  expect(store.error).toBe('');
+});
+
+test('a failed pause or resume rejects, and is not the store\'s error', async () => {
+  await loaded([room({ id: '01R', paused: false })]);
+  const failure = unreachable();
+  vi.mocked(api.pauseRoom).mockRejectedValue(failure);
+  vi.mocked(api.resumeRoom).mockRejectedValue(failure);
+  await expect(pause('01R')).rejects.toBe(failure);
+  await expect(resume('01R')).rejects.toBe(failure);
+  expect(store.error).toBe('');
+  expect(store.rooms['01R'].paused).toBe(false);
 });
 
 test('pause and resume write the answer\'s room as room.changed', async () => {

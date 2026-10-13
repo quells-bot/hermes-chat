@@ -1,14 +1,17 @@
 <script lang="ts">
-  import { pause, resume, store } from './lib/store.svelte';
+  import { pause, reason, resume, store } from './lib/store.svelte';
 
   // The room's one item of menu in the header. The ⋯ opens a dropdown with a
   // single Pause or Resume, whichever the room wants. One tap, no
   // confirmation: the item stays disabled until the request settles, then
-  // the menu closes. A failure shows as store.error, which Room displays.
-  let { id }: { id: string } = $props();
+  // the menu closes. A failure is handed to onerror, for Room to show.
+  let { id, onerror }: { id: string; onerror?: (why: string) => void } = $props();
 
   let open = $state(false);
   let busy = $state(false);
+  let root: HTMLElement | undefined = $state();
+  let trigger: HTMLButtonElement | undefined = $state();
+  let item: HTMLButtonElement | undefined = $state();
 
   const paused = $derived(store.rooms[id]?.paused ?? false);
 
@@ -21,18 +24,59 @@
       } else {
         await pause(id);
       }
-      open = false;
+      onerror?.('');
+    } catch (err) {
+      onerror?.(reason(err));
     } finally {
       busy = false;
+      close();
     }
   }
+
+  // close shuts the menu and hands the focus back to the ⋯ that opened it.
+  function close(): void {
+    open = false;
+    trigger?.focus();
+  }
+
+  function onkeydown(e: KeyboardEvent): void {
+    if (open && e.key === 'Escape') {
+      e.preventDefault();
+      close();
+    }
+  }
+
+  // An open menu takes the focus, and a tap anywhere else shuts it.
+  $effect(() => {
+    if (!open) {
+      return;
+    }
+    item?.focus();
+    const outside = (e: MouseEvent): void => {
+      if (root !== undefined && e.target instanceof Node && !root.contains(e.target)) {
+        open = false;
+      }
+    };
+    document.addEventListener('click', outside);
+    return () => document.removeEventListener('click', outside);
+  });
 </script>
 
-<div class="menu">
-  <button type="button" aria-label="Menu" aria-expanded={open} onclick={() => (open = !open)}>⋯</button>
+<div class="menu" bind:this={root}>
+  <button
+    type="button"
+    aria-label="Menu"
+    aria-haspopup="menu"
+    aria-expanded={open}
+    bind:this={trigger}
+    onclick={() => (open = !open)}
+    {onkeydown}
+  >⋯</button>
   {#if open}
-    <div class="dropdown">
-      <button type="button" disabled={busy} onclick={run}>{paused ? 'Resume' : 'Pause'}</button>
+    <div class="dropdown" role="menu">
+      <button type="button" role="menuitem" disabled={busy} bind:this={item} onclick={run} {onkeydown}>
+        {paused ? 'Resume' : 'Pause'}
+      </button>
     </div>
   {/if}
 </div>

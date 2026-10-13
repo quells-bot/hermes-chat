@@ -787,3 +787,49 @@ test('no composer in an archived room', async () => {
   await showRoom({ archived: true }, ['01M1']);
   expect(screen.queryByLabelText('Message')).toBeNull();
 });
+
+test('a failed Stop shows in the room, not in the store, and can be dismissed', async () => {
+  await showRoom({ agents: [agent({ id: '01A', working: true })] }, ['01M1']);
+  vi.mocked(api.stopTurn).mockRejectedValue(new api.ApiError(0, 'network', 'cannot reach the server'));
+  await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('cannot reach the server');
+  expect(store.error).toBe('');
+  expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
+  await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+test('a failed Pause shows in the room, and a Pause that works clears it', async () => {
+  await showRoom({}, ['01M1']);
+  vi.mocked(api.pauseRoom).mockRejectedValueOnce(new api.ApiError(0, 'network', 'cannot reach the server'));
+  await userEvent.click(screen.getByRole('button', { name: 'Menu' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Pause' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('cannot reach the server');
+  expect(store.error).toBe('');
+  vi.mocked(api.pauseRoom).mockResolvedValue(room({ paused: true, last_message_id: '01M1' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Menu' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Pause' }));
+  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  expect(store.rooms['room-1'].paused).toBe(true);
+});
+
+test('no Reply in an archived room', async () => {
+  await showRoom({ archived: true }, ['01M1']);
+  expect(screen.queryByRole('button', { name: 'Reply' })).toBeNull();
+});
+
+test('tapping Reply puts the focus in the composer', async () => {
+  await showRoom({}, ['01M1']);
+  await userEvent.click(screen.getByRole('button', { name: 'Reply' }));
+  await waitFor(() => expect(screen.getByLabelText('Message')).toHaveFocus());
+});
+
+test('sending from further up brings the feed to the person’s own message', async () => {
+  const { container } = await showRoom({ last_read_message_id: '01M3' }, ['01M1', '01M2', '01M3']);
+  const feed = feedOf(container);
+  feed.scrollTop = 0;
+  vi.mocked(api.postMessage).mockResolvedValue(message({ id: '01M4', room_id: 'room-1', text: 'mine' }));
+  await userEvent.type(screen.getByLabelText('Message'), 'mine');
+  await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+  await waitFor(() => expect(feed.scrollTop).toBe(1200));
+});

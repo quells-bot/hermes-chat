@@ -4,7 +4,7 @@
   import { attachmentUrl } from './lib/api';
   import { clock, iconName, preview, size } from './lib/format';
   import { session } from './lib/session.svelte';
-  import { cancel, loadQuoted, store } from './lib/store.svelte';
+  import { cancel, loadQuoted, reason, store } from './lib/store.svelte';
   import type { Message } from './lib/types';
   import Markdown from './Markdown.svelte';
   import PromptCard from './PromptCard.svelte';
@@ -40,12 +40,17 @@
   );
 
   let cancelling = $state(false);
+  // Why the last Cancel failed; it is shown under the message it was for.
+  let cancelError = $state('');
 
   async function cancelDelivery() {
     if (cancelling) return;
     cancelling = true;
+    cancelError = '';
     try {
       await cancel(message.room_id, message.id);
+    } catch (err) {
+      cancelError = reason(err);
     } finally {
       cancelling = false;
     }
@@ -98,6 +103,9 @@
     {/each}
     {#if cancellable}
       <button type="button" class="cancel" disabled={cancelling} onclick={cancelDelivery}>Cancel</button>
+    {/if}
+    {#if cancelError !== ''}
+      <p class="error" role="alert">{cancelError}</p>
     {/if}
     {#each turns as d (d.agent.id)}
       <ActivityBlock {message} delivery={d} />
@@ -183,14 +191,22 @@
     color: var(--ink2);
   }
 
+  /* The padding is the tap target; the margins take it back out of the line. */
   .reply {
-    margin-left: 6px;
+    margin: -8px 0 -8px 0;
+    padding: 8px 12px;
     border: none;
     background: none;
     color: var(--ink2);
     font-size: 14px;
     line-height: 1;
     cursor: pointer;
+  }
+
+  .error {
+    margin: 4px 0 0;
+    color: var(--err);
+    font-size: 12.5px;
   }
 
   .cancel {

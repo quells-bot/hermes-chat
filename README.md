@@ -179,7 +179,9 @@ Under the feed a composer writes a message: a text box, a Send button (Enter is
 a newline; only the button sends), and, while an agent in the room is working
 and the room is not paused and nothing else is stopped, **Queue** and **Steer**
 choices — Queue posts to the room, Steer sends one copy to each working agent's
-running turn — beside a reply chip when the message is a reply. A failed send
+running turn — beside a reply chip when the message is a reply (a steer carries
+no reply, so the chip is hidden while Steer is chosen and kept for the next
+post). The text cannot be edited while a send is on its way. A failed send
 shows its reason beside the box, keeps the text and the attempt's
 `client_id`, and the button reads **Retry** to send it again, so the server
 answers the first message instead of posting twice; editing the text drops
@@ -187,7 +189,10 @@ the id and makes a fresh send. While a delivery
 of the person's own message is waiting, a **Cancel** cancels the message's
 waiting deliveries. The room header's **Stop** asks every working agent to stop
 while one is working, and a **⋯** menu pauses and resumes the room by its state
-(room settings arrive later). An open prompt card answers with one button per
+(room settings arrive later). A failure of one of these is shown where it
+happened and nowhere else: a failed Cancel under its message, a failed Stop,
+Pause or Resume at the top of that room, until the next one works or it is
+dismissed. An open prompt card answers with one button per
 choice, or a text input and an **Answer** button when the prompt asks for
 words; an answered or expired prompt keeps its buttons, disabled. Every write —
 a post, a steer, an answer, a pause, a resume — is applied through the same

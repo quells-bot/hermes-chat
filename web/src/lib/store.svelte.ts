@@ -177,7 +177,7 @@ function byId<T extends { id: string }>(items: T[]): Record<string, T> {
 
 // reason says why a request failed, or '' for a 401, which is not recorded:
 // the API layer has already signed the person out.
-function reason(err: unknown): string {
+export function reason(err: unknown): string {
   if (err instanceof ApiError && err.status === 401) {
     return '';
   }
@@ -501,8 +501,10 @@ export async function send(
     if (working.length === 0) {
       throw new ApiError(409, 'no_turn', 'no agent has a running turn');
     }
-    for (const [i, agent] of working.entries()) {
-      written(await steer(roomId, agent.id, text, `${clientId}-${i}`));
+    // Keyed by agent, not by position: the agents working can differ on a
+    // retry, and a key must never name a different agent's steer.
+    for (const agent of working) {
+      written(await steer(roomId, agent.id, text, `${clientId}-${agent.id}`));
     }
   }
   if (newest !== null) {
@@ -519,34 +521,39 @@ export async function answer(roomId: string, messageId: string, text: string): P
 }
 
 // cancel cancels a message's waiting deliveries. A 409 nothing_waiting is
-// quiet: there was nothing to cancel. Any other failure is recorded. It
-// never rejects.
+// quiet: there was nothing to cancel. It rejects with any other ApiError,
+// which is for the message to show: store.error is not the room's.
 export async function cancel(roomId: string, messageId: string): Promise<void> {
   try {
     await cancelMessage(roomId, messageId);
   } catch (err) {
     if (!(err instanceof ApiError && err.code === 'nothing_waiting')) {
-      failed(err);
+      throw err;
     }
   }
 }
 
-// stopTurns asks every agent working in the room to stop its running turn. A
-// failure is recorded. It never rejects.
+// stopTurns asks every agent working in the room to stop its running turn.
+// Every agent is asked, whatever the answers; it then rejects with the first
+// failure, which is for the room to show.
 export async function stopTurns(roomId: string): Promise<void> {
   const working = store.rooms[roomId]?.agents.filter((a) => a.working) ?? [];
+  const failures: unknown[] = [];
   for (const agent of working) {
     try {
       await stopTurn(roomId, agent.id);
     } catch (err) {
-      failed(err);
+      failures.push(err);
     }
+  }
+  if (failures.length > 0) {
+    throw failures[0];
   }
 }
 
 // pause and resume toggle a room's paused state. The answer's room is written
-// as its room.changed event would be. A failure is recorded. They never
-// reject.
+// as its room.changed event would be. They reject with the ApiError, which is
+// for the room to show.
 export async function pause(roomId: string): Promise<void> {
   await setPaused(roomId, pauseRoom);
 }
@@ -556,12 +563,8 @@ export async function resume(roomId: string): Promise<void> {
 
 // setPaused makes the call and writes the answer's room after it.
 async function setPaused(roomId: string, call: (id: string) => Promise<Room>): Promise<void> {
-  try {
-    const room = await call(roomId);
-    receive('room.changed', { room });
-  } catch (err) {
-    failed(err);
-  }
+  const room = await call(roomId);
+  receive('room.changed', { room });
 }
 
 // putMarker is markRead, except that it rejects when the request fails. It

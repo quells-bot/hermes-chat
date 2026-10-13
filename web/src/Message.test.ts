@@ -197,13 +197,25 @@ test('Cancel is disabled while pending', async () => {
   await waitFor(() => expect(button).toBeEnabled());
 });
 
-test('a failed cancel lands in store.error and a nothing_waiting one does not', async () => {
+test('a failed cancel is shown under its message, and the next try clears it', async () => {
   vi.mocked(cancelMessage).mockRejectedValue(new ApiError(500, 'boom', 'server gone'));
   render(Message, { message: message({ deliveries: [{ agent: agent(), state: 'waiting' }] }) });
   await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-  await waitFor(() => expect(store.error).toBe('server gone'));
+  expect(await screen.findByRole('alert')).toHaveTextContent('server gone');
+  expect(store.error).toBe('');
 
-  vi.mocked(cancelMessage).mockRejectedValue(new ApiError(409, 'nothing_waiting', 'nothing waiting'));
+  vi.mocked(cancelMessage).mockResolvedValue();
   await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-  await waitFor(() => expect(store.error).toBe('server gone'));
+  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+});
+
+test('a cancel with nothing waiting shows no error', async () => {
+  vi.mocked(cancelMessage).mockRejectedValue(new ApiError(409, 'nothing_waiting', 'nothing waiting'));
+  render(Message, { message: message({ deliveries: [{ agent: agent(), state: 'waiting' }] }) });
+  const button = screen.getByRole('button', { name: 'Cancel' });
+  await userEvent.click(button);
+  await waitFor(() => expect(cancelMessage).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(button).toBeEnabled());
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(store.error).toBe('');
 });

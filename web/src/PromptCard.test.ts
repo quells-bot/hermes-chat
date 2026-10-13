@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 import { ApiError, answerPrompt } from './lib/api';
@@ -53,7 +53,7 @@ test('a choice button answers too, for a clarify', async () => {
   expect(answerPrompt).toHaveBeenCalledWith('room-1', 'msg-1', 'Skip');
 });
 
-test('Answer is disabled while blank or pending', async () => {
+test('Answer is disabled while blank or pending, and stays so once the answer is taken', async () => {
   let release!: () => void;
   vi.mocked(answerPrompt).mockReturnValue(new Promise((res) => (release = () => res(message({})))));
   card({});
@@ -64,7 +64,26 @@ test('Answer is disabled while blank or pending', async () => {
   await userEvent.click(answer);
   expect(answer).toBeDisabled();
   release();
-  await waitFor(() => expect(answer).toBeEnabled());
+  // The answered prompt arrives as its event; until it is drawn the card
+  // takes no second answer.
+  await new Promise((r) => setTimeout(r, 0));
+  expect(answer).toBeDisabled();
+});
+
+test('the answer box is named', () => {
+  card({});
+  expect(screen.getByLabelText('Your answer')).toBeInTheDocument();
+});
+
+test('Enter answers, but not the Enter that confirms a composition', async () => {
+  vi.mocked(answerPrompt).mockResolvedValue(message({}));
+  card({});
+  const input = screen.getByLabelText('Your answer');
+  await userEvent.type(input, 'ok');
+  await fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+  expect(answerPrompt).not.toHaveBeenCalled();
+  await fireEvent.keyDown(input, { key: 'Enter' });
+  await waitFor(() => expect(answerPrompt).toHaveBeenCalledTimes(1));
 });
 
 test('a double tap sends one request', async () => {
