@@ -24,7 +24,7 @@ import type { Agent, Message, Room } from './types';
 export type Feed = {
   messages: Message[]; // ascending by id, each once
   more: boolean; // the server may hold older ones
-  loading: boolean; // a page is being fetched
+  loading: boolean; // a page is being fetched: the first, its backlog, or an older one
   error: string; // why the first page failed; '' when none
 };
 
@@ -330,14 +330,20 @@ async function newest(id: string): Promise<void> {
 // backlog runs when a newest page has just become a room's feed. If the read
 // marker is older than everything on it and older messages exist, it starts
 // one fetch for those before it, so that opening a room with more unread than
-// one page rarely leaves the first unread message out of reach.
+// one page rarely leaves the first unread message out of reach. The feed is
+// loading until that fetch settles, well or badly: the screen waits for it
+// before it says where the unread messages start, and loadOlder asks for
+// nothing meanwhile.
 function backlog(id: string): Promise<void> | null {
   const feed = store.feeds[id];
   const marker = Object.hasOwn(store.rooms, id) ? store.rooms[id].last_read_message_id : null;
   if (!feed.more || feed.messages.length === 0 || marker === null || marker >= feed.messages[0].id) {
     return null;
   }
-  return older(id, backlogSize);
+  feed.loading = true;
+  return older(id, backlogSize).then(() => {
+    feed.loading = false;
+  });
 }
 
 // older fetches the messages before the oldest held and prepends them. The

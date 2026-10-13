@@ -1004,6 +1004,62 @@ test('events stay held from the newest page through the backlog', async () => {
   expect(store.feeds['01R'].messages[9]).toMatchObject({ id: '01M060', text: 'edited' });
 });
 
+test('loading stays true until the backlog settles', async () => {
+  await loaded([
+    room({ id: '01R', last_read_message_id: '01M040' }),
+    room({ id: '01S', last_read_message_id: '01M040' }),
+  ]);
+  const backlog = deferred<Message[]>();
+  vi.mocked(api.listMessages).mockResolvedValueOnce(run(201, 50)).mockReturnValueOnce(backlog.promise);
+  const opening = openRoom('01R');
+  await vi.waitFor(() => expect(api.listMessages).toHaveBeenCalledTimes(2));
+  expect(store.feeds['01R']).toEqual({ messages: run(201, 50), more: true, loading: true, error: '' });
+
+  backlog.resolve(run(51, 150));
+  await opening;
+  expect(ids()).toEqual(run(51, 200).map((m) => m.id));
+  expect(store.feeds['01R'].loading).toBe(false);
+
+  // One that fails settles too.
+  const failing = deferred<Message[]>();
+  vi.mocked(api.listMessages)
+    .mockResolvedValueOnce(run(201, 50, '01S'))
+    .mockReturnValueOnce(
+      failing.promise.then(() => {
+        throw unreachable();
+      }),
+    );
+  const second = openRoom('01S');
+  await vi.waitFor(() => expect(api.listMessages).toHaveBeenCalledTimes(4));
+  expect(store.feeds['01S']).toEqual({ messages: run(201, 50, '01S'), more: true, loading: true, error: '' });
+
+  failing.resolve([]);
+  await second;
+  expect(store.feeds['01S']).toEqual({ messages: run(201, 50, '01S'), more: true, loading: false, error: '' });
+});
+
+test('loadOlder does nothing while the backlog is in flight', async () => {
+  await loaded([room({ id: '01R', last_read_message_id: '01M040' })]);
+  const backlog = deferred<Message[]>();
+  vi.mocked(api.listMessages).mockResolvedValueOnce(run(201, 50)).mockReturnValueOnce(backlog.promise);
+  const opening = openRoom('01R');
+  await vi.waitFor(() => expect(api.listMessages).toHaveBeenCalledTimes(2));
+
+  await loadOlder('01R');
+  expect(api.listMessages).toHaveBeenCalledTimes(2); // the page, and its backlog
+  expect(store.feeds['01R'].loading).toBe(true);
+
+  backlog.resolve(run(51, 150));
+  await opening;
+  expect(ids()).toEqual(run(51, 200).map((m) => m.id));
+
+  // Settled, the page before it can be asked for again.
+  vi.mocked(api.listMessages).mockResolvedValueOnce(run(1, 50));
+  await loadOlder('01R');
+  expect(api.listMessages).toHaveBeenLastCalledWith('01R', '01M051', 50);
+  expect(ids()).toEqual(run(1, 250).map((m) => m.id));
+});
+
 test('loadOlder prepends the page before the oldest held', async () => {
   await opened('01R', run(101, 50));
 

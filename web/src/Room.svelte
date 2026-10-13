@@ -6,7 +6,7 @@
   import { roomName } from './lib/rooms';
   import { navigate, route } from './lib/route.svelte';
   import { whenSeen } from './lib/seen';
-  import { closeRoom, loadOlder, markRead, openRoom, store } from './lib/store.svelte';
+  import { closeRoom, load, loadOlder, markRead, openRoom, store } from './lib/store.svelte';
   import type { RoomAgent } from './lib/types';
 
   // One room. Home draws a new one for each id, so id never changes here.
@@ -51,17 +51,22 @@
 
   let feedEl: HTMLElement | undefined = $state();
 
-  // The first unread message, fixed when the messages first arrive: the
-  // divider stays where it is while the marker moves on.
-  let divider: string | null = $state(null);
-  let dividerFixed = false;
+  // The feed has what it opens with: messages, and nothing still on its way.
+  // The messages before the newest page (the store's backlog) arrive after
+  // it, and the first unread one is usually among them.
+  const arrived = $derived(messages.length > 0 && feed?.loading === false);
 
-  $effect.pre(() => {
-    if (dividerFixed || room === undefined || messages.length === 0) {
-      return;
+  // The first unread message, fixed when the messages have arrived: the
+  // divider stays where it is while the marker moves on. A derived value, not
+  // an effect writing state, so that the divider is drawn in the same pass
+  // that places the feed on it; once fixed it depends on nothing.
+  let fixed: { id: string | null } | null = null;
+
+  const divider = $derived.by(() => {
+    if (fixed === null && room !== undefined && arrived) {
+      fixed = { id: firstUnread(messages, room.last_read_message_id) };
     }
-    dividerFixed = true;
-    divider = firstUnread(messages, room.last_read_message_id);
+    return fixed?.id ?? null;
   });
 
   // Reading every message, and its text, makes an effect run again when one
@@ -95,6 +100,9 @@
     }
     const first = messages[0].id;
     if (!placed) {
+      if (!arrived) {
+        return;
+      }
       placed = true;
       const mark = feedEl.querySelector('[role="separator"]');
       if (mark !== null) {
@@ -139,6 +147,12 @@
   <Header title={room ? roomName(room) : undefined} back={route.prev === '/unread' ? '#/unread' : '#/'} {sub} />
 
   <div class="feed" bind:this={feedEl}>
+    {#if store.error}
+      <div class="problem">
+        <p role="alert">{store.error}</p>
+        <button type="button" onclick={load}>Retry</button>
+      </div>
+    {/if}
     {#if feed?.error}
       <div class="problem">
         <p role="alert">{feed.error}</p>

@@ -13,6 +13,9 @@ import Room from './Room.svelte';
 
 vi.mock('./lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./lib/api')>()),
+  listRooms: vi.fn(),
+  listAgents: vi.fn(),
+  getHalt: vi.fn(),
   listMessages: vi.fn(),
   getMessage: vi.fn(),
   markRoomRead: vi.fn(),
@@ -57,6 +60,9 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = scrollIntoView;
   vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockImplementation(height);
   vi.mocked(navigate).mockReset();
+  vi.mocked(api.listRooms).mockReset();
+  vi.mocked(api.listAgents).mockReset();
+  vi.mocked(api.getHalt).mockReset();
   vi.mocked(api.listMessages).mockReset().mockResolvedValue([]);
   vi.mocked(api.getMessage).mockReset();
   vi.mocked(api.markRoomRead).mockReset().mockResolvedValue(undefined);
@@ -169,6 +175,42 @@ test('the feed is placed when its messages arrive after the screen is drawn', as
 
   await waitFor(() => expect(drawn(container)).toEqual(['01M1', 'NEW', '01M2']));
   expect(scrollIntoView.mock.contexts).toEqual([screen.getByRole('separator')]);
+});
+
+test('the divider and the placement wait for the backlog, and take it into account', async () => {
+  // The newest page is held and the messages before it are still being
+  // fetched: the first unread one is among those.
+  const { container } = await showRoom({ last_read_message_id: '01K1' }, ['01M1', '01M2'], {
+    more: true,
+    loading: true,
+  });
+  const feed = feedOf(container);
+  expect(drawn(container)).toEqual(['01M1', '01M2']);
+  expect(scrollIntoView).not.toHaveBeenCalled();
+  expect(feed.scrollTop).toBe(0);
+
+  store.feeds['room-1'].messages.unshift(...messages(['01K1', '01K2', '01K3']));
+  await waitFor(() => expect(drawn(container)).toEqual(['01K1', '01K2', '01K3', '01M1', '01M2']));
+  expect(scrollIntoView).not.toHaveBeenCalled();
+  expect(feed.scrollTop).toBe(0);
+
+  store.feeds['room-1'].loading = false;
+
+  await waitFor(() => expect(drawn(container)).toEqual(['01K1', 'NEW', '01K2', '01K3', '01M1', '01M2']));
+  expect(scrollIntoView.mock.contexts).toEqual([screen.getByRole('separator')]);
+  expect(feed.scrollTop).toBe(0);
+});
+
+test('a backlog that fails still lets the feed be placed', async () => {
+  const { container } = await showRoom({ last_read_message_id: '01K1' }, ['01M1', '01M2'], {
+    more: true,
+    loading: true,
+  });
+
+  store.feeds['room-1'].loading = false;
+
+  await waitFor(() => expect(drawn(container)).toEqual(['NEW', '01M1', '01M2']));
+  expect(scrollIntoView).toHaveBeenCalledTimes(1);
 });
 
 test('the divider stays where it was after the marker moves', async () => {
@@ -341,6 +383,39 @@ test('a failed page shows the error and Retry asks again', async () => {
   await waitFor(() => expect(screen.getByText('01M1')).toBeInTheDocument());
   expect(screen.queryByRole('alert')).toBeNull();
   expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+});
+
+test('a failed load shows on the room screen and Retry loads again', async () => {
+  vi.mocked(api.listRooms).mockResolvedValue([room()]);
+  vi.mocked(api.listAgents).mockResolvedValue([]);
+  vi.mocked(api.getHalt).mockResolvedValue(false);
+  store.loaded = false;
+  store.error = 'cannot reach the server';
+  render(Room, { id: 'room-1' });
+  await tick();
+  expect(screen.getByRole('alert')).toHaveTextContent('cannot reach the server');
+  expect(api.listRooms).not.toHaveBeenCalled();
+  vi.mocked(api.listMessages).mockResolvedValue(messages(['01M1']));
+
+  await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+  expect(api.listRooms).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(screen.getByText('01M1')).toBeInTheDocument());
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.getByRole('heading', { name: 'Topic' })).toBeInTheDocument();
+});
+
+test('a failed load and a failed page both show, each with its Retry', async () => {
+  await showRoom({}, []);
+  store.error = 'internal error';
+  store.feeds['room-1'].error = 'cannot reach the server';
+
+  await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(2));
+  expect(screen.getAllByRole('alert').map((a) => a.textContent)).toEqual([
+    'internal error',
+    'cannot reach the server',
+  ]);
+  expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(2);
 });
 
 test('the foot of the feed states Paused, the turn cap, Archived, and Everything is stopped', async () => {
