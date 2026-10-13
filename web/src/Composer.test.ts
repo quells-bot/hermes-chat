@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 import * as api from './lib/api';
@@ -272,4 +272,158 @@ test('Ctrl+Enter while a send is in flight sends nothing more', async () => {
   await userEvent.type(screen.getByLabelText('Message'), 'hi');
   await userEvent.keyboard('{Control>}{Enter}{Enter}{/Control}');
   expect(api.postMessage).toHaveBeenCalledTimes(1);
+});
+
+function channel() {
+  store.rooms['room-1'] = room({
+    id: 'room-1',
+    flavor: 'channel',
+    agents: [
+      agent({ id: '01S', handle: 'scout', display_name: 'Scout' }),
+      agent({ id: '01A', handle: 'atlas', display_name: 'Atlas' }),
+    ],
+  });
+}
+
+test('typing @ in a channel lists the room’s agents', async () => {
+  channel();
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), '@');
+  const options = screen.getAllByRole('option');
+  expect(options).toHaveLength(2);
+  expect(options[0]).toHaveAttribute('aria-selected', 'true');
+  expect(options[1]).toHaveAttribute('aria-selected', 'false');
+  expect(screen.getByRole('listbox', { name: 'Mention' })).toBeInTheDocument();
+});
+
+test('the list narrows as the handle is typed', async () => {
+  channel();
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), '@sc');
+  expect(screen.getAllByRole('option')).toHaveLength(1);
+});
+
+test('Enter inserts the chosen handle and sends nothing', async () => {
+  channel();
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), '@sc{Enter}');
+  expect(screen.getByLabelText('Message')).toHaveValue('@scout ');
+  expect(api.postMessage).not.toHaveBeenCalled();
+  expect(screen.queryByRole('listbox')).toBeNull();
+});
+
+test('Tab inserts too', async () => {
+  channel();
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), '@sc{Tab}');
+  expect(screen.getByLabelText('Message')).toHaveValue('@scout ');
+});
+
+test('↓ then Enter inserts the second', async () => {
+  channel();
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), '@{ArrowDown}');
+  expect(screen.getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true');
+  await userEvent.keyboard('{Enter}');
+  expect(screen.getByLabelText('Message')).toHaveValue('@scout ');
+});
+
+test('↑ wraps to the last', async () => {
+  channel();
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), '@{ArrowUp}');
+  expect(screen.getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true');
+});
+
+test('a tap inserts and the box has the focus again', async () => {
+  channel();
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), '@');
+  await userEvent.click(screen.getAllByRole('option')[1]);
+  const box = screen.getByLabelText('Message') as HTMLTextAreaElement;
+  expect(box).toHaveValue('@scout ');
+  await waitFor(() => expect(box).toHaveFocus());
+  expect(box.selectionStart).toBe(7);
+});
+
+test('Escape puts the list away and Enter is a newline again', async () => {
+  channel();
+  render(Composer, { id: 'room-1', replyTo: null });
+  const box = screen.getByLabelText('Message');
+  await userEvent.type(box, '@sc{Escape}');
+  expect(screen.queryByRole('listbox')).toBeNull();
+  await userEvent.keyboard('{Enter}');
+  expect(box).toHaveValue('@sc\n');
+  await userEvent.type(box, ' @');
+  expect(screen.getByRole('listbox')).toBeInTheDocument();
+});
+
+test('Enter with no candidate is a newline', async () => {
+  channel();
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), '@zz{Enter}');
+  expect(screen.getByLabelText('Message')).toHaveValue('@zz\n');
+});
+
+test('text after the caret survives', async () => {
+  channel();
+  render(Composer, { id: 'room-1', replyTo: null });
+  const box = screen.getByLabelText('Message') as HTMLTextAreaElement;
+  await userEvent.type(box, 'x');
+  await userEvent.clear(box);
+  box.value = '@sc now';
+  await fireEvent.input(box);
+  box.setSelectionRange(3, 3);
+  await fireEvent.keyUp(box);
+  await userEvent.keyboard('{Enter}');
+  expect(box).toHaveValue('@scout now');
+});
+
+test('Ctrl+Enter sends while the list is open', async () => {
+  channel();
+  vi.mocked(api.postMessage).mockResolvedValue(message({ id: '01M', room_id: 'room-1', text: '@sc' }));
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), '@sc');
+  await userEvent.keyboard('{Control>}{Enter}{/Control}');
+  await waitFor(() => expect(api.postMessage).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(api.postMessage).mock.calls[0][1]).toBe('@sc');
+});
+
+test.each(['dm', 'conversation'] as const)('no list in a %s', async (flavor) => {
+  store.rooms['room-1'] = room({ id: 'room-1', flavor, agents: [agent({ handle: 'scout' })] });
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), '@');
+  expect(screen.queryByRole('listbox')).toBeNull();
+});
+
+test('an agent removed from the room leaves the list', async () => {
+  channel();
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), '@');
+  expect(screen.getAllByRole('option')).toHaveLength(2);
+  store.rooms['room-1'] = room({
+    id: 'room-1',
+    flavor: 'channel',
+    agents: [agent({ id: '01A', handle: 'atlas', display_name: 'Atlas' })],
+  });
+  await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(1));
+});
+
+test('an address is not a mention', async () => {
+  channel();
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), 'kai@example.com');
+  expect(screen.queryByRole('listbox')).toBeNull();
+});
+
+test('completing drops a failed attempt’s id', async () => {
+  channel();
+  vi.mocked(api.postMessage).mockRejectedValue(new api.ApiError(0, 'network', 'cannot reach the server'));
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), '@sc');
+  await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+  await screen.findByRole('alert');
+  expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('option'));
+  expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument();
 });
