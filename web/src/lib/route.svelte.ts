@@ -1,9 +1,17 @@
-// Where the person is, from the hash: #/ is the room list, #/new the form.
+// Where the person is, from the hash: #/ is the room list, #/new the form,
+// #/unread the Unread page, #/rooms/<id> a room.
 
-export const route: { path: string } = $state({ path: '/' });
+// prev is the path before this one, '/' at the start: a room leads back to
+// the page the person came from.
+export const route: { path: string; prev: string } = $state({ path: '/', prev: '/' });
 
 function read(): void {
-  route.path = location.hash.replace(/^#/, '') || '/';
+  const path = location.hash.replace(/^#/, '') || '/';
+  if (path === route.path) {
+    return;
+  }
+  route.prev = route.path;
+  route.path = path;
 }
 
 // startRouting reads the hash now and on every change. It returns the stop function.
@@ -15,4 +23,9 @@ export function startRouting(): () => void {
 
 export function navigate(path: string): void {
   location.hash = path;
+}
+
+// roomIdOf gives the id in '/rooms/<id>', and null for any other path.
+export function roomIdOf(path: string): string | null {
+  return /^\/rooms\/([^/]+)$/.exec(path)?.[1] ?? null;
 }

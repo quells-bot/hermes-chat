@@ -1,5 +1,5 @@
-import { afterEach, expect, test } from 'vitest';
-import { navigate, route, startRouting } from './route.svelte';
+import { afterEach, expect, test, vi } from 'vitest';
+import { navigate, roomIdOf, route, startRouting } from './route.svelte';
 
 afterEach(() => {
   location.hash = '';
@@ -39,4 +39,36 @@ test('the stop function stops listening', () => {
   changeHash('#/new');
 
   expect(route.path).toBe('/');
+});
+
+test("prev is '/' at the start", async () => {
+  vi.resetModules();
+  const fresh = await import('./route.svelte');
+  expect(fresh.route).toEqual({ path: '/', prev: '/' });
+});
+
+test('prev is the path before the current one', () => {
+  const stop = startRouting();
+
+  changeHash('#/unread');
+  changeHash('#/rooms/01R');
+  expect(route.path).toBe('/rooms/01R');
+  expect(route.prev).toBe('/unread');
+
+  // A hashchange that changes nothing does not forget where the person was.
+  window.dispatchEvent(new HashChangeEvent('hashchange'));
+  expect(route.prev).toBe('/unread');
+
+  changeHash('#/');
+  expect(route.prev).toBe('/rooms/01R');
+
+  stop();
+});
+
+test('roomIdOf', () => {
+  expect(roomIdOf('/rooms/01R')).toBe('01R');
+  expect(roomIdOf('/rooms/')).toBeNull();
+  expect(roomIdOf('/rooms/a/b')).toBeNull();
+  expect(roomIdOf('/new')).toBeNull();
+  expect(roomIdOf('/')).toBeNull();
 });

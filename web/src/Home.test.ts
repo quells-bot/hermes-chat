@@ -1,8 +1,9 @@
-import { render, screen } from '@testing-library/svelte';
+import { render, screen, waitFor } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 import { signOut } from './lib/session.svelte';
-import { connect, disconnect, load, store } from './lib/store.svelte';
+import { closeRoom, connect, disconnect, load, openRoom, store } from './lib/store.svelte';
+import { room } from './lib/fixtures';
 import { route, startRouting } from './lib/route.svelte';
 import Home from './Home.svelte';
 
@@ -13,19 +14,25 @@ vi.mock('./lib/session.svelte', () => ({
   signOut: vi.fn(),
 }));
 vi.mock('./lib/store.svelte', () => ({
-  store: { link: 'live', loaded: false, error: '', rooms: {}, agents: {}, halted: false },
+  store: { link: 'live', loaded: false, error: '', rooms: {}, agents: {}, halted: false, feeds: {} },
   connect: vi.fn(),
+  openRoom: vi.fn(),
+  closeRoom: vi.fn(),
+  loadOlder: vi.fn(),
+  markRead: vi.fn(),
   disconnect: vi.fn(),
   load: vi.fn(),
   putRoom: vi.fn(),
   stopAll: vi.fn(),
   resumeAll: vi.fn(),
 }));
-vi.mock('./lib/route.svelte', () => ({
-  route: { path: '/' },
+// The real route, so that a test can move between paths under a mounted Home.
+vi.mock('./lib/route.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./lib/route.svelte')>()),
   startRouting: vi.fn(),
   navigate: vi.fn(),
 }));
+vi.mock('./lib/seen', () => ({ whenSeen: () => ({ destroy: () => {} }) }));
 vi.mock('./lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./lib/api')>()),
   createRoom: vi.fn(),
@@ -143,4 +150,21 @@ test('#/new shows the form under a header with a back link to #/', () => {
   expect(screen.getByRole('link', { name: 'Back' })).toHaveAttribute('href', '#/');
   expect(screen.getByLabelText('Topic')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Create' })).toBeInTheDocument();
+});
+
+test('#/rooms/<id> shows the room, and another id shows another room', async () => {
+  store.rooms = { '01R': room({ id: '01R', topic: 'Garden' }), '01S': room({ id: '01S', topic: 'Trip' }) };
+  route.path = '/rooms/01R';
+  render(Home);
+  expect(screen.getByRole('heading', { name: 'Garden' })).toBeInTheDocument();
+  expect(screen.getAllByRole('banner')).toHaveLength(1);
+  expect(screen.queryByRole('navigation')).toBeNull();
+  expect(openRoom).toHaveBeenCalledWith('01R');
+
+  route.path = '/rooms/01S';
+
+  await waitFor(() => expect(screen.getByRole('heading', { name: 'Trip' })).toBeInTheDocument());
+  expect(screen.queryByRole('heading', { name: 'Garden' })).toBeNull();
+  expect(closeRoom).toHaveBeenCalledWith('01R');
+  expect(openRoom).toHaveBeenLastCalledWith('01S');
 });

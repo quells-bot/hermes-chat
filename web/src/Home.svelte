@@ -3,8 +3,9 @@
   import HaltControl from './HaltControl.svelte';
   import Header from './Header.svelte';
   import NewRoom from './NewRoom.svelte';
+  import Room from './Room.svelte';
   import RoomList from './RoomList.svelte';
-  import { route, startRouting } from './lib/route.svelte';
+  import { roomIdOf, route, startRouting } from './lib/route.svelte';
   import { session, signOut } from './lib/session.svelte';
   import { connect, disconnect, load, store } from './lib/store.svelte';
 
@@ -18,6 +19,8 @@
       stop();
     };
   });
+
+  const roomId = $derived(roomIdOf(route.path));
 </script>
 
 {#snippet problem()}
@@ -29,7 +32,11 @@
   {/if}
 {/snippet}
 
-{#if route.path === '/new'}
+{#if roomId !== null}
+  {#key roomId}
+    <Room id={roomId} />
+  {/key}
+{:else if route.path === '/new'}
   <Header title="New room" back="#/">
     <HaltControl />
   </Header>
