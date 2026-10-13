@@ -1,7 +1,9 @@
 import { render, screen, waitFor } from '@testing-library/svelte';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
-import { getMessage } from './lib/api';
+import { ApiError, cancelMessage, getMessage } from './lib/api';
 import { agent, message } from './lib/fixtures';
+import { session } from './lib/session.svelte';
 import { disconnect, store } from './lib/store.svelte';
 import type { Delivery, Prompt } from './lib/types';
 import Icon from './Icon.svelte';
@@ -10,12 +12,16 @@ import Message from './Message.svelte';
 vi.mock('./lib/api', async (orig) => ({
   ...(await orig<typeof import('./lib/api')>()),
   getMessage: vi.fn(),
+  cancelMessage: vi.fn(),
 }));
 vi.mock('./lib/stream', () => ({ openStream: vi.fn() }));
 
 beforeEach(() => {
   disconnect();
   vi.mocked(getMessage).mockReset();
+  vi.mocked(cancelMessage).mockReset();
+  // The fixture author signs the person in as kai.
+  session.me = { id: 'human-1', username: 'kai' };
 });
 
 test('shows the author, the time and the rendered text', () => {
@@ -141,9 +147,63 @@ test('working, done and failed copies are activity blocks', () => {
     agent: { id: `a${i}`, handle: `h${i}`, display_name: `Agent${i}`, revoked: false },
     state,
   }));
-  render(Message, { message: message({ deliveries }) });
+  // Not kai, so no Cancel button is offered on the waiting copy.
+  render(Message, {
+    message: message({ author: { kind: 'human', id: 'h2', name: 'ann' }, deliveries }),
+  });
   for (const name of ['Agent1 · working', 'Agent2 · done', 'Agent3 · failed']) {
     expect(screen.getByRole('button', { name })).toHaveAttribute('aria-expanded', 'false');
   }
   expect(screen.getAllByRole('button')).toHaveLength(3);
+});
+
+test('Cancel appears on my own waiting message and cancels it', async () => {
+  const waiting: Delivery[] = [{ agent: agent(), state: 'waiting' }];
+  render(Message, { message: message({ deliveries: waiting }) });
+  await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(cancelMessage).toHaveBeenCalledWith('room-1', 'msg-1');
+});
+
+test('a reply button appears when asked and calls back', async () => {
+  const onreply = vi.fn();
+  render(Message, { message: message(), onreply });
+  await userEvent.click(screen.getByRole('button', { name: 'Reply' }));
+  expect(onreply).toHaveBeenCalledTimes(1);
+});
+
+test("Cancel is not offered on someone else's message", () => {
+  render(Message, {
+    message: message({
+      author: { kind: 'human', id: 'h2', name: 'ann' },
+      deliveries: [{ agent: agent(), state: 'waiting' }],
+    }),
+  });
+  expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+});
+
+test('Cancel is not offered without a waiting copy', () => {
+  render(Message, { message: message({ deliveries: [{ agent: agent(), state: 'working' }] }) });
+  expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+});
+
+test('Cancel is disabled while pending', async () => {
+  let release!: () => void;
+  vi.mocked(cancelMessage).mockReturnValue(new Promise((r) => (release = r)));
+  render(Message, { message: message({ deliveries: [{ agent: agent(), state: 'waiting' }] }) });
+  const button = screen.getByRole('button', { name: 'Cancel' });
+  await userEvent.click(button);
+  expect(button).toBeDisabled();
+  release();
+  await waitFor(() => expect(button).toBeEnabled());
+});
+
+test('a failed cancel lands in store.error and a nothing_waiting one does not', async () => {
+  vi.mocked(cancelMessage).mockRejectedValue(new ApiError(500, 'boom', 'server gone'));
+  render(Message, { message: message({ deliveries: [{ agent: agent(), state: 'waiting' }] }) });
+  await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  await waitFor(() => expect(store.error).toBe('server gone'));
+
+  vi.mocked(cancelMessage).mockRejectedValue(new ApiError(409, 'nothing_waiting', 'nothing waiting'));
+  await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  await waitFor(() => expect(store.error).toBe('server gone'));
 });
