@@ -1,16 +1,36 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
+  import Composer from './Composer.svelte';
   import Header from './Header.svelte';
   import Message from './Message.svelte';
+  import RoomMenu from './RoomMenu.svelte';
   import { firstUnread } from './lib/feed';
   import { roomName } from './lib/rooms';
   import { navigate, route } from './lib/route.svelte';
   import { whenSeen } from './lib/seen';
-  import { closeRoom, load, loadOlder, markRead, openRoom, store } from './lib/store.svelte';
-  import type { RoomAgent } from './lib/types';
+  import { closeRoom, load, loadOlder, markRead, openRoom, stopTurns, store } from './lib/store.svelte';
+  import type { Message as MessageData, RoomAgent } from './lib/types';
 
   // One room. Home draws a new one for each id, so id never changes here.
   let { id }: { id: string } = $props();
+
+  // What the composer replies to, set by a message's Reply and dropped again
+  // by sending or by the chip's ×.
+  let replyTo = $state<MessageData | null>(null);
+
+  // One tap, no confirmation. The header Stop stays disabled until the
+  // request settles, so a second tap cannot ask again; it mirrors
+  // HaltControl's local busy. A failure shows as store.error.
+  let stopBusy = $state(false);
+  async function stopWorking(): Promise<void> {
+    if (stopBusy) return;
+    stopBusy = true;
+    try {
+      await stopTurns(id);
+    } finally {
+      stopBusy = false;
+    }
+  }
 
   // The id comes from the address bar, so only what the store itself holds
   // under it counts.
@@ -268,6 +288,10 @@
     {#if store.loaded && store.link !== 'live'}
       <span class="link">reconnecting</span>
     {/if}
+    {#if room?.agents.some((a) => a.working)}
+      <button class="stop" type="button" disabled={stopBusy} onclick={stopWorking}>Stop</button>
+    {/if}
+    <RoomMenu {id} />
   </Header>
 
   {#if store.error}
@@ -297,7 +321,7 @@
         {#if message.id === divider}
           <div class="divider" role="separator">New</div>
         {/if}
-        <Message {message} />
+        <Message {message} onreply={() => (replyTo = message)} />
       {/each}
     </div>
     {#if placed}
@@ -307,6 +331,10 @@
       <div class="state">{standing}</div>
     {/if}
   </div>
+
+  {#if room !== undefined && !room.archived}
+    <Composer {id} {replyTo} onclearReply={() => (replyTo = null)} />
+  {/if}
 </div>
 
 <style>
@@ -388,5 +416,12 @@
     border: 1px solid var(--line);
     border-radius: 0.25rem;
     background: var(--paper);
+  }
+
+  /* Outranks Header's `header :global(button)` rule, as HaltControl's does. */
+  button.stop {
+    border-color: var(--err);
+    background: transparent;
+    color: var(--err);
   }
 </style>
