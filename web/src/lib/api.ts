@@ -1,7 +1,7 @@
 // The human API, as the browser calls it. Paths are relative, so the session
 // cookie and the Origin header the server checks go with every request.
 
-import type { Activity, Agent, Human, Message, Room } from './types';
+import type { Activity, Agent, Human, Message, Note, Room } from './types';
 
 export type Me = Human;
 
@@ -228,4 +228,46 @@ export function resumeRoom(roomId: string): Promise<Room> {
 // attachmentUrl is where the browser fetches an upload; no request is made here.
 export function attachmentUrl(roomId: string, attachmentId: string): string {
   return `/api/rooms/${encodeURIComponent(roomId)}/attachments/${encodeURIComponent(attachmentId)}`;
+}
+
+// The note is the signed-in human's own; each call answers with the whole note.
+export function getNote(): Promise<Note> {
+  return request<Note>('GET', '/api/note');
+}
+
+export function setNoteText(text: string): Promise<Note> {
+  return request<Note>('PUT', '/api/note', { text });
+}
+
+// updateNoteEntry changes only the fields it is given.
+export function updateNoteEntry(entryId: string, changes: { text?: string; approved?: boolean }): Promise<Note> {
+  return request<Note>('PATCH', `/api/note/entries/${encodeURIComponent(entryId)}`, changes);
+}
+
+export function deleteNoteEntry(entryId: string): Promise<Note> {
+  return request<Note>('DELETE', `/api/note/entries/${encodeURIComponent(entryId)}`);
+}
+
+export function listHumans(): Promise<Human[]> {
+  return request<{ humans: Human[] }>('GET', '/api/humans').then((r) => r.humans);
+}
+
+export type RoomChanges = { topic?: string; archived?: boolean; turn_cap?: number };
+
+// updateRoom changes only the fields it is given; each room call below answers
+// with the room as it now is.
+export function updateRoom(roomId: string, changes: RoomChanges): Promise<Room> {
+  return request<Room>('PATCH', `/api/rooms/${encodeURIComponent(roomId)}`, changes);
+}
+
+export function inviteHuman(roomId: string, humanId: string): Promise<Room> {
+  return request<Room>('POST', `/api/rooms/${encodeURIComponent(roomId)}/humans`, { human_id: humanId });
+}
+
+export function addRoomAgent(roomId: string, agentId: string): Promise<Room> {
+  return request<Room>('POST', `/api/rooms/${encodeURIComponent(roomId)}/agents`, { agent_id: agentId });
+}
+
+export function removeRoomAgent(roomId: string, agentId: string): Promise<Room> {
+  return request<Room>('DELETE', `/api/rooms/${encodeURIComponent(roomId)}/agents/${encodeURIComponent(agentId)}`);
 }

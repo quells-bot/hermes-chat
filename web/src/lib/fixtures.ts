@@ -1,5 +1,5 @@
 // Test-only builders for the server's shapes. No production file imports this.
-import type { Activity, Message, Room, RoomAgent } from './types';
+import type { Activity, Human, Message, Note, NoteEntry, Room, RoomAgent } from './types';
 
 export function agent(overrides: Partial<RoomAgent> = {}): RoomAgent {
   return {
@@ -65,4 +65,24 @@ export function activity(overrides: Partial<Activity> = {}): Activity {
     created_at: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };
+}
+
+export function human(overrides: Partial<Human> = {}): Human {
+  return { id: 'human-1', username: 'kai', ...overrides };
+}
+
+export function noteEntry(overrides: Partial<NoteEntry> = {}): NoteEntry {
+  const { id, handle, display_name, revoked } = agent();
+  return {
+    id: 'entry-1',
+    agent: { id, handle, display_name, revoked },
+    text: 'likes tea',
+    approved: false,
+    created_at: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+export function note(overrides: Partial<Note> = {}): Note {
+  return { text: '', entries: [], ...overrides };
 }
