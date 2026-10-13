@@ -64,4 +64,17 @@ def test_no_stored_message_keeps_the_streaming_cursor(gateway_factory):
     g.wait(lambda: g.state(first) == "done")
     assert not [m for m in g.messages() if "▉" in m["text"]]
     assert not [m for m in g.messages() if m["text"] != m["text"].lstrip()]
-    assert "probe hook=on_interim_message" in g.log()  # removed in Task 3 with the probe
+    assert "hermes_chat.probe" not in g.log()
+
+
+def test_tool_steps_are_recorded_against_the_turn(gateway_factory):
+    g = gateway_factory(COMMENTARY)
+    g.start()
+    g.wait_started()
+    first = g.post("run the two echoes")
+    g.wait(lambda: g.state(first) == "done")
+    acts = g.chat.human.get(f"/api/rooms/{g.room_id}/messages/{first}/activity").json()["activities"]
+    assert [a["tool"] for a in acts] == ["terminal", "terminal"]
+    assert all(a["succeeded"] is True and a["duration_ms"] >= 0 for a in acts)
+    assert "echo one" in acts[0]["preview"]
+    assert "echo one" not in g.log_lines("hermes_chat")

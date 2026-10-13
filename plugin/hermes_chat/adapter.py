@@ -1,9 +1,9 @@
 """The Hermes Chat platform adapter: stream events become Hermes MessageEvents
 and Hermes's calls become chat-server client calls.
 
-Only this module and `probe.py` import Hermes; the client modules
-(`sse.py`, `client.py`, `stream.py`, `reports.py`, `record.py`, `checks.py`)
-import nothing from it.
+Only this module and `hooks.py` import Hermes; the client modules
+(`sse.py`, `client.py`, `stream.py`, `reports.py`, `record.py`, `checks.py`,
+`steps.py`) import nothing from it.
 """
 
 from __future__ import annotations
@@ -23,10 +23,12 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import MessageDeduplicator
 from hermes_constants import get_hermes_home
 
+from . import hooks
 from .client import ApiError, ChatClient, Unauthorized, Unreachable
 from .checks import display_warnings
 from .record import OpenTurns
 from .reports import TurnReporter
+from .steps import ToolSteps, shape
 from .stream import EventStream
 
 logger = logging.getLogger("hermes_chat.adapter")
@@ -64,6 +66,8 @@ class HermesChatAdapter(BasePlatformAdapter):
         self._open_turns: OpenTurns | None = None
         self._stream: EventStream | None = None
         self._stream_task: asyncio.Task | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._steps: ToolSteps | None = None
         self._lock_held = False
         # The room gate: a room is busy from the moment a delivery for it is
         # recorded until that delivery's turn is closed.
@@ -170,10 +174,14 @@ class HermesChatAdapter(BasePlatformAdapter):
             ),
         )
         self._stream_task = asyncio.create_task(self._stream.run())
+        self._loop = asyncio.get_running_loop()
+        self._steps = ToolSteps(self._client, self._loop)
+        hooks.attach(self)
         self._mark_connected()
         return True
 
     async def disconnect(self) -> None:
+        hooks.detach(self)
         if self._resume_watcher is not None:
             self._resume_watcher.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -185,6 +193,10 @@ class HermesChatAdapter(BasePlatformAdapter):
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(self._reporter.wait_idle(), 5)
         await self._reporter.aclose()
+        if self._steps is not None:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._steps.wait_idle(), 5)
+            await self._steps.aclose()
         await self._client.aclose()
         self._release_lock()
         self._mark_disconnected()
@@ -198,6 +210,30 @@ class HermesChatAdapter(BasePlatformAdapter):
             from gateway import status
             status.release_scoped_lock(PLATFORM, self._token)
             self._lock_held = False
+
+    # ── Tool steps (called by hooks.py, from the thread that runs the tool) ──
+
+    def tool_started(self, room_id: str, tool_call_id: str, tool_name: object, args: object) -> bool:
+        """Record a tool the room's turn started. False when this adapter has
+        no turn open in that room, so the step belongs to no delivery."""
+        if self._steps is None or self._open_turns is None:
+            return False
+        delivery_id = self._open_turns.for_room(room_id)
+        if delivery_id is None:
+            return False
+        tool, preview, arguments = shape(tool_name, args)
+        logger.info("tool_started delivery=%s tool=%s tool_call_id=%s", delivery_id, tool, tool_call_id)
+        self._steps.started(delivery_id, tool_call_id, tool, preview, arguments)
+        return True
+
+    def tool_finished(self, tool_call_id: str, duration_ms: object, status: object) -> None:
+        if self._steps is None:
+            return
+        try:
+            elapsed = max(0, int(float(duration_ms or 0)))
+        except (TypeError, ValueError):
+            elapsed = 0
+        self._steps.finished(tool_call_id, elapsed, status == "ok")
 
     async def get_chat_info(self, chat_id: str) -> dict:
         return {"name": chat_id, "type": "dm"}
@@ -442,9 +478,7 @@ def _env_enablement() -> dict | None:
 
 
 def register(ctx) -> None:
-    from .probe import register_probe
-
-    register_probe(ctx)
+    hooks.register_hooks(ctx)
     ctx.register_platform(
         name="hermes_chat",
         label="Hermes Chat",

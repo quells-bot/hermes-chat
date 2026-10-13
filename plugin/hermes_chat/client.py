@@ -71,6 +71,16 @@ class ChatClient:
     async def report(self, delivery_id: str, state: str) -> None:
         await self._send("POST", f"/agent/deliveries/{delivery_id}/{state}")
 
+    async def start_tool(self, delivery_id: str, tool: str, preview: str, arguments: str) -> str:
+        """Record a tool call the turn started; returns the activity's id."""
+        resp = await self._send("POST", f"/agent/deliveries/{delivery_id}/tools",
+                                json={"tool": tool, "preview": preview, "arguments": arguments})
+        return resp.json()["id"]
+
+    async def finish_tool(self, activity_id: str, duration_ms: int, succeeded: bool) -> None:
+        await self._send("PUT", f"/agent/activities/{activity_id}",
+                         json={"duration_ms": duration_ms, "succeeded": succeeded})
+
     @asynccontextmanager
     async def open_events(self, cursor: int | None) -> AsyncIterator[AsyncIterator[bytes]]:
         """The agent event stream. Yields an async iterator of raw bytes;

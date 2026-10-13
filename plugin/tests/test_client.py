@@ -141,3 +141,37 @@ async def test_open_events_401_raises_unauthorized_on_enter(stub):
         async with c.open_events(None) as chunks:
             await anext(chunks)
     await c.aclose()
+
+async def test_start_tool_posts_the_step_and_returns_the_activity(stub):
+    stub.script("POST", "/agent/deliveries/M1/tools", (201, {"id": "ACT1", "kind": "tool"}))
+    c = ChatClient(stub.url, "t")
+    try:
+        assert await c.start_tool("M1", "terminal", "echo hi", '{"command": "echo hi"}') == "ACT1"
+    finally:
+        await c.aclose()
+    assert stub.requests[0].json == {"tool": "terminal", "preview": "echo hi", "arguments": '{"command": "echo hi"}'}
+
+
+async def test_finish_tool_puts_duration_and_result(stub):
+    stub.script("PUT", "/agent/activities/ACT1", (200, {"id": "ACT1"}))
+    c = ChatClient(stub.url, "t")
+    try:
+        await c.finish_tool("ACT1", 12, True)
+    finally:
+        await c.aclose()
+    assert stub.requests[0].json == {"duration_ms": 12, "succeeded": True}
+
+
+async def test_tool_calls_raise_api_error_when_refused(stub):
+    paused = (409, {"error": {"code": "paused", "message": "the room is paused"}})
+    stub.script("POST", "/agent/deliveries/M1/tools", paused)
+    stub.script("PUT", "/agent/activities/ACT1", paused)
+    c = ChatClient(stub.url, "t")
+    try:
+        with pytest.raises(ApiError) as started:
+            await c.start_tool("M1", "terminal", "", "{}")
+        with pytest.raises(ApiError) as finished:
+            await c.finish_tool("ACT1", 1, False)
+    finally:
+        await c.aclose()
+    assert started.value.status == 409 and finished.value.status == 409

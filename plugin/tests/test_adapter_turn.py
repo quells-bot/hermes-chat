@@ -267,3 +267,68 @@ async def test_leading_blank_lines_are_trimmed_from_what_is_sent(adapter_factory
     await a.edit_message("R1", "M2", "\n\n  Next I will run it.", finalize=True)
     assert [r.json["text"] for r in stub.requests] == ["Next I will run it.", "Next I will run it."]
     await a._client.aclose()
+
+
+async def test_tool_step_is_recorded_against_the_rooms_open_delivery(adapter_factory, stub, delivery, caplog):
+    me_ok(stub)
+    stub.script("POST", "/agent/deliveries/M1/tools", (201, {"id": "ACT1"}))
+    stub.script("PUT", "/agent/activities/ACT1", (200, {"id": "ACT1"}))
+    stub.events(ready(), frame("delivery", delivery(), 1), Hang)
+    a = adapter_factory()
+    release = asyncio.Event()
+
+    async def handler(event):
+        await release.wait()
+        return None
+
+    a.set_message_handler(handler)
+    caplog.set_level("INFO")
+    assert await a.connect() is True
+    await wait_until(lambda: a._open_turns.all() == {"M1": "R1"})
+    assert a.tool_started("R1", "c1", "terminal", {"command": "echo hi"}) is True
+    a.tool_finished("c1", 12.7, "ok")
+    await wait_until(lambda: any(p == "/agent/activities/ACT1" for p in paths(stub)))
+    started = next(r for r in stub.requests if r.path == "/agent/deliveries/M1/tools")
+    assert started.json["tool"] == "terminal" and started.json["preview"] == "echo hi"
+    finished = next(r for r in stub.requests if r.path == "/agent/activities/ACT1")
+    assert finished.json == {"duration_ms": 12, "succeeded": True}
+    assert "tool_started delivery=M1" in caplog.text and "tool=terminal" in caplog.text
+    assert "echo hi" not in caplog.text
+    release.set()
+    await a.disconnect()
+
+
+async def test_tool_step_for_a_room_with_no_open_delivery_is_sent_nowhere(adapter_factory, stub):
+    me_ok(stub)
+    stub.events(ready(), Hang)
+    a = adapter_factory()
+    a.set_message_handler(lambda event: None)
+    assert await a.connect() is True
+    assert a.tool_started("R9", "c1", "terminal", {"command": "echo hi"}) is False
+    a.tool_finished("c1", 5, "ok")
+    await asyncio.sleep(0.1)
+    assert not [p for p in paths(stub) if "/tools" in p or "/activities/" in p]
+    await a.disconnect()
+
+
+async def test_a_failed_tool_is_recorded_as_not_succeeded(adapter_factory, stub, delivery):
+    me_ok(stub)
+    stub.script("POST", "/agent/deliveries/M1/tools", (201, {"id": "ACT1"}))
+    stub.script("PUT", "/agent/activities/ACT1", (200, {"id": "ACT1"}))
+    stub.events(ready(), frame("delivery", delivery(), 1), Hang)
+    a = adapter_factory()
+    release = asyncio.Event()
+
+    async def handler(event):
+        await release.wait()
+
+    a.set_message_handler(handler)
+    assert await a.connect() is True
+    await wait_until(lambda: a._open_turns.all() == {"M1": "R1"})
+    a.tool_started("R1", "c1", "terminal", None)
+    a.tool_finished("c1", None, "error")
+    await wait_until(lambda: any(p == "/agent/activities/ACT1" for p in paths(stub)))
+    finished = next(r for r in stub.requests if r.path == "/agent/activities/ACT1")
+    assert finished.json == {"duration_ms": 0, "succeeded": False}
+    release.set()
+    await a.disconnect()

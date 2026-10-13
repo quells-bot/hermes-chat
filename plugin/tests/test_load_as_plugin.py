@@ -3,6 +3,7 @@ hermes_chat on the import path. Every module must load that way."""
 import importlib
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ import pytest
 PACKAGE = Path(__file__).resolve().parents[1] / "hermes_chat"
 LOADED_AS = "hermes_plugins_under_test.hermes_chat"
 MODULES = sorted(p.stem for p in PACKAGE.glob("*.py") if p.stem != "__init__")
-NEEDS_HERMES = {"adapter", "probe"}
+NEEDS_HERMES = {"adapter", "hooks"}
 
 
 class _NoHermesChat:
@@ -25,6 +26,10 @@ def loaded_as_plugin(monkeypatch):
     for name in [n for n in sys.modules if n == "hermes_chat" or n.startswith("hermes_chat.")]:
         monkeypatch.delitem(sys.modules, name)
     monkeypatch.setattr(sys, "meta_path", [_NoHermesChat(), *sys.meta_path])
+    # Hermes has the parent package too; `from . import x` looks it up.
+    parent = types.ModuleType(LOADED_AS.rpartition(".")[0])
+    parent.__path__ = []
+    monkeypatch.setitem(sys.modules, parent.__name__, parent)
     spec = importlib.util.spec_from_file_location(
         LOADED_AS, PACKAGE / "__init__.py", submodule_search_locations=[str(PACKAGE)])
     package = importlib.util.module_from_spec(spec)
