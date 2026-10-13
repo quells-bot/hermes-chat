@@ -189,10 +189,10 @@ the id and makes a fresh send. While a delivery
 of the person's own message is waiting, a **Cancel** cancels the message's
 waiting deliveries. The room header's **Stop** asks every working agent to stop
 while one is working, and a **⋯** menu pauses and resumes the room by its state
-and, in a room that is not a direct message, leads to its settings. A failure of one of these is shown where it
-happened and nowhere else: a failed Cancel under its message, a failed Stop,
-Pause or Resume at the top of that room, until the next one works or it is
-dismissed. An open prompt card answers with one button per
+and, in a room that is not a direct message, leads to its settings. A failure
+of one of these is shown where it happened and nowhere else: a failed Cancel
+under its message, a failed Stop, Pause or Resume at the top of that room,
+until the next one works or it is dismissed. An open prompt card answers with one button per
 choice, or a text input and an **Answer** button when the prompt asks for
 words; an answered or expired prompt keeps its buttons, disabled. Every write —
 a post, a steer, an answer, a pause, a resume — is applied through the same
@@ -246,14 +246,15 @@ another's. `#/note` shows the person's text in a box with a counter
 (`1234 / 2000`) and **Save**, then the entries to review and the approved
 entries. An entry is drawn as plain text, never as markdown, with the agent
 that wrote it. A pending entry has **Approve**, **Edit** and **Delete**; an
-approved one has **Edit**, **Unapprove**, which sends it back to review, and
+approved one has **Unapprove**, which sends it back to review, **Edit** and
 **Delete**. Delete is one tap and cannot be undone. The text and the approved
 entries together are counted against 4000 characters, an entry against 300;
 characters are counted after trimming, as code points, as the server counts
-them. A counter turns to the error colour past its limit and **Save** is
-disabled, but the boxes have no `maxlength` and the server's message is shown
-when it refuses. Only one note write is in flight at a time: while one is, the
-screen's controls are disabled and a second call does nothing. The answer to a
+them. The text and entry counters turn to the error colour past their limit and
+disable their **Save**; the 4000 counter only turns the colour, and the
+server's refusal is what is shown. The boxes have no `maxlength`. Only one
+note write is in flight at a time: while one is, the screen's controls are
+disabled and a second call does nothing. The answer to a
 load is dropped when a write was in flight at any moment between the load's
 start and its answer.
 
