@@ -173,8 +173,26 @@ current, and a reload does not empty the lists — a block that is open keeps
 its list on screen, and a turn still working is asked for again. Under the
 feed a line says when the room is paused, archived, or stopped with everything
 else, and the Unread page states `Everything is stopped` under its header when
-the store is halted. Posting, answering a prompt and the room's controls are
-not there yet.
+the store is halted.
+
+Under the feed a composer writes a message: a text box, a Send button (Enter is
+a newline; only the button sends), and, while an agent in the room is working
+and the room is not paused and nothing else is stopped, **Queue** and **Steer**
+choices — Queue posts to the room, Steer sends one copy to each working agent's
+running turn — beside a reply chip when the message is a reply. A failed send
+shows its reason beside the box, keeps the text and the attempt's
+`client_id`, and the button reads **Retry** to send it again, so the server
+answers the first message instead of posting twice; editing the text drops
+the id and makes a fresh send. While a delivery
+of the person's own message is waiting, a **Cancel** cancels the message's
+waiting deliveries. The room header's **Stop** asks every working agent to stop
+while one is working, and a **⋯** menu pauses and resumes the room by its state
+(room settings arrive later). An open prompt card answers with one button per
+choice, or a text input and an **Answer** button when the prompt asks for
+words; an answered or expired prompt keeps its buttons, disabled. Every write —
+a post, a steer, an answer, a pause, a resume — is applied through the same
+holding rule as an event, so it cannot be overwritten by a snapshot fetch in
+flight, and a successful send moves the read marker to the message it returns.
 
 Message text is markdown and is untrusted. `marked` lexes it, and the page
 copies the tokens it knows into a tree of its own and draws that tree as
