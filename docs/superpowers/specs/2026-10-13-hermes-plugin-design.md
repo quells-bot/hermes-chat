@@ -448,10 +448,13 @@ mechanism at the pinned release, revised with section 9's findings.
 - **Home room**: unprompted `send` to `HERMES_CHAT_HOME_ROOM` already works
   through stage 1's `send` (Hermes's startup and shutdown notices arrive
   there); stage 2 checks it with a real scheduled job.
-- **Hermes's own notices** *(open, for the stage 2 plan)*: whether the
-  "Confirm /new" message becomes a prompt like an approval, and whether the
-  shutdown notice is turned off for this platform
-  (`gateway_restart_notification`) or left as a message.
+- **Confirming a command**: Hermes's "Confirm /new" message becomes a prompt
+  like an approval *(Kai, 2026-10-13)*, answered through `prompt.answered`
+  instead of by typing `/approve`. The plan finds the adapter call Hermes
+  makes for it.
+- **The shutdown notice** *(open, for the stage 2 plan)*: whether it is
+  turned off for this platform (`gateway_restart_notification`) or left as a
+  message.
 - **The streaming cursor** *(open)*: whether the adapter strips `▉` from what
   it sends, so a cut-off reply does not keep it.
 
