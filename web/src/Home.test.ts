@@ -135,6 +135,11 @@ test('the + link goes to #/new', () => {
   expect(screen.getByRole('link', { name: 'New room' })).toHaveAttribute('href', '#/new');
 });
 
+test('the list’s header has the search button', () => {
+  render(Home);
+  expect(screen.getByRole('button', { name: 'Search' })).toHaveAttribute('aria-expanded', 'false');
+});
+
 test('the new-room route shows its own header and no list', () => {
   route.path = '/new';
   render(Home);

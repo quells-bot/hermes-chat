@@ -67,3 +67,10 @@ test('the row links to its room', () => {
   expect(link).toHaveAttribute('href', '#/rooms/01R');
   expect(within(link).getByText('Trip')).toBeInTheDocument();
 });
+
+test('an archived room is tagged archived and never unread', () => {
+  render(RoomRow, { room: room({ topic: 'Trip', archived: true, last_message_id: '01B' }) });
+  expect(screen.getByText('archived')).toBeInTheDocument();
+  expect(screen.queryByLabelText('unread')).toBeNull();
+  expect(screen.getByRole('listitem')).not.toHaveClass('unread');
+});

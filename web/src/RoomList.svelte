@@ -3,11 +3,17 @@
   import RoomRow from './RoomRow.svelte';
   import { loadCollapsed, saveCollapsed, type Collapsed } from './lib/collapsed';
   import { groupRooms, isUnread } from './lib/rooms';
+  import { closeSearch, matchRooms, search } from './lib/search.svelte';
   import { store } from './lib/store.svelte';
 
   let collapsed: Collapsed = $state(loadCollapsed());
 
   const groups = $derived(groupRooms(Object.values(store.rooms)));
+
+  // While a query is typed the list gives way to the matching rooms, flat.
+  const results = $derived(
+    search.open && search.query.trim() !== '' ? matchRooms(Object.values(store.rooms), search.query) : null,
+  );
 
   function toggle(key: keyof Collapsed): void {
     collapsed[key] = !collapsed[key];
@@ -35,9 +41,18 @@
 {/snippet}
 
 <nav>
-  <UnreadRow />
-  {@render section('dms', 'Direct messages', groups.dms)}
-  {@render section('rooms', 'Rooms', groups.rooms)}
+  {#if results}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+    <ul onclick={closeSearch}>
+      {#each results as r (r.id)}
+        <RoomRow room={r} />
+      {/each}
+    </ul>
+  {:else}
+    <UnreadRow />
+    {@render section('dms', 'Direct messages', groups.dms)}
+    {@render section('rooms', 'Rooms', groups.rooms)}
+  {/if}
 </nav>
 
 <style>

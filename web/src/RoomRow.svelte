@@ -25,6 +25,9 @@
       <span class="hash">#</span>
     {/if}
     <span class="name">{roomName(room)}</span>
+    {#if room.archived}
+      <span class="tag pause">archived</span>
+    {/if}
     {#if room.open_prompts > 0}
       <span class="tag ask" aria-label="{room.open_prompts} open prompts">{room.open_prompts}</span>
     {/if}

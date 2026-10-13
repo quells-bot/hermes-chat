@@ -2,15 +2,14 @@
   import { onMount } from 'svelte';
   import HaltControl from './HaltControl.svelte';
   import Header from './Header.svelte';
+  import ListScreen from './ListScreen.svelte';
   import NewRoom from './NewRoom.svelte';
   import Note from './Note.svelte';
   import Room from './Room.svelte';
   import RoomSettings from './RoomSettings.svelte';
-  import RoomList from './RoomList.svelte';
   import Unread from './Unread.svelte';
-  import { note, pending } from './lib/note.svelte';
+  import { closeSearch } from './lib/search.svelte';
   import { roomIdOf, route, settingsIdOf, startRouting } from './lib/route.svelte';
-  import { session, signOut } from './lib/session.svelte';
   import { connect, disconnect, load, store } from './lib/store.svelte';
 
   // Home only exists while signed in, so unmounting is the one place the
@@ -20,6 +19,7 @@
     const stop = startRouting();
     return () => {
       disconnect();
+      closeSearch();
       stop();
     };
   });
@@ -56,47 +56,10 @@
   {@render problem()}
   <NewRoom />
 {:else}
-  <Header>
-    {#if store.loaded && store.link !== 'live'}
-      <span class="link">reconnecting</span>
-    {/if}
-    <a class="new" href="#/new" aria-label="New room">+</a>
-    <HaltControl />
-  </Header>
-
-  <main>
-    {@render problem()}
-
-    {#if store.loaded}
-      <RoomList />
-    {/if}
-
-    <footer>
-      <a class="note" href="#/note">
-        Note
-        {#if pending(note.value).length > 0}
-          <span class="badge">{pending(note.value).length}</span>
-        {/if}
-      </a>
-      <span>{session.me?.username}</span>
-      <button type="button" onclick={signOut}>Log out</button>
-    </footer>
-  </main>
+  <ListScreen />
 {/if}
 
 <style>
-  .link {
-    color: var(--on-aub2);
-    font-size: 0.8125rem;
-  }
-
-  .new {
-    color: var(--on-aub);
-    font-size: 1.25rem;
-    line-height: 1;
-    text-decoration: none;
-  }
-
   .problem {
     display: grid;
     gap: 0.5rem;
@@ -107,37 +70,5 @@
   .problem p {
     margin: 0;
     color: var(--err);
-  }
-
-  footer {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.75rem;
-    color: var(--ink2);
-    font-size: 0.875rem;
-  }
-
-  .note {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    color: var(--ink2);
-  }
-
-  .badge {
-    padding: 1px 6px;
-    border-radius: 5px;
-    background: var(--ask);
-    color: var(--on-ask);
-    font-size: 11px;
-    font-weight: 650;
-  }
-
-  button {
-    padding: 0.25rem 0.6rem;
-    border: 1px solid var(--line);
-    border-radius: 0.25rem;
-    background: var(--paper);
   }
 </style>
