@@ -310,8 +310,8 @@ stream), and reading is separated from acting because reading alone is already
 useful for checking on a research run. Slice 3 is the largest; if its plan
 comes out too big, the activity block is the piece to split off.
 
-Until slice 6, the phone layout is the only layout, and on a desktop browser
-it appears as a single centred column. *(Claude's call)*
+From 56rem the desktop layout applies: the room list sits beside the open
+screen. Below that the phone layout is the only layout. *(Claude's call)*
 
 ## 9. Left to the builder
 
