@@ -19,6 +19,11 @@ vi.mock('./lib/api', async (importOriginal) => ({
   listMessages: vi.fn(),
   getMessage: vi.fn(),
   markRoomRead: vi.fn(),
+  postMessage: vi.fn(),
+  steer: vi.fn(),
+  stopTurn: vi.fn(),
+  pauseRoom: vi.fn(),
+  resumeRoom: vi.fn(),
 }));
 vi.mock('./lib/stream', () => ({ openStream: vi.fn() }));
 vi.mock('./lib/route.svelte', async (importOriginal) => ({
@@ -66,6 +71,11 @@ beforeEach(() => {
   vi.mocked(api.listMessages).mockReset().mockResolvedValue([]);
   vi.mocked(api.getMessage).mockReset();
   vi.mocked(api.markRoomRead).mockReset().mockResolvedValue(undefined);
+  vi.mocked(api.postMessage).mockReset();
+  vi.mocked(api.steer).mockReset();
+  vi.mocked(api.stopTurn).mockReset().mockResolvedValue();
+  vi.mocked(api.pauseRoom).mockReset();
+  vi.mocked(api.resumeRoom).mockReset();
 });
 
 afterEach(() => {
@@ -117,7 +127,10 @@ test('the header names the room and says what each agent is doing', async () => 
   const header = screen.getByRole('banner');
   expect(within(header).getByRole('heading', { name: 'Garden' })).toBeInTheDocument();
   expect(within(header).getByText('Forge working · Scout idle · Atlas offline')).toBeInTheDocument();
-  expect(within(header).queryByRole('button')).toBeNull();
+  // The header's action buttons sit in its end: a Stop while an agent works,
+  // and the room's menu.
+  expect(within(header).getByRole('button', { name: 'Stop' })).toBeInTheDocument();
+  expect(within(header).getByRole('button', { name: 'Menu' })).toBeInTheDocument();
 });
 
 test('back leads to the list, or to Unread when the person came from there', async () => {
@@ -704,9 +717,15 @@ test('the two error blocks sit between the header and the scrolling feed', async
 
   const room_ = container.querySelector('.room') as HTMLElement;
   const order = Array.from(room_.children).map((el) =>
-    el.tagName === 'HEADER' ? 'header' : (el as HTMLElement).classList.contains('problem') ? 'problem' : 'feed',
+    el.tagName === 'HEADER'
+      ? 'header'
+      : (el as HTMLElement).classList.contains('problem')
+        ? 'problem'
+        : (el as HTMLElement).classList.contains('composer')
+          ? 'composer'
+          : 'feed',
   );
-  expect(order).toEqual(['header', 'problem', 'problem', 'feed']);
+  expect(order).toEqual(['header', 'problem', 'problem', 'feed', 'composer']);
   expect(container.querySelector('.feed')?.querySelector('.problem')).toBeNull();
 });
 
@@ -719,4 +738,98 @@ test('the header says when the stream is not live', async () => {
   store.link = 'waiting';
   await showRoom({}, []);
   expect(screen.getByText('reconnecting')).toBeInTheDocument();
+});
+
+test('the composer sits under the feed and posts', async () => {
+  await showRoom({}, ['01M001']);
+  vi.mocked(api.postMessage).mockResolvedValue(message({ id: '01M002', room_id: 'room-1', text: 'hello' }));
+  await userEvent.type(screen.getByLabelText('Message'), 'hello');
+  await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+  await waitFor(() => expect(api.postMessage).toHaveBeenCalledWith('room-1', 'hello', expect.any(String), undefined));
+});
+
+test('tapping a message’s reply aims the composer and clearing drops it', async () => {
+  await showRoom({}, ['01M1']);
+  await userEvent.click(screen.getByRole('button', { name: 'Reply' }));
+
+  expect(screen.getByRole('button', { name: 'Clear reply' })).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole('button', { name: 'Clear reply' }));
+
+  expect(screen.queryByRole('button', { name: 'Clear reply' })).toBeNull();
+});
+
+test('Stop appears while an agent works and asks each working agent to stop', async () => {
+  await showRoom(
+    {
+      agents: [
+        agent({ id: '01A', working: true }),
+        agent({ id: '01B', working: true }),
+      ],
+    },
+    ['01M1'],
+  );
+  const stop = screen.getByRole('button', { name: 'Stop' });
+
+  await userEvent.click(stop);
+
+  await waitFor(() => expect(api.stopTurn).toHaveBeenCalledTimes(2));
+  expect(api.stopTurn).toHaveBeenCalledWith('room-1', '01A');
+  expect(api.stopTurn).toHaveBeenCalledWith('room-1', '01B');
+});
+
+test('no Stop while nothing works', async () => {
+  await showRoom({}, ['01M1']);
+  expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
+});
+
+test('no composer in an archived room', async () => {
+  await showRoom({ archived: true }, ['01M1']);
+  expect(screen.queryByLabelText('Message')).toBeNull();
+});
+
+test('a failed Stop shows in the room, not in the store, and can be dismissed', async () => {
+  await showRoom({ agents: [agent({ id: '01A', working: true })] }, ['01M1']);
+  vi.mocked(api.stopTurn).mockRejectedValue(new api.ApiError(0, 'network', 'cannot reach the server'));
+  await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('cannot reach the server');
+  expect(store.error).toBe('');
+  expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
+  await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+test('a failed Pause shows in the room, and a Pause that works clears it', async () => {
+  await showRoom({}, ['01M1']);
+  vi.mocked(api.pauseRoom).mockRejectedValueOnce(new api.ApiError(0, 'network', 'cannot reach the server'));
+  await userEvent.click(screen.getByRole('button', { name: 'Menu' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Pause' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('cannot reach the server');
+  expect(store.error).toBe('');
+  vi.mocked(api.pauseRoom).mockResolvedValue(room({ paused: true, last_message_id: '01M1' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Menu' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Pause' }));
+  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  expect(store.rooms['room-1'].paused).toBe(true);
+});
+
+test('no Reply in an archived room', async () => {
+  await showRoom({ archived: true }, ['01M1']);
+  expect(screen.queryByRole('button', { name: 'Reply' })).toBeNull();
+});
+
+test('tapping Reply puts the focus in the composer', async () => {
+  await showRoom({}, ['01M1']);
+  await userEvent.click(screen.getByRole('button', { name: 'Reply' }));
+  await waitFor(() => expect(screen.getByLabelText('Message')).toHaveFocus());
+});
+
+test('sending from further up brings the feed to the person’s own message', async () => {
+  const { container } = await showRoom({ last_read_message_id: '01M3' }, ['01M1', '01M2', '01M3']);
+  const feed = feedOf(container);
+  feed.scrollTop = 0;
+  vi.mocked(api.postMessage).mockResolvedValue(message({ id: '01M4', room_id: 'room-1', text: 'mine' }));
+  await userEvent.type(screen.getByLabelText('Message'), 'mine');
+  await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+  await waitFor(() => expect(feed.scrollTop).toBe(1200));
 });

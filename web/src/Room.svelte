@@ -1,16 +1,53 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
+  import Composer from './Composer.svelte';
   import Header from './Header.svelte';
   import Message from './Message.svelte';
+  import RoomMenu from './RoomMenu.svelte';
   import { firstUnread } from './lib/feed';
   import { roomName } from './lib/rooms';
   import { navigate, route } from './lib/route.svelte';
   import { whenSeen } from './lib/seen';
-  import { closeRoom, load, loadOlder, markRead, openRoom, store } from './lib/store.svelte';
-  import type { RoomAgent } from './lib/types';
+  import { closeRoom, load, loadOlder, markRead, openRoom, reason, stopTurns, store } from './lib/store.svelte';
+  import type { Message as MessageData, RoomAgent } from './lib/types';
 
   // One room. Home draws a new one for each id, so id never changes here.
   let { id }: { id: string } = $props();
+
+  // What the composer replies to, set by a message's Reply and dropped again
+  // by sending or by the chip's ×.
+  let replyTo = $state<MessageData | null>(null);
+
+  // Why this room's last Stop, Pause or Resume failed; '' when it did not.
+  // It is the room's own, so it is not shown anywhere else, and it goes with
+  // the next of them that works or when the person dismisses it.
+  let problem = $state('');
+
+  // One tap, no confirmation. The header Stop stays disabled until the
+  // request settles, so a second tap cannot ask again; it mirrors
+  // HaltControl's local busy.
+  let stopBusy = $state(false);
+  async function stopWorking(): Promise<void> {
+    if (stopBusy) return;
+    stopBusy = true;
+    try {
+      await stopTurns(id);
+      problem = '';
+    } catch (err) {
+      problem = reason(err);
+    } finally {
+      stopBusy = false;
+    }
+  }
+
+  // The person's own message is drawn by the time the send settles; the feed
+  // goes to it wherever they were reading.
+  async function sent(): Promise<void> {
+    await tick();
+    if (feedEl !== undefined) {
+      feedEl.scrollTop = feedEl.scrollHeight;
+    }
+  }
 
   // The id comes from the address bar, so only what the store itself holds
   // under it counts.
@@ -20,6 +57,8 @@
   }
 
   const room = $derived(held(store.rooms, id));
+  // A room that can be written in: it has a composer, and so a Reply.
+  const writable = $derived(room !== undefined && !room.archived);
   const feed = $derived(held(store.feeds, id));
   const messages = $derived(feed?.messages ?? []);
 
@@ -268,8 +307,18 @@
     {#if store.loaded && store.link !== 'live'}
       <span class="link">reconnecting</span>
     {/if}
+    {#if room?.agents.some((a) => a.working)}
+      <button class="stop" type="button" disabled={stopBusy} onclick={stopWorking}>Stop</button>
+    {/if}
+    <RoomMenu {id} onerror={(why) => (problem = why)} />
   </Header>
 
+  {#if problem}
+    <div class="problem">
+      <p role="alert">{problem}</p>
+      <button type="button" onclick={() => (problem = '')}>Dismiss</button>
+    </div>
+  {/if}
   {#if store.error}
     <div class="problem">
       <p role="alert">{store.error}</p>
@@ -297,7 +346,7 @@
         {#if message.id === divider}
           <div class="divider" role="separator">New</div>
         {/if}
-        <Message {message} />
+        <Message {message} onreply={writable ? () => (replyTo = message) : undefined} />
       {/each}
     </div>
     {#if placed}
@@ -307,6 +356,10 @@
       <div class="state">{standing}</div>
     {/if}
   </div>
+
+  {#if writable}
+    <Composer {id} {replyTo} onclearReply={() => (replyTo = null)} onsent={sent} />
+  {/if}
 </div>
 
 <style>
@@ -388,5 +441,12 @@
     border: 1px solid var(--line);
     border-radius: 0.25rem;
     background: var(--paper);
+  }
+
+  /* Outranks Header's `header :global(button)` rule, as HaltControl's does. */
+  button.stop {
+    border-color: var(--err);
+    background: transparent;
+    color: var(--err);
   }
 </style>

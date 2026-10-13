@@ -171,6 +171,60 @@ export function markRoomRead(roomId: string, messageId: string): Promise<void> {
   return request<void>('PUT', `/api/rooms/${encodeURIComponent(roomId)}/read`, { message_id: messageId });
 }
 
+// postMessage posts to the room. A retried post with the same client_id is
+// answered with the first message, not a second. replyTo, when given, is the
+// message this one replies to.
+export function postMessage(roomId: string, text: string, clientId: string, replyTo?: string): Promise<Message> {
+  const body: { text: string; client_id: string; reply_to_id?: string } = { text, client_id: clientId };
+  if (replyTo !== undefined) {
+    body.reply_to_id = replyTo;
+  }
+  return request<Message>('POST', `/api/rooms/${encodeURIComponent(roomId)}/messages`, body);
+}
+
+// steer redirects the agent's running turn. It too is safe to retry with the
+// same client_id.
+export function steer(roomId: string, agentId: string, text: string, clientId: string): Promise<Message> {
+  return request<Message>(
+    'POST',
+    `/api/rooms/${encodeURIComponent(roomId)}/agents/${encodeURIComponent(agentId)}/steer`,
+    { text, client_id: clientId },
+  );
+}
+
+// cancelMessage cancels every waiting copy of a message at once; the route
+// answers 204 with no body.
+export function cancelMessage(roomId: string, messageId: string): Promise<void> {
+  return request<void>(
+    'POST',
+    `/api/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(messageId)}/cancel`,
+  );
+}
+
+// answerPrompt answers the prompt riding a message; the reply is the message
+// with its prompt.
+export function answerPrompt(roomId: string, messageId: string, answer: string): Promise<Message> {
+  return request<Message>(
+    'POST',
+    `/api/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(messageId)}/answer`,
+    { answer },
+  );
+}
+
+// stopTurn asks the agent to stop its running turn; the route answers 204.
+export function stopTurn(roomId: string, agentId: string): Promise<void> {
+  return request<void>('POST', `/api/rooms/${encodeURIComponent(roomId)}/agents/${encodeURIComponent(agentId)}/stop`);
+}
+
+// pauseRoom and resumeRoom answer with the room in its new state.
+export function pauseRoom(roomId: string): Promise<Room> {
+  return request<Room>('POST', `/api/rooms/${encodeURIComponent(roomId)}/pause`);
+}
+
+export function resumeRoom(roomId: string): Promise<Room> {
+  return request<Room>('POST', `/api/rooms/${encodeURIComponent(roomId)}/resume`);
+}
+
 // attachmentUrl is where the browser fetches an upload; no request is made here.
 export function attachmentUrl(roomId: string, attachmentId: string): string {
   return `/api/rooms/${encodeURIComponent(roomId)}/attachments/${encodeURIComponent(attachmentId)}`;

@@ -2,7 +2,9 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import * as api from './api';
 import { activity, agent, message, room } from './fixtures';
 import {
+  answer,
   apply,
+  cancel,
   closeRoom,
   connect,
   disconnect,
@@ -14,13 +16,17 @@ import {
   markAllRead,
   markRead,
   openRoom,
+  pause,
   putRoom,
+  resume,
   resumeAll,
+  send,
   stopAll,
+  stopTurns,
   store,
 } from './store.svelte';
 import { openStream, type StreamHandlers } from './stream';
-import type { Activity, Agent, Message, Room } from './types';
+import type { Activity, Agent, Message, Prompt, Room } from './types';
 
 vi.mock('./api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./api')>()),
@@ -32,8 +38,15 @@ vi.mock('./api', async (importOriginal) => ({
   listActivity: vi.fn(),
   getMessage: vi.fn(),
   markRoomRead: vi.fn(),
+  postMessage: vi.fn(),
+  steer: vi.fn(),
   stopEverything: vi.fn(),
   resumeEverything: vi.fn(),
+  answerPrompt: vi.fn(),
+  cancelMessage: vi.fn(),
+  stopTurn: vi.fn(),
+  pauseRoom: vi.fn(),
+  resumeRoom: vi.fn(),
 }));
 
 vi.mock('./stream', () => ({ openStream: vi.fn() }));
@@ -120,8 +133,15 @@ beforeEach(() => {
   vi.mocked(api.listActivity).mockReset().mockResolvedValue([]);
   vi.mocked(api.getMessage).mockReset();
   vi.mocked(api.markRoomRead).mockReset();
+  vi.mocked(api.postMessage).mockReset();
+  vi.mocked(api.steer).mockReset();
   vi.mocked(api.stopEverything).mockReset();
   vi.mocked(api.resumeEverything).mockReset();
+  vi.mocked(api.answerPrompt).mockReset();
+  vi.mocked(api.cancelMessage).mockReset();
+  vi.mocked(api.stopTurn).mockReset();
+  vi.mocked(api.pauseRoom).mockReset();
+  vi.mocked(api.resumeRoom).mockReset();
 });
 
 afterEach(() => {
@@ -1549,6 +1569,218 @@ test('a markAllRead that fails with a 401, or after disconnect, records nothing'
   expect(store.error).toBe('');
 });
 
+test('send posts with the client id and reply, writes the response and moves the marker', async () => {
+  await opened('01R', run(1, 2), [room({ id: '01R', last_message_id: '01M002', last_read_message_id: '01M001' })]);
+  const mine = message({ id: '01M003', room_id: '01R', text: 'hello' });
+  vi.mocked(api.postMessage).mockResolvedValue(mine);
+  await send('01R', 'hello', 'queue', 'k-1', '01M002');
+  expect(api.postMessage).toHaveBeenCalledWith('01R', 'hello', 'k-1', '01M002');
+  expect(store.feeds['01R'].messages.at(-1)).toMatchObject({ id: '01M003' });
+  expect(api.markRoomRead).toHaveBeenCalledWith('01R', '01M003');
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M003');
+});
+
+test('send without a reply omits it', async () => {
+  await opened('01R', run(1, 1), [room({ id: '01R', last_message_id: '01M001', last_read_message_id: '01M001' })]);
+  vi.mocked(api.postMessage).mockResolvedValue(message({ id: '01M002', room_id: '01R', text: 'hello' }));
+  await send('01R', 'hello', 'queue', 'k-1');
+  expect(api.postMessage).toHaveBeenCalledWith('01R', 'hello', 'k-1', undefined);
+});
+
+test('a queued post in a room without a held feed still moves the marker', async () => {
+  await opened('01R', run(1, 1), [room({ id: '01R', last_message_id: '01M001', last_read_message_id: '01M001' })]);
+  delete store.feeds['01R'];
+  vi.mocked(api.postMessage).mockResolvedValue(message({ id: '01M002', room_id: '01R', text: 'hello' }));
+  await send('01R', 'hello', 'queue', 'k-1');
+  expect(store.feeds['01R']).toBeUndefined();
+  expect(store.latest['01R']).toMatchObject({ id: '01M002' });
+  expect(api.markRoomRead).toHaveBeenCalledWith('01R', '01M002');
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M002');
+});
+
+test('send steers every working agent, one message each, and marks the newest read', async () => {
+  await opened('01R', run(1, 2), [
+    room({
+      id: '01R',
+      last_read_message_id: '01M001',
+      agents: [agent({ id: '01A', working: true }), agent({ id: '01B', working: true }), agent({ id: '01C' })],
+    }),
+  ]);
+  vi.mocked(api.steer)
+    .mockResolvedValueOnce(message({ id: '01M003', room_id: '01R', text: 'go' }))
+    .mockResolvedValueOnce(message({ id: '01M004', room_id: '01R', text: 'go' }));
+  await send('01R', 'go', 'steer', 'k-1');
+  expect(vi.mocked(api.steer).mock.calls).toEqual([
+    ['01R', '01A', 'go', 'k-1-01A'],
+    ['01R', '01B', 'go', 'k-1-01B'],
+  ]);
+  expect(ids('01R')).toEqual(['01M001', '01M002', '01M003', '01M004']);
+  expect(api.markRoomRead).toHaveBeenCalledWith('01R', '01M004');
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M004');
+});
+
+test('send with no working agent rejects no_turn and posts nothing', async () => {
+  await opened('01R', run(1, 1), [room({ id: '01R', agents: [agent({ id: '01A' })] })]);
+  await expect(send('01R', 'go', 'steer', 'k-1')).rejects.toMatchObject({ status: 409, code: 'no_turn' });
+  expect(api.steer).not.toHaveBeenCalled();
+  expect(api.postMessage).not.toHaveBeenCalled();
+});
+
+test('a steer that fails midway keeps what landed', async () => {
+  await opened('01R', run(1, 1), [
+    room({ id: '01R', agents: [agent({ id: '01A', working: true }), agent({ id: '01B', working: true })] }),
+  ]);
+  vi.mocked(api.steer)
+    .mockResolvedValueOnce(message({ id: '01M002', room_id: '01R', text: 'go' }))
+    .mockRejectedValueOnce(new api.ApiError(409, 'paused', 'the room is paused'));
+  await expect(send('01R', 'go', 'steer', 'k-1')).rejects.toMatchObject({ status: 409, code: 'paused' });
+  expect(ids('01R')).toEqual(['01M001', '01M002']);
+  expect(api.markRoomRead).not.toHaveBeenCalled();
+});
+
+test('a failed send changes nothing', async () => {
+  await opened('01R', run(1, 2), [room({ id: '01R', last_message_id: '01M002', last_read_message_id: '01M001' })]);
+  const failure = new api.ApiError(400, 'invalid_text', 'text must not be empty');
+  vi.mocked(api.postMessage).mockRejectedValue(failure);
+  await expect(send('01R', '', 'queue', 'k-1')).rejects.toBe(failure);
+  expect(ids('01R')).toEqual(['01M001', '01M002']);
+  expect(store.latest['01R']).toBeUndefined();
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M001');
+  expect(api.markRoomRead).not.toHaveBeenCalled();
+});
+
+test('the response waits for a snapshot fetch in flight', async () => {
+  await opened('01R', run(1, 2), [room({ id: '01R', last_read_message_id: '01M002' })]);
+  const rooms = deferred<Room[]>();
+  vi.mocked(api.listRooms).mockReturnValueOnce(rooms.promise);
+  const loading = load();
+  vi.mocked(api.postMessage).mockResolvedValue(message({ id: '01M003', room_id: '01R', text: 'hello' }));
+  await send('01R', 'hello', 'queue', 'k-1');
+  expect(ids('01R')).toEqual(['01M001', '01M002']); // held: the snapshot is still in flight
+  rooms.resolve([room({ id: '01R' })]);
+  await loading;
+  expect(ids('01R')).toEqual(['01M001', '01M002', '01M003']);
+});
+
+// prompt builds a Prompt whose state and answer are the interesting parts.
+function prompt(overrides: Partial<Prompt> = {}): Prompt {
+  return {
+    kind: 'approval',
+    choices: ['yes', 'no'],
+    state: 'open',
+    answer: null,
+    answered_by: null,
+    closed_at: null,
+    ...overrides,
+  };
+}
+
+test('answer posts the answer and writes the answered prompt into the feed', async () => {
+  const asked = message({ id: '01M001', room_id: '01R', prompt: prompt({ state: 'open' }) });
+  await opened('01R', [asked]);
+  const answered = message({ id: '01M001', room_id: '01R', prompt: prompt({ state: 'answered', answer: 'Once' }) });
+  vi.mocked(api.answerPrompt).mockResolvedValue(answered);
+  await answer('01R', '01M001', 'Once');
+  expect(api.answerPrompt).toHaveBeenCalledWith('01R', '01M001', 'Once');
+  expect(store.feeds['01R'].messages[0].prompt?.state).toBe('answered');
+});
+
+test('answer rejects with the server\'s error and writes nothing', async () => {
+  const asked = message({ id: '01M001', room_id: '01R', prompt: prompt({ state: 'open' }) });
+  await opened('01R', [asked]);
+  const failure = new api.ApiError(409, 'prompt_closed', 'the prompt has closed');
+  vi.mocked(api.answerPrompt).mockRejectedValue(failure);
+  await expect(answer('01R', '01M001', 'Once')).rejects.toBe(failure);
+  expect(store.feeds['01R'].messages[0].prompt).toMatchObject({ state: 'open' });
+  expect(store.error).toBe('');
+});
+
+test('cancel posts the cancel and nothing_waiting is quiet', async () => {
+  await opened('01R', [message({ id: '01M001', room_id: '01R' })]);
+  vi.mocked(api.cancelMessage).mockResolvedValue();
+  await cancel('01R', '01M001');
+  expect(api.cancelMessage).toHaveBeenCalledWith('01R', '01M001');
+  expect(store.error).toBe('');
+
+  vi.mocked(api.cancelMessage).mockRejectedValue(new api.ApiError(409, 'nothing_waiting', 'nothing is waiting'));
+  await expect(cancel('01R', '01M001')).resolves.toBeUndefined();
+  expect(store.error).toBe('');
+});
+
+test('a failed cancel rejects, and is not the store\'s error', async () => {
+  await opened('01R', [message({ id: '01M001', room_id: '01R' })]);
+  const failure = unreachable();
+  vi.mocked(api.cancelMessage).mockRejectedValue(failure);
+  await expect(cancel('01R', '01M001')).rejects.toBe(failure);
+  expect(store.error).toBe('');
+});
+
+test('stopTurns asks each working agent once', async () => {
+  await opened('01R', run(1, 1), [
+    room({ id: '01R', agents: [agent({ id: '01A', working: true }), agent({ id: '01B', working: true }), agent({ id: '01C' })] }),
+  ]);
+  vi.mocked(api.stopTurn).mockResolvedValue();
+  await stopTurns('01R');
+  expect(vi.mocked(api.stopTurn).mock.calls).toEqual([
+    ['01R', '01A'],
+    ['01R', '01B'],
+  ]);
+  expect(store.error).toBe('');
+});
+
+test('stopTurns asks every agent, then rejects with the first failure', async () => {
+  await opened('01R', run(1, 1), [
+    room({ id: '01R', agents: [agent({ id: '01A', working: true }), agent({ id: '01B', working: true })] }),
+  ]);
+  const failure = unreachable();
+  vi.mocked(api.stopTurn).mockRejectedValueOnce(failure).mockResolvedValueOnce();
+  await expect(stopTurns('01R')).rejects.toBe(failure);
+  expect(api.stopTurn).toHaveBeenCalledTimes(2);
+  expect(store.error).toBe('');
+});
+
+test('a failed pause or resume rejects, and is not the store\'s error', async () => {
+  await loaded([room({ id: '01R', paused: false })]);
+  const failure = unreachable();
+  vi.mocked(api.pauseRoom).mockRejectedValue(failure);
+  vi.mocked(api.resumeRoom).mockRejectedValue(failure);
+  await expect(pause('01R')).rejects.toBe(failure);
+  await expect(resume('01R')).rejects.toBe(failure);
+  expect(store.error).toBe('');
+  expect(store.rooms['01R'].paused).toBe(false);
+});
+
+test('pause and resume write the answer\'s room as room.changed', async () => {
+  // The answer comes from the server, which may not hold the newest marker.
+  await loaded([room({ id: '01R', paused: false, last_message_id: '01M5', last_read_message_id: '01M5' })]);
+  vi.mocked(api.pauseRoom).mockResolvedValue(room({ id: '01R', paused: true, last_message_id: '01M5' }));
+  await pause('01R');
+  expect(api.pauseRoom).toHaveBeenCalledWith('01R');
+  expect(store.rooms['01R']).toMatchObject({ paused: true, last_read_message_id: '01M5' });
+
+  vi.mocked(api.resumeRoom).mockResolvedValue(room({ id: '01R', paused: false, last_message_id: '01M5' }));
+  await resume('01R');
+  expect(api.resumeRoom).toHaveBeenCalledWith('01R');
+  expect(store.rooms['01R']).toMatchObject({ paused: false, last_read_message_id: '01M5' });
+});
+
+test('a pause answer that lands while a load is in flight waits for it', async () => {
+  await loaded([room({ id: '01R', paused: false })]);
+  const rooms = deferred<Room[]>();
+  vi.mocked(api.listRooms).mockReturnValueOnce(rooms.promise);
+  const loading = load();
+  const answered = deferred<Room>();
+  vi.mocked(api.pauseRoom).mockReturnValueOnce(answered.promise);
+  const pausing = pause('01R');
+  expect(store.rooms['01R'].paused).toBe(false);
+  answered.resolve(room({ id: '01R', paused: true }));
+  await pausing;
+  expect(store.rooms['01R'].paused).toBe(false); // held: the snapshot is still in flight
+  rooms.resolve([room({ id: '01R', paused: false })]);
+  await loading;
+  expect(store.rooms['01R'].paused).toBe(true);
+});
+
 test('a posted message becomes its room\'s latest, and an older one does not replace it', async () => {
   await loaded([room({ id: '01R' }), room({ id: '01S' })]);
   const second = message({ id: '01M2', room_id: '01R', text: 'second' });
@@ -2017,4 +2249,67 @@ test('disconnect empties activity', async () => {
   await loadActivity('01R', '01M2');
   expect(api.listActivity).toHaveBeenCalledTimes(3);
   expect(store.activity).toEqual({ '01M2': [] });
+});
+
+test('a post answer that lands after its message started work does not put it back to waiting', async () => {
+  const bot = agent({ id: '01A' });
+  await opened('01R', run(1, 1), [room({ id: '01R', agents: [bot] })]);
+  const answered = deferred<Message>();
+  vi.mocked(api.postMessage).mockReturnValueOnce(answered.promise);
+  const sending = send('01R', 'hello', 'queue', 'k-1');
+  // The stream is ahead of the answer: posted, then picked up.
+  const working = message({ id: '01M002', room_id: '01R', text: 'hello', deliveries: [{ agent: bot, state: 'working' }] });
+  apply('message.posted', { message: { ...working, deliveries: [{ agent: bot, state: 'waiting' }] } });
+  apply('delivery.changed', { message: working });
+  answered.resolve(message({ id: '01M002', room_id: '01R', text: 'hello', deliveries: [{ agent: bot, state: 'waiting' }] }));
+  await sending;
+  expect(store.feeds['01R'].messages.at(-1)?.deliveries[0].state).toBe('working');
+  expect(store.latest['01R'].deliveries[0].state).toBe('working');
+  expect(ids('01R')).toEqual(['01M001', '01M002']);
+});
+
+test('a write that answers after disconnect() writes nothing', async () => {
+  await opened('01R', run(1, 1), [room({ id: '01R', agents: [agent({ id: '01A', working: true })] })]);
+  const posted = deferred<Message>();
+  const paused = deferred<Room>();
+  const prompted = deferred<Message>();
+  vi.mocked(api.postMessage).mockReturnValueOnce(posted.promise);
+  vi.mocked(api.pauseRoom).mockReturnValueOnce(paused.promise);
+  vi.mocked(api.answerPrompt).mockReturnValueOnce(prompted.promise);
+  const writes = [send('01R', 'hello', 'queue', 'k-1'), pause('01R'), answer('01R', '01M001', 'yes')];
+  disconnect();
+  posted.resolve(message({ id: '01M002', room_id: '01R', text: 'hello' }));
+  paused.resolve(room({ id: '01R', paused: true }));
+  prompted.resolve(message({ id: '01M001', room_id: '01R' }));
+  await Promise.all(writes);
+  expect(store.rooms).toEqual({});
+  expect(store.feeds).toEqual({});
+  expect(store.latest).toEqual({});
+  expect(api.markRoomRead).not.toHaveBeenCalled();
+});
+
+test('a steer that fails midway says who was steered and who was not', async () => {
+  await opened('01R', run(1, 1), [
+    room({
+      id: '01R',
+      agents: [
+        agent({ id: '01A', display_name: 'Atlas', working: true }),
+        agent({ id: '01B', display_name: 'Bolt', working: true }),
+      ],
+    }),
+  ]);
+  vi.mocked(api.steer)
+    .mockResolvedValueOnce(message({ id: '01M002', room_id: '01R', text: 'go' }))
+    .mockRejectedValueOnce(new api.ApiError(409, 'no_turn', 'no turn is running'));
+  await expect(send('01R', 'go', 'steer', 'k-1')).rejects.toMatchObject({
+    status: 409,
+    code: 'no_turn',
+    message: 'Atlas was steered, Bolt was not: no turn is running',
+  });
+});
+
+test('a steer whose first agent refuses says only why', async () => {
+  await opened('01R', run(1, 1), [room({ id: '01R', agents: [agent({ id: '01A', working: true })] })]);
+  vi.mocked(api.steer).mockRejectedValueOnce(new api.ApiError(409, 'no_turn', 'no turn is running'));
+  await expect(send('01R', 'go', 'steer', 'k-1')).rejects.toMatchObject({ message: 'no turn is running' });
 });

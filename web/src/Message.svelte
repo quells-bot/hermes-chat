@@ -3,12 +3,13 @@
   import Icon from './Icon.svelte';
   import { attachmentUrl } from './lib/api';
   import { clock, iconName, preview, size } from './lib/format';
-  import { loadQuoted, store } from './lib/store.svelte';
+  import { session } from './lib/session.svelte';
+  import { cancel, loadQuoted, reason, store } from './lib/store.svelte';
   import type { Message } from './lib/types';
   import Markdown from './Markdown.svelte';
   import PromptCard from './PromptCard.svelte';
 
-  let { message }: { message: Message } = $props();
+  let { message, onreply }: { message: Message; onreply?: () => void } = $props();
 
   const quoted = $derived.by(() => {
     const id = message.reply_to_id;
@@ -30,6 +31,30 @@
   const turns = $derived(
     message.deliveries.filter((d) => d.state === 'working' || d.state === 'done' || d.state === 'failed'),
   );
+
+  // A Cancel is offered on the person's own message while any copy is waiting.
+  const cancellable = $derived(
+    message.author?.kind === 'human' &&
+      message.author.id === session.me?.id &&
+      message.deliveries.some((d) => d.state === 'waiting'),
+  );
+
+  let cancelling = $state(false);
+  // Why the last Cancel failed; it is shown under the message it was for.
+  let cancelError = $state('');
+
+  async function cancelDelivery() {
+    if (cancelling) return;
+    cancelling = true;
+    cancelError = '';
+    try {
+      await cancel(message.room_id, message.id);
+    } catch (err) {
+      cancelError = reason(err);
+    } finally {
+      cancelling = false;
+    }
+  }
 </script>
 
 <article data-mid={message.id}>
@@ -38,6 +63,9 @@
     <div class="who">
       {message.author?.name ?? 'removed'}
       <time datetime={message.created_at}>{clock(message.created_at, new Date())}</time>
+      {#if onreply}
+        <button type="button" class="reply" aria-label="Reply" onclick={onreply}>↩</button>
+      {/if}
     </div>
     {#if message.reply_to_id !== null}
       <div class="quote">
@@ -73,6 +101,12 @@
     {#each stated as d (d.agent.id)}
       <div class="state">{d.agent.display_name} · {d.state}</div>
     {/each}
+    {#if cancellable}
+      <button type="button" class="cancel" disabled={cancelling} onclick={cancelDelivery}>Cancel</button>
+    {/if}
+    {#if cancelError !== ''}
+      <p class="error" role="alert">{cancelError}</p>
+    {/if}
     {#each turns as d (d.agent.id)}
       <ActivityBlock {message} delivery={d} />
     {/each}
@@ -155,5 +189,39 @@
   .state {
     font-size: 12px;
     color: var(--ink2);
+  }
+
+  /* The padding is the tap target; the margins take it back out of the line. */
+  .reply {
+    margin: -8px 0 -8px 0;
+    padding: 8px 12px;
+    border: none;
+    background: none;
+    color: var(--ink2);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .error {
+    margin: 4px 0 0;
+    color: var(--err);
+    font-size: 12.5px;
+  }
+
+  .cancel {
+    margin-top: 4px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 2px 12px;
+    background: var(--paper);
+    color: var(--ink2);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .cancel:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 </style>
