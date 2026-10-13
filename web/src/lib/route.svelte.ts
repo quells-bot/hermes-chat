@@ -1,5 +1,6 @@
 // Where the person is, from the hash: #/ is the room list, #/new the form,
-// #/unread the Unread page, #/rooms/<id> a room.
+// #/unread the Unread page, #/note the note, #/rooms/<id> a room,
+// #/rooms/<id>/settings its settings.
 
 // prev is the path before this one, '/' at the start: a room leads back to
 // the page the person came from.
@@ -29,6 +30,11 @@ export function navigate(path: string): void {
 // skips the page being left.
 export function replace(path: string): void {
   location.replace(`#${path}`);
+}
+
+// settingsIdOf gives the id in '/rooms/<id>/settings', and null for any other path.
+export function settingsIdOf(path: string): string | null {
+  return /^\/rooms\/([^/]+)\/settings$/.exec(path)?.[1] ?? null;
 }
 
 // roomIdOf gives the id in '/rooms/<id>', and null for any other path.

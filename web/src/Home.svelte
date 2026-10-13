@@ -3,10 +3,13 @@
   import HaltControl from './HaltControl.svelte';
   import Header from './Header.svelte';
   import NewRoom from './NewRoom.svelte';
+  import Note from './Note.svelte';
   import Room from './Room.svelte';
+  import RoomSettings from './RoomSettings.svelte';
   import RoomList from './RoomList.svelte';
   import Unread from './Unread.svelte';
-  import { roomIdOf, route, startRouting } from './lib/route.svelte';
+  import { note, pending } from './lib/note.svelte';
+  import { roomIdOf, route, settingsIdOf, startRouting } from './lib/route.svelte';
   import { session, signOut } from './lib/session.svelte';
   import { connect, disconnect, load, store } from './lib/store.svelte';
 
@@ -22,6 +25,7 @@
   });
 
   const roomId = $derived(roomIdOf(route.path));
+  const settingsId = $derived(settingsIdOf(route.path));
 </script>
 
 {#snippet problem()}
@@ -37,8 +41,14 @@
   {#key roomId}
     <Room id={roomId} />
   {/key}
+{:else if settingsId !== null}
+  {#key settingsId}
+    <RoomSettings id={settingsId} />
+  {/key}
 {:else if route.path === '/unread'}
   <Unread />
+{:else if route.path === '/note'}
+  <Note />
 {:else if route.path === '/new'}
   <Header title="New room" back="#/">
     <HaltControl />
@@ -62,6 +72,12 @@
     {/if}
 
     <footer>
+      <a class="note" href="#/note">
+        Note
+        {#if pending(note.value).length > 0}
+          <span class="badge">{pending(note.value).length}</span>
+        {/if}
+      </a>
       <span>{session.me?.username}</span>
       <button type="button" onclick={signOut}>Log out</button>
     </footer>
@@ -100,6 +116,22 @@
     padding: 0.75rem;
     color: var(--ink2);
     font-size: 0.875rem;
+  }
+
+  .note {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--ink2);
+  }
+
+  .badge {
+    padding: 1px 6px;
+    border-radius: 5px;
+    background: var(--ask);
+    color: var(--on-ask);
+    font-size: 11px;
+    font-weight: 650;
   }
 
   button {

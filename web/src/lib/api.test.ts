@@ -1,15 +1,20 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import {
   ApiError,
+  addRoomAgent,
   answerPrompt,
   attachmentUrl,
   cancelMessage,
   createRoom,
+  deleteNoteEntry,
   getHalt,
   getMessage,
+  getNote,
   getRoom,
+  inviteHuman,
   listActivity,
   listAgents,
+  listHumans,
   listMessages,
   listRooms,
   login,
@@ -20,13 +25,17 @@ import {
   openDM,
   pauseRoom,
   postMessage,
+  removeRoomAgent,
   request,
   resumeEverything,
   resumeRoom,
   sessionLost,
+  setNoteText,
   steer,
   stopEverything,
   stopTurn,
+  updateNoteEntry,
+  updateRoom,
 } from './api';
 
 const fetchMock = vi.fn();
@@ -36,6 +45,13 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
     status,
     headers: { 'Content-Type': 'application/json', ...headers },
   });
+}
+
+// stubFetch makes the next fetch answer with the status and body, and returns
+// the mock so a test can read the call.
+function stubFetch(status: number, body: unknown) {
+  fetchMock.mockResolvedValue(json(status, body));
+  return fetchMock;
 }
 
 function apiError(code: string, message: string) {
@@ -410,6 +426,66 @@ test('resumeRoom posts and unwraps the room', async () => {
 
 test('attachmentUrl encodes both ids', () => {
   expect(attachmentUrl('a/b', 'c d')).toBe('/api/rooms/a%2Fb/attachments/c%20d');
+});
+
+test('getNote reads the note', async () => {
+  const fetch = stubFetch(200, { text: 'hi', entries: [] });
+  await expect(getNote()).resolves.toEqual({ text: 'hi', entries: [] });
+  expect(fetch).toHaveBeenCalledWith('/api/note', expect.objectContaining({ method: 'GET' }));
+});
+
+test('setNoteText puts the text', async () => {
+  const fetch = stubFetch(200, { text: '', entries: [] });
+  await expect(setNoteText('')).resolves.toEqual({ text: '', entries: [] });
+  expect(fetch).toHaveBeenCalledWith('/api/note', expect.objectContaining({ method: 'PUT', body: '{"text":""}' }));
+});
+
+test('updateNoteEntry patches only what it is given', async () => {
+  const fetch = stubFetch(200, { text: '', entries: [] });
+  await expect(updateNoteEntry('01E', { approved: true })).resolves.toEqual({ text: '', entries: [] });
+  expect(fetch).toHaveBeenCalledWith('/api/note/entries/01E', expect.objectContaining({ method: 'PATCH', body: '{"approved":true}' }));
+});
+
+test('deleteNoteEntry deletes the entry', async () => {
+  const fetch = stubFetch(200, { text: '', entries: [] });
+  await expect(deleteNoteEntry('01E')).resolves.toEqual({ text: '', entries: [] });
+  expect(fetch).toHaveBeenCalledWith('/api/note/entries/01E', expect.objectContaining({ method: 'DELETE' }));
+});
+
+test('listHumans unwraps humans', async () => {
+  const fetch = stubFetch(200, { humans: [{ id: '01H', username: 'kai' }] });
+  await expect(listHumans()).resolves.toEqual([{ id: '01H', username: 'kai' }]);
+  expect(fetch).toHaveBeenCalledWith('/api/humans', expect.objectContaining({ method: 'GET' }));
+});
+
+test('updateRoom patches the room', async () => {
+  const fetch = stubFetch(200, { id: '01R' });
+  await expect(updateRoom('01R', { turn_cap: 12 })).resolves.toEqual({ id: '01R' });
+  expect(fetch).toHaveBeenCalledWith('/api/rooms/01R', expect.objectContaining({ method: 'PATCH', body: '{"turn_cap":12}' }));
+});
+
+test('inviteHuman posts the human', async () => {
+  const fetch = stubFetch(200, { id: '01R' });
+  await expect(inviteHuman('01R', '01H')).resolves.toEqual({ id: '01R' });
+  expect(fetch).toHaveBeenCalledWith(
+    '/api/rooms/01R/humans',
+    expect.objectContaining({ method: 'POST', body: '{"human_id":"01H"}' }),
+  );
+});
+
+test('addRoomAgent posts the agent', async () => {
+  const fetch = stubFetch(200, { id: '01R' });
+  await expect(addRoomAgent('01R', '01A')).resolves.toEqual({ id: '01R' });
+  expect(fetch).toHaveBeenCalledWith(
+    '/api/rooms/01R/agents',
+    expect.objectContaining({ method: 'POST', body: '{"agent_id":"01A"}' }),
+  );
+});
+
+test('removeRoomAgent deletes the agent and encodes both ids', async () => {
+  const fetch = stubFetch(200, { id: 'a/b' });
+  await expect(removeRoomAgent('a/b', 'c d')).resolves.toEqual({ id: 'a/b' });
+  expect(fetch).toHaveBeenCalledWith('/api/rooms/a%2Fb/agents/c%20d', expect.objectContaining({ method: 'DELETE' }));
 });
 
 test('sessionLost runs the unauthenticated handler', () => {

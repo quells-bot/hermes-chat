@@ -189,10 +189,10 @@ the id and makes a fresh send. While a delivery
 of the person's own message is waiting, a **Cancel** cancels the message's
 waiting deliveries. The room header's **Stop** asks every working agent to stop
 while one is working, and a **⋯** menu pauses and resumes the room by its state
-(room settings arrive later). A failure of one of these is shown where it
-happened and nowhere else: a failed Cancel under its message, a failed Stop,
-Pause or Resume at the top of that room, until the next one works or it is
-dismissed. An open prompt card answers with one button per
+and, in a room that is not a direct message, leads to its settings. A failure
+of one of these is shown where it happened and nowhere else: a failed Cancel
+under its message, a failed Stop, Pause or Resume at the top of that room,
+until the next one works or it is dismissed. An open prompt card answers with one button per
 choice, or a text input and an **Answer** button when the prompt asks for
 words; an answered or expired prompt keeps its buttons, disabled. Every write —
 a post, a steer, an answer, a pause, a resume — is applied through the same
@@ -231,9 +231,51 @@ resumes a dropped connection with `?cursor=` set to the last id it received,
 reconnecting after 1, 2, 4, 8, 16, then 30 seconds. It drops a connection that
 has been silent for 60 seconds and then reconnects. Once the list has loaded,
 the list's header says `reconnecting` while the stream is not live. Routes are
-hash-based: `#/` is the list, `#/new` the form, `#/unread` the Unread page, and
-`#/rooms/<id>` a room; an id that names no room the person is in leads back to
-the list.
+hash-based: `#/` is the list, `#/new` the form, `#/unread` the Unread page,
+`#/note` the note, `#/rooms/<id>` a room and `#/rooms/<id>/settings` its
+settings; an id that names no room the person is in leads back to the list, and
+so does any other address.
+
+The list's footer has a **Note** link beside the username and **Log out**. The
+note is not part of the snapshot and no event announces a change to it, so the
+store fetches it with every load (each `ready`, and the page becoming visible)
+and again when the note screen opens, and the link carries a badge with the number of entries waiting for review. A
+failed fetch fails nothing else. The note is held in memory only, outside the
+store, and is emptied when the stream is torn down; a person never sees
+another's. `#/note` shows the person's text in a box with a counter
+(`1234 / 2000`) and **Save**, then the entries to review and the approved
+entries. An entry is drawn as plain text, never as markdown, with the agent
+that wrote it. A pending entry has **Approve**, **Edit** and **Delete**; an
+approved one has **Unapprove**, which sends it back to review, **Edit** and
+**Delete**. Delete is one tap and cannot be undone. The text and the approved
+entries together are counted against 4000 characters, an entry against 300;
+characters are counted after trimming, as code points, as the server counts
+them. The text and entry counters turn to the error colour past their limit and
+disable their **Save**; the 4000 counter only turns the colour, and the
+server's refusal is what is shown. The boxes have no `maxlength`. Only one
+note write is in flight at a time: while one is, the screen's controls are
+disabled and a second call does nothing. Typing that lands while a save is in
+flight stays in the box; only a box still holding what was sent is cleared. The answer to a
+load is dropped when a write was in flight at any moment between the load's
+start and its answer.
+
+**Settings** in a room's **⋯** menu opens `#/rooms/<id>/settings`; a direct
+message has no such item, and its address leads to the room, since the server
+refuses every change to one. One form holds the topic (1 to 200 characters) and
+the turn cap (1 to 100) with one **Save**, which sends only the fields that
+changed. Under it are the room's agents, each with **Remove** (one tap; the
+agent can be added back, though its waiting copies are cancelled and its open
+prompts expire; the last agent has none), the agents not in the room with
+**Add**, and the people in the room, then the people who are not, each with
+**Invite**. Invite takes two taps: it becomes **Confirm** and **Cancel** in the
+same row, because the API has no way to remove a person, the newcomer sees the
+room's history, and the note is no longer attached in that room. **Archive** is
+one tap and is replaced by **Unarchive** on the same screen. While the room is
+archived every other control is disabled, as the server answers 409
+`room_archived`. One write at a time: while one is in flight every control on
+the screen is disabled. Both screens have the **Stop all** control in their
+header. Archived rooms are not listed, so until search exists an archived room
+is reached only by its address.
 
 The source is a Svelte 5 and TypeScript project in `web/src`, built by Vite
 into `web/dist`, which `web/embed.go` embeds. `web/dist` is never committed

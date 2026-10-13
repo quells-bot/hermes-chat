@@ -1,9 +1,9 @@
 <script lang="ts">
   import { pause, reason, resume, store } from './lib/store.svelte';
 
-  // The room's one item of menu in the header. The ⋯ opens a dropdown with a
-  // single Pause or Resume, whichever the room wants. One tap, no
-  // confirmation: the item stays disabled until the request settles, then
+  // The room's menu in the header. The ⋯ opens a dropdown with Pause or
+  // Resume, whichever the room wants, and a link to the room's settings
+  // (a DM has none). One tap, no confirmation: the item stays disabled until the request settles, then
   // the menu closes. A failure is handed to onerror, for Room to show.
   let { id, onerror }: { id: string; onerror?: (why: string) => void } = $props();
 
@@ -77,6 +77,9 @@
       <button type="button" role="menuitem" disabled={busy} bind:this={item} onclick={run} {onkeydown}>
         {paused ? 'Resume' : 'Pause'}
       </button>
+      {#if store.rooms[id] !== undefined && store.rooms[id].flavor !== 'dm'}
+        <a role="menuitem" href="#/rooms/{id}/settings" onclick={() => (open = false)} {onkeydown}>Settings</a>
+      {/if}
     </div>
   {/if}
 </div>
@@ -98,10 +101,21 @@
     padding: 2px;
   }
 
-  .dropdown button {
+  .dropdown button,
+  .dropdown a {
     display: block;
     width: 100%;
     white-space: nowrap;
     text-align: left;
+  }
+
+  .dropdown a {
+    padding: 0.25rem 0.6rem;
+    border: 1px solid var(--aub-line);
+    border-radius: 0.25rem;
+    background: var(--aub-hi);
+    color: var(--on-aub);
+    font-size: 0.875rem;
+    text-decoration: none;
   }
 </style>

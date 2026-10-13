@@ -70,3 +70,8 @@ export type Activity = {
   succeeded: boolean | null;
   created_at: string;
 };
+
+// A note's entries are what agents suggested for it, oldest first: pending
+// ones and approved ones.
+export type NoteEntry = { id: string; agent: Agent; text: string; approved: boolean; created_at: string };
+export type Note = { text: string; entries: NoteEntry[] };

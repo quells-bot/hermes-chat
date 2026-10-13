@@ -1,13 +1,17 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import * as api from './api';
-import { activity, agent, message, room } from './fixtures';
+import { activity, agent, message, note as fixture, room } from './fixtures';
+import { note } from './note.svelte';
 import {
+  addAgent,
   answer,
   apply,
   cancel,
+  changeRoom,
   closeRoom,
   connect,
   disconnect,
+  invite,
   load,
   loadActivity,
   loadLatest,
@@ -18,6 +22,7 @@ import {
   openRoom,
   pause,
   putRoom,
+  removeAgent,
   resume,
   resumeAll,
   send,
@@ -34,6 +39,7 @@ vi.mock('./api', async (importOriginal) => ({
   getRoom: vi.fn(),
   listAgents: vi.fn(),
   getHalt: vi.fn(),
+  getNote: vi.fn(),
   listMessages: vi.fn(),
   listActivity: vi.fn(),
   getMessage: vi.fn(),
@@ -47,6 +53,10 @@ vi.mock('./api', async (importOriginal) => ({
   stopTurn: vi.fn(),
   pauseRoom: vi.fn(),
   resumeRoom: vi.fn(),
+  updateRoom: vi.fn(),
+  inviteHuman: vi.fn(),
+  addRoomAgent: vi.fn(),
+  removeRoomAgent: vi.fn(),
 }));
 
 vi.mock('./stream', () => ({ openStream: vi.fn() }));
@@ -127,6 +137,7 @@ beforeEach(() => {
     });
   vi.mocked(api.listRooms).mockReset().mockResolvedValue([]);
   vi.mocked(api.listAgents).mockReset().mockResolvedValue([]);
+  vi.mocked(api.getNote).mockReset().mockResolvedValue(fixture());
   vi.mocked(api.getRoom).mockReset();
   vi.mocked(api.getHalt).mockReset().mockResolvedValue(false);
   vi.mocked(api.listMessages).mockReset().mockResolvedValue([]);
@@ -142,6 +153,10 @@ beforeEach(() => {
   vi.mocked(api.stopTurn).mockReset();
   vi.mocked(api.pauseRoom).mockReset();
   vi.mocked(api.resumeRoom).mockReset();
+  vi.mocked(api.updateRoom).mockReset();
+  vi.mocked(api.inviteHuman).mockReset();
+  vi.mocked(api.addRoomAgent).mockReset();
+  vi.mocked(api.removeRoomAgent).mockReset();
 });
 
 afterEach(() => {
@@ -548,6 +563,26 @@ test('resumeAll sets halted from the response; a failure sets error and leaves h
   vi.mocked(api.resumeEverything).mockResolvedValue(false);
   await resumeAll();
   expect(store.halted).toBe(false);
+});
+
+test('a load fetches the note', async () => {
+  const held = fixture({ text: 'likes tea' });
+  vi.mocked(api.getNote).mockResolvedValue(held);
+  await loaded();
+  await vi.waitFor(() => expect(note.value).toEqual(held));
+});
+
+test('a note that cannot be fetched does not fail the load', async () => {
+  vi.mocked(api.getNote).mockRejectedValue(unreachable());
+  await loaded();
+  expect(store.loaded).toBe(true);
+  expect(store.error).toBe('');
+});
+
+test('disconnect empties the note', () => {
+  note.value = fixture({ text: 'mine' });
+  disconnect();
+  expect(note.value).toBeNull();
 });
 
 test('disconnect closes the stream, resets the store, and stops listening', async () => {
@@ -1779,6 +1814,79 @@ test('a pause answer that lands while a load is in flight waits for it', async (
   rooms.resolve([room({ id: '01R', paused: false })]);
   await loading;
   expect(store.rooms['01R'].paused).toBe(true);
+});
+
+test('changeRoom writes the answer as the room\u2019s event', async () => {
+  await loaded([room({ id: '01R', topic: 'Old' })]);
+  vi.mocked(api.updateRoom).mockResolvedValue(room({ id: '01R', topic: 'New' }));
+  await changeRoom('01R', { topic: 'New' });
+  expect(api.updateRoom).toHaveBeenCalledWith('01R', { topic: 'New' });
+  expect(store.rooms['01R'].topic).toBe('New');
+});
+
+test('addAgent writes the answer\u2019s room', async () => {
+  await loaded([room({ id: '01R', agents: [] })]);
+  vi.mocked(api.addRoomAgent).mockResolvedValue(room({ id: '01R', agents: [agent({ id: '01A' })] }));
+  await addAgent('01R', '01A');
+  expect(api.addRoomAgent).toHaveBeenCalledWith('01R', '01A');
+  expect(store.rooms['01R'].agents.map((a) => a.id)).toEqual(['01A']);
+});
+
+test('removeAgent drops the agent from the room', async () => {
+  await loaded([room({ id: '01R', agents: [agent({ id: '01A' }), agent({ id: '01B' })] })]);
+  vi.mocked(api.removeRoomAgent).mockResolvedValue(room({ id: '01R', agents: [agent({ id: '01B' })] }));
+  await removeAgent('01R', '01A');
+  expect(api.removeRoomAgent).toHaveBeenCalledWith('01R', '01A');
+  expect(store.rooms['01R'].agents.map((a) => a.id)).toEqual(['01B']);
+});
+
+test('invite writes the answer\u2019s room', async () => {
+  await loaded([room({ id: '01R', topic: 'Old' })]);
+  vi.mocked(api.inviteHuman).mockResolvedValue(room({ id: '01R', topic: 'Invited' }));
+  await invite('01R', '01H');
+  expect(api.inviteHuman).toHaveBeenCalledWith('01R', '01H');
+  expect(store.rooms['01R'].topic).toBe('Invited');
+});
+
+test('a refused change rejects and leaves the room alone', async () => {
+  await loaded([room({ id: '01R', topic: 'Old' })]);
+  const failure = new api.ApiError(409, 'room_archived', 'the room is archived');
+  vi.mocked(api.updateRoom).mockRejectedValue(failure);
+  await expect(changeRoom('01R', { topic: 'New' })).rejects.toBe(failure);
+  expect(store.rooms['01R'].topic).toBe('Old');
+  expect(store.error).toBe('');
+});
+
+test('a change answered after disconnect writes nothing', async () => {
+  await loaded([room({ id: '01R', topic: 'Old' })]);
+  const answered = deferred<Room>();
+  vi.mocked(api.updateRoom).mockReturnValueOnce(answered.promise);
+  const changing = changeRoom('01R', { topic: 'New' });
+  disconnect();
+  answered.resolve(room({ id: '01R', topic: 'New' }));
+  await changing;
+  expect(store.rooms).toEqual({});
+});
+
+test('a change answered while a load is in flight is not undone by the load', async () => {
+  await loaded([room({ id: '01R', topic: 'Old' })]);
+  const rooms = deferred<Room[]>();
+  vi.mocked(api.listRooms).mockReturnValueOnce(rooms.promise);
+  const loading = load();
+  vi.mocked(api.updateRoom).mockResolvedValue(room({ id: '01R', topic: 'New' }));
+  await changeRoom('01R', { topic: 'New' });
+  rooms.resolve([room({ id: '01R', topic: 'Old' })]);
+  await loading;
+  expect(store.rooms['01R'].topic).toBe('New');
+});
+
+test('a change keeps the read marker the page has put', async () => {
+  await loaded([room({ id: '01R', topic: 'Old', last_read_message_id: '01M5' })]);
+  vi.mocked(api.updateRoom).mockResolvedValue(
+    room({ id: '01R', topic: 'New', last_read_message_id: '01M3' }),
+  );
+  await changeRoom('01R', { topic: 'New' });
+  expect(store.rooms['01R']).toMatchObject({ topic: 'New', last_read_message_id: '01M5' });
 });
 
 test('a posted message becomes its room\'s latest, and an older one does not replace it', async () => {
