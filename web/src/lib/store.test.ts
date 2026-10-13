@@ -1636,3 +1636,74 @@ test('disconnect empties latest and quoted', async () => {
   await loadQuoted('01R', '01M2');
   expect(api.getMessage).toHaveBeenCalledTimes(6);
 });
+
+test('a load that settles after a successful markRead does not move the marker back', async () => {
+  await loaded([room({ id: '01R', last_message_id: '01M2', last_read_message_id: '01M1' })]);
+  const slow = deferred<Room[]>();
+  vi.mocked(api.listRooms).mockReturnValueOnce(slow.promise);
+  const loading = load();
+  vi.mocked(api.markRoomRead).mockResolvedValue();
+  await markRead('01R', '01M2');
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M2');
+
+  // The server read the room before the marker was put.
+  slow.resolve([room({ id: '01R', topic: 'Renamed', last_message_id: '01M2', last_read_message_id: '01M1' })]);
+  await loading;
+
+  expect(store.rooms['01R']).toMatchObject({ topic: 'Renamed', last_read_message_id: '01M2' });
+});
+
+test('a room.changed carrying an older marker after a successful markRead does not move it back', async () => {
+  await loaded([
+    room({ id: '01R', last_message_id: '01M2', last_read_message_id: '01M1' }),
+    room({ id: '01S', last_message_id: '01M2' }),
+  ]);
+  vi.mocked(api.markRoomRead).mockResolvedValue();
+  await markRead('01R', '01M2');
+  await markRead('01S', '01M2');
+
+  apply('room.changed', {
+    room: room({ id: '01R', topic: 'Renamed', last_message_id: '01M2', last_read_message_id: '01M1' }),
+  });
+  // No marker at all is older than any.
+  apply('room.changed', { room: room({ id: '01S', topic: 'Renamed', last_message_id: '01M2' }) });
+
+  expect(store.rooms['01R']).toMatchObject({ topic: 'Renamed', last_read_message_id: '01M2' });
+  expect(store.rooms['01S']).toMatchObject({ topic: 'Renamed', last_read_message_id: '01M2' });
+});
+
+test('an incoming marker that is newer than the held one is taken', async () => {
+  await loaded([
+    room({ id: '01R', last_message_id: '01M3', last_read_message_id: '01M1' }),
+    room({ id: '01S', last_message_id: '01M3' }),
+  ]);
+
+  // Read on another device: by an event, and by a load.
+  apply('room.changed', { room: room({ id: '01R', last_message_id: '01M3', last_read_message_id: '01M2' }) });
+  apply('room.changed', { room: room({ id: '01S', last_message_id: '01M3', last_read_message_id: '01M2' }) });
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M2');
+  expect(store.rooms['01S'].last_read_message_id).toBe('01M2');
+
+  vi.mocked(api.listRooms).mockResolvedValue([
+    room({ id: '01R', last_message_id: '01M3', last_read_message_id: '01M3' }),
+    room({ id: '01S', last_message_id: '01M3', last_read_message_id: '01M2' }),
+  ]);
+  await load();
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M3');
+  expect(store.rooms['01S'].last_read_message_id).toBe('01M2');
+});
+
+test('a loadLatest answer read before an edit to the same message does not put the old text back', async () => {
+  await loaded([room({ id: '01R', last_message_id: '01M2' })]);
+  const answer = deferred<Message>();
+  vi.mocked(api.getMessage).mockReturnValueOnce(answer.promise);
+  const loading = loadLatest('01R');
+
+  const edited = message({ id: '01M2', room_id: '01R', text: 'Bottom line.' });
+  handlers.event('message.edited', { message: edited });
+  expect(store.latest['01R']).toEqual(edited);
+  answer.resolve(message({ id: '01M2', room_id: '01R', text: 'Bottom li', streaming: true }));
+  await loading;
+
+  expect(store.latest['01R']).toEqual(edited);
+});

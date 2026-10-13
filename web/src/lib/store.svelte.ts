@@ -245,6 +245,7 @@ export async function load(): Promise<void> {
       asked === null ? null : listMessages(asked).catch(reason),
     ]);
     if (seq === loads) {
+      rooms.forEach(keepMarker);
       store.rooms = byId(rooms);
       workingOn = new Map();
       store.agents = byId(agents);
@@ -467,8 +468,9 @@ function putLatest(message: Message): void {
 }
 
 // loadLatest fetches a room's newest message when it is not the one held in
-// latest, for a room that is listed without its feed being held. A failure is
-// ignored. It never rejects.
+// latest, for a room that is listed without its feed being held. The answer
+// is written only when nothing is held there or what is held is older. A
+// failure is ignored. It never rejects.
 export async function loadLatest(roomId: string): Promise<void> {
   if (!Object.hasOwn(store.rooms, roomId)) {
     return;
@@ -488,9 +490,11 @@ export async function loadLatest(roomId: string): Promise<void> {
   fetchingLatest.add(key);
   try {
     const message = await getMessage(roomId, messageId);
-    if (epoch === resets) {
-      // An event may have brought a newer one while this was in flight.
-      putLatest(message);
+    // An event may have brought a newer one while this was in flight, or this
+    // one as it is now: the answer was read before either, so unlike an event
+    // it does not replace the message it names.
+    if (epoch === resets && (!Object.hasOwn(store.latest, roomId) || store.latest[roomId].id < message.id)) {
+      store.latest[roomId] = message;
     }
   } catch {
     // ignored
@@ -529,9 +533,26 @@ function receive(name: string, data: unknown): void {
   apply(name, data);
 }
 
+// keepMarker gives a room that is about to replace the held one the held read
+// marker, when that is the newer of the two. A snapshot or an event carries
+// the marker as it was when the server read the room, which can be before a
+// marker this page has since put; and no event announces a marker, so nothing
+// would correct it afterwards. The server only moves a marker forward, so the
+// newer one held is the truth, and the older one incoming is late.
+function keepMarker(room: Room): void {
+  if (!Object.hasOwn(store.rooms, room.id)) {
+    return;
+  }
+  const held = store.rooms[room.id].last_read_message_id;
+  if (held !== null && (room.last_read_message_id === null || room.last_read_message_id < held)) {
+    room.last_read_message_id = held;
+  }
+}
+
 // putRoom inserts the room, or replaces the one held under its id. Its agents
 // come with it, so what set working for the old ones is forgotten.
 export function putRoom(room: Room): void {
+  keepMarker(room);
   store.rooms[room.id] = room;
   workingOn.delete(room.id);
 }
