@@ -132,6 +132,20 @@ test('a load that started before a write does not undo it', async () => {
   expect(note.value?.text).toBe('new');
 });
 
+test('a load that started during a write does not undo it', async () => {
+  const writing = deferred<Note>();
+  const loading = deferred<Note>();
+  vi.mocked(api.setNoteText).mockReturnValueOnce(writing.promise);
+  vi.mocked(api.getNote).mockReturnValueOnce(loading.promise);
+  const saving = saveText('new');
+  const load = loadNote();
+  writing.resolve(fixture({ text: 'new' }));
+  await saving;
+  loading.resolve(fixture({ text: 'old' }));
+  await load;
+  expect(note.value?.text).toBe('new');
+});
+
 test('saveText sends the text and holds the answer', async () => {
   vi.mocked(api.setNoteText).mockResolvedValue(fixture({ text: 'mine' }));
   await saveText('mine');

@@ -21,8 +21,10 @@ export const note: Held = $state({ value: null, error: '', busy: false });
 // loads numbers the calls to loadNote(), so that only the newest one writes.
 let loads = 0;
 
-// writes numbers the writes started. A load that began before one would
-// answer with the note as it was, and must not undo it.
+// writes counts the writes started and the writes settled, well or badly. A
+// load that saw it move had a write in flight at some moment between its start
+// and its answer; the server may have answered it from before that write, so
+// it writes nothing.
 let writes = 0;
 
 // resets counts the calls to resetNote(), so that nothing in flight across
@@ -101,6 +103,7 @@ async function write(call: () => Promise<Note>): Promise<void> {
       note.value = answer;
     }
   } finally {
+    writes += 1;
     if (epoch === resets) {
       note.busy = false;
     }
