@@ -5,6 +5,8 @@ import { signOut } from './lib/session.svelte';
 import { closeRoom, connect, disconnect, load, openRoom, store } from './lib/store.svelte';
 import { room } from './lib/fixtures';
 import { route, startRouting } from './lib/route.svelte';
+import { note } from './lib/note.svelte';
+import { note as fixture, noteEntry } from './lib/fixtures';
 import Home from './Home.svelte';
 
 vi.mock('./lib/session.svelte', () => ({
@@ -25,6 +27,7 @@ vi.mock('./lib/store.svelte', () => ({
   loadLatest: vi.fn(),
   markAllRead: vi.fn(),
   putRoom: vi.fn(),
+  reason: (err: unknown) => (err instanceof Error ? err.message : String(err)),
   stopAll: vi.fn(),
   resumeAll: vi.fn(),
 }));
@@ -55,6 +58,7 @@ beforeEach(() => {
   store.error = '';
   store.rooms = {};
   route.path = '/';
+  note.value = null;
 });
 
 test('connects on mount and disconnects on unmount', () => {
@@ -177,4 +181,30 @@ test('#/unread shows the Unread page', () => {
   expect(screen.getByRole('heading', { name: 'Unread' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Mark all read' })).toBeInTheDocument();
   expect(screen.queryByRole('navigation')).toBeNull();
+});
+
+test('the footer links to the note', () => {
+  render(Home);
+  expect(screen.getByRole('link', { name: /Note/ })).toHaveAttribute('href', '#/note');
+});
+
+test('the note link counts what waits for review', () => {
+  note.value = fixture({
+    entries: [noteEntry({ id: 'a' }), noteEntry({ id: 'b' }), noteEntry({ id: 'c', approved: true })],
+  });
+  const { unmount } = render(Home);
+  expect(screen.getByRole('link', { name: /Note/ })).toHaveTextContent('Note 2');
+  unmount();
+
+  note.value = fixture({ entries: [noteEntry({ approved: true })] });
+  render(Home);
+  expect(screen.getByRole('link', { name: /Note/ })).toHaveTextContent(/^Note$/);
+});
+
+test('#/note shows the note screen', () => {
+  note.value = fixture();
+  route.path = '/note';
+  render(Home);
+  expect(screen.getByRole('heading', { name: 'Note' })).toBeInTheDocument();
+  expect(screen.getByRole('textbox', { name: 'Note' })).toBeInTheDocument();
 });
