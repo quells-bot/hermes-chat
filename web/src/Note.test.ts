@@ -113,6 +113,11 @@ test('a saved text clears the draft', async () => {
   expect(api.setNoteText).toHaveBeenCalledWith('new text');
   await waitFor(() => expect(save()).toBeDisabled());
   expect(box()).toHaveValue('new text');
+
+  // a box still holding a draft would ignore this reload; a cleared one follows it
+  vi.mocked(api.getNote).mockResolvedValue(fixture({ text: 'changed elsewhere' }));
+  await loadNote();
+  await waitFor(() => expect(box()).toHaveValue('changed elsewhere'));
 });
 
 test('pending entries sit under To review and approved ones under Approved', () => {
