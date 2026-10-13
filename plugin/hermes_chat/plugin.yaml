@@ -1,0 +1,33 @@
+name: hermes-chat
+label: Hermes Chat
+kind: platform
+version: 0.1.0
+description: >
+  Chat with a Hermes agent through a Hermes Chat server: a room's messages
+  reach the agent as events, replies are streamed back, and every turn is
+  reported finished so the room's queue moves on.
+requires_env:
+  - name: HERMES_CHAT_URL
+    description: "Base URL of the chat server (e.g. https://chat.example.com)"
+    prompt: "Chat server URL"
+    password: false
+  - name: HERMES_CHAT_TOKEN
+    description: "Bearer token of the chat-server agent this profile is"
+    prompt: "Agent token"
+    password: true
+optional_env:
+  - name: HERMES_CHAT_HOME_ROOM
+    description: >
+      A room this profile's agent is in, normally the DM with it. Fallback
+      room for output with no room to go back to (scheduled jobs, Hermes's
+      own notices).
+    prompt: "Home room ID (or empty)"
+    password: false
+  - name: HERMES_CHAT_ALLOW_ALL_USERS
+    description: "Who may talk to the agent is the chat server's decision (set true in the documented setup)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: HERMES_CHAT_ALLOWED_USERS
+    description: "Registered because Hermes expects it; not used by the documented setup"
+    prompt: "Allowed users (comma-separated, optional)"
+    password: false
