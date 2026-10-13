@@ -47,6 +47,7 @@ class StubServer:
         self.requests: list[Recorded] = []
         self._scripts: dict[tuple[str, str], list[Any]] = {}
         self._events_script: list[Any] | None = None
+        self._events_index = 0
         self._stop = asyncio.Event()
         self._server: asyncio.AbstractServer | None = None
         self._writers: set = set()
@@ -65,6 +66,7 @@ class StubServer:
         `Hang` to hold the stream open, `Drop` to close it, or a callable
         taking an `Emitter`."""
         self._events_script = list(chunks)
+        self._events_index = 0
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
@@ -135,7 +137,12 @@ class StubServer:
         writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n")
         await writer.drain()
         emit = Emitter(writer)
-        for item in self._events_script or []:
+        while True:
+            if self._events_index >= len(self._events_script or []):
+                await self._stop.wait()  # script exhausted: hold the stream open
+                return
+            item = self._events_script[self._events_index]
+            self._events_index += 1
             if item is Hang:
                 await self._stop.wait()
                 return
@@ -146,7 +153,6 @@ class StubServer:
                 continue
             emit.write(item)
             await emit.drain()
-        # Script exhausted: the handler returns and the connection closes.
 
     @staticmethod
     def _coerce(spec) -> tuple[int, Any]:
