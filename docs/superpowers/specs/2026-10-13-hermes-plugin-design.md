@@ -452,11 +452,11 @@ mechanism at the pinned release, revised with section 9's findings.
   like an approval *(Kai, 2026-10-13)*, answered through `prompt.answered`
   instead of by typing `/approve`. The plan finds the adapter call Hermes
   makes for it.
-- **The shutdown notice** *(open, for the stage 2 plan)*: whether it is
-  turned off for this platform (`gateway_restart_notification`) or left as a
-  message.
-- **The streaming cursor** *(open)*: whether the adapter strips `▉` from what
-  it sends, so a cut-off reply does not keep it.
+- **The shutdown notice** stays a message *(Kai, 2026-10-13)*.
+- **The streaming cursor** is stripped by the adapter from what it sends
+  *(Kai, 2026-10-13; done in stage 1)*, so a cut-off reply does not keep it.
+  Text that is only the cursor is sent as it is, because the server refuses a
+  blank message.
 
 ## 11. Testing
 

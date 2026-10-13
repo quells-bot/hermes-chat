@@ -233,3 +233,27 @@ async def test_no_message_text_in_logs(adapter_factory, stub, delivery, caplog):
     await wait_until(lambda: a._open_turns.all() == {})
     assert "s3cret-text" not in caplog.text
     await a.disconnect()
+
+async def test_streaming_cursor_is_stripped_from_what_is_sent(adapter_factory, stub):
+    """Hermes ends in-progress text with a cursor. Stored in the message, it
+    would stay for good on a reply cut off before its final edit."""
+    stub.script("POST", "/agent/rooms/R1/messages", (201, {"id": "M2"}))
+    stub.script("PUT", "/agent/messages/M2", (204,))
+    stub.script("PUT", "/agent/messages/M2", (204,))
+    a = adapter_factory()
+    await a.send("R1", "Hello ▉")
+    await a.edit_message("R1", "M2", "Hello there ▉")
+    await a.edit_message("R1", "M2", "Hello there.", finalize=True)
+    texts = [r.json["text"] for r in stub.requests]
+    assert texts == ["Hello", "Hello there", "Hello there."], texts
+    await a._client.aclose()
+
+
+async def test_text_that_is_only_the_cursor_is_sent_as_it_is(adapter_factory, stub):
+    """The server refuses a blank message, and Hermes needs the id back."""
+    stub.script("POST", "/agent/rooms/R1/messages", (201, {"id": "M2"}))
+    a = adapter_factory()
+    result = await a.send("R1", " ▉")
+    assert result.success
+    assert stub.requests[0].json["text"] == " ▉"
+    await a._client.aclose()
