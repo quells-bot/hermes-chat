@@ -1257,3 +1257,46 @@ test('disconnect forgets which messages were finalized', async () => {
 
   expect(store.feeds['01R'].messages[0]).toMatchObject({ text: 'Do', streaming: true });
 });
+
+test('a message event for a feed whose first page failed changes no feed', async () => {
+  await loaded([room({ id: '01R' })]);
+  vi.mocked(api.listMessages).mockRejectedValueOnce(unreachable());
+  await openRoom('01R');
+  const failedFeed = { messages: [], more: false, loading: false, error: 'cannot reach the server' };
+
+  apply('message.posted', { message: message({ id: '01M050', room_id: '01R' }) });
+  apply('delivery.changed', { message: message({ id: '01M050', room_id: '01R' }) });
+  apply('message.edited', { message_id: '01M050', text: 'typing', final: false });
+
+  expect(store.feeds).toEqual({ '01R': failedFeed });
+  expect(store.rooms['01R'].last_message_id).toBe('01M050');
+});
+
+test('a feed whose first page failed is written fresh by the load that brings a page', async () => {
+  await loaded([room({ id: '01R', last_read_message_id: '01M040' })]);
+  vi.mocked(api.listMessages).mockRejectedValueOnce(unreachable());
+  await openRoom('01R');
+  // Put into the failed feed, this would make the full page below look like
+  // one that reaches what is held, and more would stay false.
+  apply('message.posted', { message: message({ id: '01M250', room_id: '01R' }) });
+
+  vi.mocked(api.listMessages).mockResolvedValueOnce(run(201, 50)).mockResolvedValueOnce(run(51, 150));
+  await load();
+
+  expect(api.listMessages).toHaveBeenCalledTimes(3);
+  expect(api.listMessages).toHaveBeenNthCalledWith(3, '01R', '01M201', 150);
+  expect(ids()).toEqual(run(51, 200).map((m) => m.id));
+  expect(store.feeds['01R']).toMatchObject({ more: true, loading: false, error: '' });
+});
+
+test('a page that fails inside load again replaces the reason on a failed feed', async () => {
+  await loaded([room({ id: '01R' })]);
+  vi.mocked(api.listMessages).mockRejectedValueOnce(unreachable());
+  await openRoom('01R');
+
+  vi.mocked(api.listMessages).mockRejectedValueOnce(new api.ApiError(500, 'internal', 'internal error'));
+  await load();
+
+  expect(store.feeds['01R']).toEqual({ messages: [], more: false, loading: false, error: 'internal error' });
+  expect(store.error).toBe('');
+});

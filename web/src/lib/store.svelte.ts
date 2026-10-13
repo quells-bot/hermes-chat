@@ -156,6 +156,18 @@ function failed(err: unknown): void {
   }
 }
 
+// heldFeed returns a room's feed, or null when there is none or its first
+// page failed. A failed feed is only the reason: it is not held. Events are
+// not put into it, and the page that arrives for it is written as a first one.
+// Messages put into it meanwhile would make that page look like one that
+// joins what was already there, and more would never be set from it.
+function heldFeed(id: string): Feed | null {
+  if (!Object.hasOwn(store.feeds, id) || store.feeds[id].error !== '') {
+    return null;
+  }
+  return store.feeds[id];
+}
+
 // fetchStarted counts one more snapshot fetch in flight. What it returns is
 // handed back to fetchSettled.
 function fetchStarted(): number {
@@ -241,15 +253,17 @@ function loadedPage(asked: string | null, page: Message[] | string | null): Prom
   if (id === null) {
     return null;
   }
-  const feed = Object.hasOwn(store.feeds, id) ? store.feeds[id] : null;
+  const feed = heldFeed(id);
   if (id !== asked || page === null) {
     // The person moved on while the load was in flight, so the page is
     // another room's. If openRoom did not fetch this one's, because nothing
-    // was loaded yet, nothing else will.
+    // was loaded yet, nothing else will; and one whose page failed is due
+    // another try.
     return feed === null ? newest(id) : null;
   }
   if (typeof page === 'string') {
-    // A held feed is still good; without one, the room has only the failure.
+    // A held feed is still good; without one, the room has only the failure,
+    // and the newest reason for it.
     if (feed === null) {
       store.feeds[id] = { messages: [], more: false, loading: false, error: page };
     }
@@ -261,7 +275,6 @@ function loadedPage(asked: string | null, page: Message[] | string | null): Prom
   }
   const merged = mergeNewest(feed.messages, page);
   feed.messages = merged.messages;
-  feed.error = '';
   if (!merged.replaced) {
     return null; // what was held reaches the page: more, and the backlog, are as they were
   }
@@ -312,7 +325,7 @@ async function older(id: string, limit: number): Promise<void> {
   const epoch = fetchStarted();
   try {
     const page = await listMessages(id, before, limit);
-    const feed = epoch === resets && Object.hasOwn(store.feeds, id) ? store.feeds[id] : null;
+    const feed = epoch === resets ? heldFeed(id) : null;
     if (feed !== null && feed.messages.length > 0 && feed.messages[0].id === before) {
       feed.messages.unshift(...page);
       feed.more = page.length === limit;
@@ -330,7 +343,7 @@ export async function openRoom(id: string): Promise<void> {
   if (!store.loaded) {
     return; // the coming load fetches the page
   }
-  if (Object.hasOwn(store.feeds, id) && store.feeds[id].error === '') {
+  if (heldFeed(id) !== null) {
     return;
   }
   await newest(id);
@@ -347,11 +360,8 @@ export function closeRoom(id: string): void {
 // loadOlder brings the page before the oldest held message of a room. One at
 // a time per room. It never rejects.
 export async function loadOlder(id: string): Promise<void> {
-  if (!Object.hasOwn(store.feeds, id)) {
-    return;
-  }
-  const feed = store.feeds[id];
-  if (!feed.more || feed.loading || feed.messages.length === 0) {
+  const feed = heldFeed(id);
+  if (feed === null || !feed.more || feed.loading || feed.messages.length === 0) {
     return;
   }
   feed.loading = true;
@@ -472,10 +482,10 @@ function applyToFeeds(name: string, data: unknown): void {
         // bring it later, and a late live edit must still be ignored.
         finalized.add(message.id);
       }
-      if (!Object.hasOwn(store.feeds, message.room_id)) {
+      const feed = heldFeed(message.room_id);
+      if (feed === null) {
         return;
       }
-      const feed = store.feeds[message.room_id];
       // One older than everything held, while older pages remain, belongs to
       // a page not yet loaded. Inserted, it would become the oldest held, and
       // loadOlder would skip what lies between.
