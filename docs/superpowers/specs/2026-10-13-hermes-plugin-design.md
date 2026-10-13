@@ -1,7 +1,8 @@
 # Hermes Chat plugin for Hermes: design
 
 Date: 2026-10-13
-Status: draft for approval
+Status: stage 1 built and tried; sections 4, 6, 9 and 10 revised the same day
+with what the first sitting showed (section 9, "What the first sitting showed")
 
 This document covers the Hermes platform plugin only. The product it belongs to
 is described in `2026-10-11-hermes-chat-design.md` (the product spec), and the
@@ -37,7 +38,7 @@ derisks the rest. Claude's call: the split below.)*
   continues afterwards. It also logs what
   Hermes's tool and remark hooks deliver, without sending any of it anywhere.
   Sections 4 to 9 specify this stage and are the subject of the first plan.
-- **Stage 2, after the first sitting.** Tool steps and remarks; stop, pause,
+- **Stage 2, after the first sitting.** Tool steps; stop, pause,
   and steer; approval and clarify prompts; the note and the suggest-an-entry
   tool; file uploads; home-room delivery for scheduled jobs. Section 10 gives
   the intended mechanism for each. It is provisional: it is revised with what
@@ -85,10 +86,13 @@ derisks the rest. Claude's call: the split below.)*
 
 ## 4. What it is built on
 
-- **Hermes at commit `6e7b83a2`** (`NousResearch/hermes-agent`, `main` on
-  2026-10-13), checked out at `~/Dev/hermes-agent` on the development machine.
-  *(Kai: assume the install matches, or update it to match.)* Everything this
-  document says about Hermes was read from that commit.
+- **Hermes release `v0.21.7`** (`NousResearch/hermes-agent`, commit
+  `71d34bad`). Kai's install follows release tags, not `main`, so the release
+  it runs is the target. The document was first written against the `main`
+  commit `6e7b83a2` of 2026-10-13, checked out at `~/Dev/hermes-agent` on the
+  development machine; the behaviour in sections 6 and 9 was seen running at
+  both. A new Hermes release is checked with the local gateway run in
+  section 11 before Kai updates.
 - **The plugin directory is `plugin/hermes_chat/`** in this repository, as the
   architecture spec places it. Installing is copying or linking that directory
   to `~/.hermes/plugins/hermes-chat/` and enabling it. A user plugin is loaded
@@ -258,13 +262,28 @@ Three settings on the adapter class make the above true at the pinned commit:
   - while a room has a delivery awaiting resume, the one-at-a-time rule above
     applies to it like any running turn.
 
-  A graceful stop cancels running turns before `disconnect()`, which reaches
-  `on_processing_complete` as `CANCELLED`. In that one case the plugin must
-  not report `done`, or the server would release the next message and the
-  resumed reply would land outside any turn. The builder finds how the adapter
-  can tell a shutdown cancellation from a stop (Hermes marks such sessions
-  `resume_pending`) and leaves the delivery open in the record for the former.
-  The record lives under the profile's Hermes home.
+  A graceful stop interrupts running turns before `disconnect()`. The
+  interrupted turn reaches `on_processing_complete` as `SUCCESS` (as
+  `CANCELLED` on some paths), with its session marked `resume_pending`. In
+  that case the plugin must not report `done`, or the server would release
+  the next message into a gateway that answers new work with a canned
+  refusal, and the resumed reply would land outside any turn. The adapter
+  leaves the delivery open when the gateway is draining and the session is
+  marked `resume_pending`, or when it is shutting down and the outcome is
+  `CANCELLED`. A delivery that arrives while the gateway is draining is not
+  handed to Hermes and not recorded: the server still has it `delivered` and
+  hands it over again on the next connect. The record lives under the
+  profile's Hermes home.
+- **The processing hooks are not the turn.** Hermes runs
+  `on_processing_start` and `on_processing_complete` around an event even
+  when it only queues it, and then dispatches the same event again. Two cases
+  were seen: a message that arrives while the gateway is still starting is
+  held in the gateway's startup queue and replayed when startup is over; and
+  Hermes's own resume event after a restart is put back into the session's
+  pending slot once or twice, because the session is already claimed for the
+  resume. In both, the first pass ends as `SUCCESS` within milliseconds and
+  nothing has run. The adapter closes a turn only on a pass after which the
+  event is in neither place.
 - **A delivery Hermes refuses** still ends. The authorization check runs
   inside Hermes's message handler, after `on_processing_start`, so a refused
   message goes through both processing hooks and is reported `done`. The
@@ -360,15 +379,58 @@ Together these answer, from one conversation's log:
 
 The probe is removed when stage 2 replaces it.
 
+### What the first sitting showed
+
+From Kai's log of 2026-10-13 and from the same turns run locally against a
+real gateway with a scripted model (section 11):
+
+- **The tool hooks fire in the gateway process.** `pre_tool_call` and
+  `post_tool_call` carry the tool's name, a `tool_call_id`, and on the post
+  call `duration_ms` and `status`; Hermes's session context gives the
+  platform and the room. Calls made in parallel interleave and are matched by
+  `tool_call_id`. The room gives the delivery, because the adapter runs one
+  turn per room.
+- **`on_interim_message` fires once per stretch of commentary**, just before
+  that step's `pre_tool_call`, with the text and `already_streamed`. Hermes
+  calls it from a worker thread as a plain function; a coroutine function
+  registered for it is created and dropped, which is why the first log had no
+  such line.
+- **Commentary reaches the room as chat messages regardless.** With streaming
+  on, the text before a tool call is streamed as a reply and closed at the
+  tool call, so one turn posts one message per stretch of commentary and one
+  for the answer. `interim_assistant_messages: false` does not change this.
+- **A streamed reply ends with a final edit**, sent twice a few milliseconds
+  apart. A stretch of commentary sometimes gets none and is closed by the
+  turn's `done`.
+- **`on_processing_complete` is called once per pass, not once per turn**, and
+  a turn Hermes interrupts or a model call that fails both end as `SUCCESS`
+  (section 6). `FAILURE` was seen only for an exception in the handler.
+- **The streaming cursor (`▉`) is part of the message text** while a reply
+  streams. A reply cut off with no final edit keeps it.
+- **Hermes posts its own notices as messages**: a shutdown notice to each
+  active room and to the home room (twice in a room that is both), a "no home
+  channel is set" notice in the first room when `HERMES_CHAT_HOME_ROOM` is
+  unset, and a "Confirm /new" message that waits for `/approve`, `/always` or
+  `/cancel` typed as a message.
+
 ## 10. Stage 2 (provisional)
 
 Recorded so the stage 1 structure does not block it. Each line is the intended
-mechanism at the pinned commit.
+mechanism at the pinned release, revised with section 9's findings.
 
 - **Tool steps**: `pre_tool_call` → `POST /agent/deliveries/{id}/tools` (name,
   preview, arguments); `post_tool_call` → `PUT /agent/activities/{id}` with its
-  `duration_ms` and status. Needs the hook-to-delivery mapping the probe tests.
-- **Remarks**: `on_interim_message` → `POST /agent/deliveries/{id}/remarks`.
+  `duration_ms` and status. The delivery is the open one for the room in the
+  hook's session context; the activity is found again by `tool_call_id`. A
+  hook call for a room with no open delivery is logged and sent nowhere.
+- **Remarks**: not in stage 2 *(Kai, 2026-10-13: leave commentary as messages
+  for now)*. The hook that would feed them works, but Hermes has already
+  posted the same text as a chat message by the time it fires, and the agent
+  API has no way to withdraw a message or turn one into a remark. Doing it
+  properly means either holding streamed text back in the adapter, which
+  costs live replies, or a server route that converts a posted message.
+  Stage 2 trims the blank lines Hermes leaves at the start of a later
+  stretch and otherwise leaves these messages alone.
 - **Stop and pause**: `cancel_session_processing(session_key)` on the adapter
   for that room's session. Dispatching `/stop` as a message is the fallback.
 - **Steer**: Hermes has no adapter call for it. Hand Hermes a `/steer <text>`
@@ -384,7 +446,14 @@ mechanism at the pinned commit.
 - **Uploads**: `send_document`, `send_image_file` and relatives →
   `POST /agent/rooms/{room}/attachments`, then a message naming the IDs.
 - **Home room**: unprompted `send` to `HERMES_CHAT_HOME_ROOM` already works
-  through stage 1's `send`; stage 2 checks it with a real scheduled job.
+  through stage 1's `send` (Hermes's startup and shutdown notices arrive
+  there); stage 2 checks it with a real scheduled job.
+- **Hermes's own notices** *(open, for the stage 2 plan)*: whether the
+  "Confirm /new" message becomes a prompt like an approval, and whether the
+  shutdown notice is turned off for this platform
+  (`gateway_restart_notification`) or left as a message.
+- **The streaming cursor** *(open)*: whether the adapter strips `▉` from what
+  it sends, so a cut-off reply does not keep it.
 
 ## 11. Testing
 
@@ -407,6 +476,17 @@ mechanism at the pinned commit.
   API, the adapter (with the fake handler) replies, and the test reads the
   room back to see the reply and the delivery `done`; then the same with the
   server restarted mid-turn and with the adapter restarted mid-turn.
+
+- **A real gateway, locally** *(added after the first sitting)*. The checks
+  above replace Hermes's message handler, so none of them saw how Hermes
+  loads a plugin or when it calls the hooks, and three defects reached Kai's
+  machine. Hermes's own test suite has a scripted model server
+  (`tests/fakes/fake_llm_provider.py`); with it, a gateway started from the
+  checkout on a temporary Hermes home, with the plugin linked in and a real
+  `hermes-chat` server, runs whole turns with no model: commentary before a
+  tool call, a message waiting at startup, a stop mid-reply and the resume
+  after it. Stage 2 adds this as a test tier and runs it against the release
+  Kai's install is on.
 
 `just plugin-check` runs them with `uv`, with the Hermes checkout on the
 import path (location from an env var, default `~/Dev/hermes-agent`). It is

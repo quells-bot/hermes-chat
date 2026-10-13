@@ -2,9 +2,10 @@
 
 A Hermes platform plugin that lets one real Hermes agent chat in a Hermes Chat
 room: a message reaches the agent as an event, the reply streams back, and
-every turn is reported finished so the room's queue moves on. It targets the
-Hermes checkout at commit `6e7b83a2` and was tested against the `hermes-chat`
-server built from this repository.
+every turn is reported finished so the room's queue moves on. It targets
+Hermes release `v0.21.7` (commit `71d34bad`; also run at the `main` commit
+`6e7b83a2`) and was tested against the `hermes-chat` server built from this
+repository.
 
 ## Install
 
@@ -110,8 +111,12 @@ restarted mid-turn; the first sitting produces a log that shows whether the
 stage 2 mechanisms will work; you can install it from these steps without
 asking anyone.
 
-Does not yet: anything in the stage 2 list — tool steps and remarks shown in
-the room, stop/pause/steer, approval and clarify prompts, the note and the
+Known in stage 1: when the agent writes something before using a tool, that
+text is posted as its own message, so one turn can leave several. Hermes
+also posts its own notices (shutting down, confirm `/new`) as messages.
+
+Does not yet: anything in the stage 2 list — tool steps shown in the room,
+stop/pause/steer, approval and clarify prompts, the note and the
 suggest-an-entry tool, file uploads, home-room delivery for scheduled jobs.
 In stage 1 the plugin receives `stop`, `pause`, `steer`, and `prompt.answered`
 events and only logs them. In particular the agent's questions cannot be
@@ -161,9 +166,10 @@ to send back.
 6. **A message sent while the gateway is stopped.** *Do*: stop the gateway,
    post a message, start the gateway. *Expect*: the message is answered once
    the gateway is back.
-7. **`/new` typed by a human.** *Do*: type `/new` in the room. *Expect*: the
-   agent's conversation in that room starts over. *Send back*: the turn's
-   report lines.
+7. **`/new` typed by a human.** *Do*: type `/new` in the room, then
+   `/approve` when Hermes asks you to confirm. *Expect*: the agent's
+   conversation in that room starts over. *Send back*: the turn's report
+   lines.
 
 The log answers three questions for stage 2: whether the hooks fire in the
 gateway process and can be tied to a room and delivery; whether Hermes always
