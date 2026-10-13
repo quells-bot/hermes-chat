@@ -2,7 +2,9 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import * as api from './api';
 import { activity, agent, message, room } from './fixtures';
 import {
+  answer,
   apply,
+  cancel,
   closeRoom,
   connect,
   disconnect,
@@ -14,14 +16,17 @@ import {
   markAllRead,
   markRead,
   openRoom,
+  pause,
   putRoom,
+  resume,
   resumeAll,
   send,
   stopAll,
+  stopTurns,
   store,
 } from './store.svelte';
 import { openStream, type StreamHandlers } from './stream';
-import type { Activity, Agent, Message, Room } from './types';
+import type { Activity, Agent, Message, Prompt, Room } from './types';
 
 vi.mock('./api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./api')>()),
@@ -37,6 +42,11 @@ vi.mock('./api', async (importOriginal) => ({
   steer: vi.fn(),
   stopEverything: vi.fn(),
   resumeEverything: vi.fn(),
+  answerPrompt: vi.fn(),
+  cancelMessage: vi.fn(),
+  stopTurn: vi.fn(),
+  pauseRoom: vi.fn(),
+  resumeRoom: vi.fn(),
 }));
 
 vi.mock('./stream', () => ({ openStream: vi.fn() }));
@@ -127,6 +137,11 @@ beforeEach(() => {
   vi.mocked(api.steer).mockReset();
   vi.mocked(api.stopEverything).mockReset();
   vi.mocked(api.resumeEverything).mockReset();
+  vi.mocked(api.answerPrompt).mockReset();
+  vi.mocked(api.cancelMessage).mockReset();
+  vi.mocked(api.stopTurn).mockReset();
+  vi.mocked(api.pauseRoom).mockReset();
+  vi.mocked(api.resumeRoom).mockReset();
 });
 
 afterEach(() => {
@@ -1645,6 +1660,109 @@ test('the response waits for a snapshot fetch in flight', async () => {
   rooms.resolve([room({ id: '01R' })]);
   await loading;
   expect(ids('01R')).toEqual(['01M001', '01M002', '01M003']);
+});
+
+// prompt builds a Prompt whose state and answer are the interesting parts.
+function prompt(overrides: Partial<Prompt> = {}): Prompt {
+  return {
+    kind: 'approval',
+    choices: ['yes', 'no'],
+    state: 'open',
+    answer: null,
+    answered_by: null,
+    closed_at: null,
+    ...overrides,
+  };
+}
+
+test('answer posts the answer and writes the answered prompt into the feed', async () => {
+  const asked = message({ id: '01M001', room_id: '01R', prompt: prompt({ state: 'open' }) });
+  await opened('01R', [asked]);
+  const answered = message({ id: '01M001', room_id: '01R', prompt: prompt({ state: 'answered', answer: 'Once' }) });
+  vi.mocked(api.answerPrompt).mockResolvedValue(answered);
+  await answer('01R', '01M001', 'Once');
+  expect(api.answerPrompt).toHaveBeenCalledWith('01R', '01M001', 'Once');
+  expect(store.feeds['01R'].messages[0].prompt?.state).toBe('answered');
+});
+
+test('answer rejects with the server\'s error and writes nothing', async () => {
+  const asked = message({ id: '01M001', room_id: '01R', prompt: prompt({ state: 'open' }) });
+  await opened('01R', [asked]);
+  const failure = new api.ApiError(409, 'prompt_closed', 'the prompt has closed');
+  vi.mocked(api.answerPrompt).mockRejectedValue(failure);
+  await expect(answer('01R', '01M001', 'Once')).rejects.toBe(failure);
+  expect(store.feeds['01R'].messages[0].prompt).toMatchObject({ state: 'open' });
+  expect(store.error).toBe('');
+});
+
+test('cancel posts the cancel and nothing_waiting is quiet', async () => {
+  await opened('01R', [message({ id: '01M001', room_id: '01R' })]);
+  vi.mocked(api.cancelMessage).mockResolvedValue();
+  await cancel('01R', '01M001');
+  expect(api.cancelMessage).toHaveBeenCalledWith('01R', '01M001');
+  expect(store.error).toBe('');
+
+  vi.mocked(api.cancelMessage).mockRejectedValue(new api.ApiError(409, 'nothing_waiting', 'nothing is waiting'));
+  await expect(cancel('01R', '01M001')).resolves.toBeUndefined();
+  expect(store.error).toBe('');
+});
+
+test('a failed cancel lands in store.error', async () => {
+  await opened('01R', [message({ id: '01M001', room_id: '01R' })]);
+  vi.mocked(api.cancelMessage).mockRejectedValue(unreachable());
+  await expect(cancel('01R', '01M001')).resolves.toBeUndefined();
+  expect(store.error).toBe('cannot reach the server');
+});
+
+test('stopTurns asks each working agent once', async () => {
+  await opened('01R', run(1, 1), [
+    room({ id: '01R', agents: [agent({ id: '01A', working: true }), agent({ id: '01B', working: true }), agent({ id: '01C' })] }),
+  ]);
+  vi.mocked(api.stopTurn).mockResolvedValue();
+  await stopTurns('01R');
+  expect(vi.mocked(api.stopTurn).mock.calls).toEqual([
+    ['01R', '01A'],
+    ['01R', '01B'],
+  ]);
+  expect(store.error).toBe('');
+});
+
+test('stopTurns records a failure in store.error', async () => {
+  await opened('01R', run(1, 1), [room({ id: '01R', agents: [agent({ id: '01A', working: true })] })]);
+  vi.mocked(api.stopTurn).mockRejectedValue(unreachable());
+  await expect(stopTurns('01R')).resolves.toBeUndefined();
+  expect(store.error).toBe('cannot reach the server');
+});
+
+test('pause and resume write the answer\'s room as room.changed', async () => {
+  // The answer comes from the server, which may not hold the newest marker.
+  await loaded([room({ id: '01R', paused: false, last_message_id: '01M5', last_read_message_id: '01M5' })]);
+  vi.mocked(api.pauseRoom).mockResolvedValue(room({ id: '01R', paused: true, last_message_id: '01M5' }));
+  await pause('01R');
+  expect(api.pauseRoom).toHaveBeenCalledWith('01R');
+  expect(store.rooms['01R']).toMatchObject({ paused: true, last_read_message_id: '01M5' });
+
+  vi.mocked(api.resumeRoom).mockResolvedValue(room({ id: '01R', paused: false, last_message_id: '01M5' }));
+  await resume('01R');
+  expect(api.resumeRoom).toHaveBeenCalledWith('01R');
+  expect(store.rooms['01R']).toMatchObject({ paused: false, last_read_message_id: '01M5' });
+});
+
+test('a pause answer that lands while a load is in flight waits for it', async () => {
+  await loaded([room({ id: '01R', paused: false })]);
+  const rooms = deferred<Room[]>();
+  vi.mocked(api.listRooms).mockReturnValueOnce(rooms.promise);
+  const loading = load();
+  const answered = deferred<Room>();
+  vi.mocked(api.pauseRoom).mockReturnValueOnce(answered.promise);
+  const pausing = pause('01R');
+  expect(store.rooms['01R'].paused).toBe(false);
+  answered.resolve(room({ id: '01R', paused: true }));
+  await pausing;
+  expect(store.rooms['01R'].paused).toBe(false); // held: the snapshot is still in flight
+  rooms.resolve([room({ id: '01R', paused: false })]);
+  await loading;
+  expect(store.rooms['01R'].paused).toBe(true);
 });
 
 test('a posted message becomes its room\'s latest, and an older one does not replace it', async () => {

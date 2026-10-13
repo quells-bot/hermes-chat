@@ -4,6 +4,8 @@
 
 import {
   ApiError,
+  answerPrompt,
+  cancelMessage,
   getHalt,
   getMessage,
   getRoom,
@@ -12,10 +14,13 @@ import {
   listMessages,
   listRooms,
   markRoomRead,
+  pauseRoom,
   postMessage,
   resumeEverything,
+  resumeRoom,
   steer,
   stopEverything,
+  stopTurn,
 } from './api';
 import { mergeNewest, pageSize, upsert } from './feed';
 import { isUnread } from './rooms';
@@ -502,6 +507,60 @@ export async function send(
   }
   if (newest !== null) {
     await markRead(roomId, newest);
+  }
+}
+
+// answer posts the answer to a message's open prompt. The response is written
+// as its prompt.changed event would be, so the prompt shown becomes the
+// answered one. It rejects with the ApiError, and never throws anything else.
+export async function answer(roomId: string, messageId: string, text: string): Promise<void> {
+  const message = await answerPrompt(roomId, messageId, text);
+  receive('prompt.changed', { message });
+}
+
+// cancel cancels a message's waiting deliveries. A 409 nothing_waiting is
+// quiet: there was nothing to cancel. Any other failure is recorded. It
+// never rejects.
+export async function cancel(roomId: string, messageId: string): Promise<void> {
+  try {
+    await cancelMessage(roomId, messageId);
+  } catch (err) {
+    if (!(err instanceof ApiError && err.code === 'nothing_waiting')) {
+      failed(err);
+    }
+  }
+}
+
+// stopTurns asks every agent working in the room to stop its running turn. A
+// failure is recorded. It never rejects.
+export async function stopTurns(roomId: string): Promise<void> {
+  const working = store.rooms[roomId]?.agents.filter((a) => a.working) ?? [];
+  for (const agent of working) {
+    try {
+      await stopTurn(roomId, agent.id);
+    } catch (err) {
+      failed(err);
+    }
+  }
+}
+
+// pause and resume toggle a room's paused state. The answer's room is written
+// as its room.changed event would be. A failure is recorded. They never
+// reject.
+export async function pause(roomId: string): Promise<void> {
+  await setPaused(roomId, pauseRoom);
+}
+export async function resume(roomId: string): Promise<void> {
+  await setPaused(roomId, resumeRoom);
+}
+
+// setPaused makes the call and writes the answer's room after it.
+async function setPaused(roomId: string, call: (id: string) => Promise<Room>): Promise<void> {
+  try {
+    const room = await call(roomId);
+    receive('room.changed', { room });
+  } catch (err) {
+    failed(err);
   }
 }
 
