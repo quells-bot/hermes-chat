@@ -12,7 +12,9 @@ import {
   listMessages,
   listRooms,
   markRoomRead,
+  postMessage,
   resumeEverything,
+  steer,
   stopEverything,
 } from './api';
 import { mergeNewest, pageSize, upsert } from './feed';
@@ -460,6 +462,46 @@ export async function markAllRead(): Promise<void> {
   const failure = (await Promise.allSettled(marks)).find((r) => r.status === 'rejected');
   if (failure !== undefined && epoch === resets) {
     failed(failure.reason);
+  }
+}
+
+// How send acts in a room: whether it posts a message of its own, or steers
+// the agents already working in it.
+export type SendMode = 'queue' | 'steer';
+
+// send posts text to the room ('queue') or steers every working agent in it
+// ('steer'). Each response is written as its message.posted event would be,
+// then the room's marker moves to the newest of them. It rejects with the
+// ApiError, and never throws anything else.
+export async function send(
+  roomId: string,
+  text: string,
+  mode: SendMode,
+  clientId: string,
+  replyTo?: string | null,
+): Promise<void> {
+  let newest: string | null = null;
+  // Each response is written as it lands, so a failure behind it keeps what
+  // came before. The marker waits for the whole send to succeed.
+  const written = (message: Message): void => {
+    receive('message.posted', { message });
+    if (newest === null || message.id > newest) {
+      newest = message.id;
+    }
+  };
+  if (mode === 'queue') {
+    written(await postMessage(roomId, text, clientId, replyTo ?? undefined));
+  } else {
+    const working = store.rooms[roomId]?.agents.filter((a) => a.working) ?? [];
+    if (working.length === 0) {
+      throw new ApiError(409, 'no_turn', 'no agent has a running turn');
+    }
+    for (const [i, agent] of working.entries()) {
+      written(await steer(roomId, agent.id, text, `${clientId}-${i}`));
+    }
+  }
+  if (newest !== null) {
+    await markRead(roomId, newest);
   }
 }
 
