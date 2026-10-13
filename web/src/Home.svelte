@@ -5,10 +5,11 @@
   import NewRoom from './NewRoom.svelte';
   import Note from './Note.svelte';
   import Room from './Room.svelte';
+  import RoomSettings from './RoomSettings.svelte';
   import RoomList from './RoomList.svelte';
   import Unread from './Unread.svelte';
   import { note, pending } from './lib/note.svelte';
-  import { roomIdOf, route, startRouting } from './lib/route.svelte';
+  import { roomIdOf, route, settingsIdOf, startRouting } from './lib/route.svelte';
   import { session, signOut } from './lib/session.svelte';
   import { connect, disconnect, load, store } from './lib/store.svelte';
 
@@ -24,6 +25,7 @@
   });
 
   const roomId = $derived(roomIdOf(route.path));
+  const settingsId = $derived(settingsIdOf(route.path));
 </script>
 
 {#snippet problem()}
@@ -38,6 +40,10 @@
 {#if roomId !== null}
   {#key roomId}
     <Room id={roomId} />
+  {/key}
+{:else if settingsId !== null}
+  {#key settingsId}
+    <RoomSettings id={settingsId} />
   {/key}
 {:else if route.path === '/unread'}
   <Unread />

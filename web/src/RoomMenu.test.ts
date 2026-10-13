@@ -122,3 +122,33 @@ test('a failed pause closes the menu and hands the reason to onerror, not to the
   expect(store.error).toBe('');
   expect(store.rooms['01R'].paused).toBe(false);
 });
+
+test('a room’s menu links to its settings', async () => {
+  store.rooms['01R'] = room({ id: '01R' });
+  render(RoomMenu, { id: '01R' });
+  await userEvent.click(screen.getByRole('button', { name: 'Menu' }));
+  const link = screen.getByRole('menuitem', { name: 'Settings' });
+  expect(link).toHaveAttribute('href', '#/rooms/01R/settings');
+
+  // tapping it closes the menu
+  link.addEventListener('click', (e) => e.preventDefault());
+  await userEvent.click(link);
+  expect(screen.queryByRole('menu')).toBeNull();
+});
+
+test('Escape on the Settings link closes the menu', async () => {
+  store.rooms['01R'] = room({ id: '01R' });
+  render(RoomMenu, { id: '01R' });
+  await userEvent.click(screen.getByRole('button', { name: 'Menu' }));
+  screen.getByRole('menuitem', { name: 'Settings' }).focus();
+  await userEvent.keyboard('{Escape}');
+  expect(screen.queryByRole('menu')).toBeNull();
+});
+
+test('a DM’s menu has no Settings', async () => {
+  store.rooms['01R'] = room({ id: '01R', flavor: 'dm' });
+  render(RoomMenu, { id: '01R' });
+  await userEvent.click(screen.getByRole('button', { name: 'Menu' }));
+  expect(screen.getByRole('menuitem', { name: 'Pause' })).toBeInTheDocument();
+  expect(screen.queryByRole('menuitem', { name: 'Settings' })).toBeNull();
+});

@@ -27,6 +27,10 @@ vi.mock('./lib/store.svelte', () => ({
   loadLatest: vi.fn(),
   markAllRead: vi.fn(),
   putRoom: vi.fn(),
+  changeRoom: vi.fn(),
+  addAgent: vi.fn(),
+  removeAgent: vi.fn(),
+  invite: vi.fn(),
   reason: (err: unknown) => (err instanceof Error ? err.message : String(err)),
   stopAll: vi.fn(),
   resumeAll: vi.fn(),
@@ -207,4 +211,12 @@ test('#/note shows the note screen', () => {
   render(Home);
   expect(screen.getByRole('heading', { name: 'Note' })).toBeInTheDocument();
   expect(screen.getByRole('textbox', { name: 'Note' })).toBeInTheDocument();
+});
+
+test('#/rooms/<id>/settings shows the settings screen', () => {
+  store.rooms['01R'] = room({ id: '01R' });
+  route.path = '/rooms/01R/settings';
+  render(Home);
+  expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Back' })).toHaveAttribute('href', '#/rooms/01R');
 });
