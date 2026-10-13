@@ -53,10 +53,10 @@ async def test_open_turn_is_attached_to_a_resume_event(adapter_factory, stub, tm
     a.set_message_handler(handler)
     assert await a.connect() is True
     await a.handle_message(resume_event(a, "R1"))
+    await wait_until(lambda: any(x.endswith("/M1/done") for x in paths(stub)))
     await wait_until(lambda: a._open_turns.all() == {})
     p = paths(stub)
     assert not any(x.endswith("/M1/failed") for x in p)
-    assert any(x.endswith("/M1/done") for x in p), p
     assert any(x.endswith("/M1/working") for x in p), p
     posts = [r for r in stub.requests if r.path == "/agent/rooms/R1/messages"]
     assert posts and posts[0].json == {"text": "resumed", "reply_to_id": "M1"}
