@@ -23,6 +23,7 @@ import {
   stopTurn,
 } from './api';
 import { mergeNewest, pageSize, upsert } from './feed';
+import { loadNote, resetNote } from './note.svelte';
 import { isUnread } from './rooms';
 import { openStream, type Stream, type StreamState } from './stream';
 import type { Activity, Agent, Message, Room } from './types';
@@ -164,6 +165,7 @@ export function disconnect(): void {
   askedQuoted = new Set();
   loadingActivity = new Set();
   resets += 1; // a fetch still in flight must neither write nor be counted when it settles
+  resetNote();
   Object.assign(store, initial());
 }
 
@@ -247,6 +249,7 @@ function fetchSettled(epoch: number): void {
 // of activity are kept for the messages still in the open room's feed, and
 // asked for again for its working turns (keepActivity). It never rejects.
 export async function load(): Promise<void> {
+  void loadNote(); // the note is not part of the snapshot: its failure fails nothing, and no event is held for it
   loads += 1;
   const seq = loads;
   const epoch = fetchStarted();

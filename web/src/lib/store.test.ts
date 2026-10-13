@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import * as api from './api';
-import { activity, agent, message, room } from './fixtures';
+import { activity, agent, message, note as fixture, room } from './fixtures';
+import { note } from './note.svelte';
 import {
   answer,
   apply,
@@ -34,6 +35,7 @@ vi.mock('./api', async (importOriginal) => ({
   getRoom: vi.fn(),
   listAgents: vi.fn(),
   getHalt: vi.fn(),
+  getNote: vi.fn(),
   listMessages: vi.fn(),
   listActivity: vi.fn(),
   getMessage: vi.fn(),
@@ -127,6 +129,7 @@ beforeEach(() => {
     });
   vi.mocked(api.listRooms).mockReset().mockResolvedValue([]);
   vi.mocked(api.listAgents).mockReset().mockResolvedValue([]);
+  vi.mocked(api.getNote).mockReset().mockResolvedValue(fixture());
   vi.mocked(api.getRoom).mockReset();
   vi.mocked(api.getHalt).mockReset().mockResolvedValue(false);
   vi.mocked(api.listMessages).mockReset().mockResolvedValue([]);
@@ -548,6 +551,26 @@ test('resumeAll sets halted from the response; a failure sets error and leaves h
   vi.mocked(api.resumeEverything).mockResolvedValue(false);
   await resumeAll();
   expect(store.halted).toBe(false);
+});
+
+test('a load fetches the note', async () => {
+  const held = fixture({ text: 'likes tea' });
+  vi.mocked(api.getNote).mockResolvedValue(held);
+  await loaded();
+  await vi.waitFor(() => expect(note.value).toEqual(held));
+});
+
+test('a note that cannot be fetched does not fail the load', async () => {
+  vi.mocked(api.getNote).mockRejectedValue(unreachable());
+  await loaded();
+  expect(store.loaded).toBe(true);
+  expect(store.error).toBe('');
+});
+
+test('disconnect empties the note', () => {
+  note.value = fixture({ text: 'mine' });
+  disconnect();
+  expect(note.value).toBeNull();
 });
 
 test('disconnect closes the stream, resets the store, and stops listening', async () => {
