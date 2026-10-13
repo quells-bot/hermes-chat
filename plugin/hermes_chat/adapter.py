@@ -10,17 +10,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hashlib
 import logging
+from collections import deque
 
 from gateway.config import Platform
 from gateway.platforms._shared import extra_or_secret, get_scoped_secret, seed_extra_from_env
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import MessageDeduplicator
 from hermes_constants import get_hermes_home
 
-from hermes_chat.client import ChatClient, Unauthorized, Unreachable
+from hermes_chat.client import ApiError, ChatClient, Unauthorized, Unreachable
 from hermes_chat.checks import display_warnings
 from hermes_chat.record import OpenTurns
 from hermes_chat.reports import TurnReporter
@@ -48,6 +50,14 @@ class HermesChatAdapter(BasePlatformAdapter):
         self._stream: EventStream | None = None
         self._stream_task: asyncio.Task | None = None
         self._lock_held = False
+        # The room gate: a room is busy from the moment a delivery for it is
+        # recorded until that delivery's turn is closed.
+        self._room_busy_rooms: set[str] = set()
+        self._parked: dict[str, deque] = {}
+        # Turn state, keyed on the delivery id.
+        self._turn_tasks: dict[str, asyncio.Task] = {}
+        self._turn_outcomes: dict[str, ProcessingOutcome] = {}
+        self._turn_callbacks: set[str] = set()
 
     @property
     def message_len_fn(self):
@@ -55,12 +65,35 @@ class HermesChatAdapter(BasePlatformAdapter):
         return lambda text: len(text.encode("utf-8"))
 
     async def send(self, chat_id: str, content: str, reply_to=None, metadata=None):
-        # The base class requires send for construction; the turn task wires it.
-        raise NotImplementedError("send is wired in the turn task")
+        try:
+            message_id = await self._client.post_message(chat_id, content, reply_to_id=reply_to)
+        except ApiError as exc:
+            self._log_send_error("send", chat_id, exc)
+            return SendResult(success=False, error=f"{exc.code}: {exc.message}")
+        except Unreachable as exc:
+            logger.warning("send room=%s unreachable: %s", chat_id, exc)
+            return SendResult(success=False, error=str(exc), retryable=True)
+        logger.info("send room=%s message=%s", chat_id, message_id)
+        return SendResult(success=True, message_id=message_id)
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False):
-        # The base class requires the sibling for edit-streamed replies.
-        raise NotImplementedError("edit_message is wired in the turn task")
+        try:
+            await self._client.edit_message(message_id, content, finalize)
+        except ApiError as exc:
+            self._log_send_error("edit_message", chat_id, exc)
+            return SendResult(success=False, error=f"{exc.code}: {exc.message}")
+        except Unreachable as exc:
+            logger.warning("edit_message room=%s message=%s unreachable: %s", chat_id, message_id, exc)
+            return SendResult(success=False, error=str(exc), retryable=True)
+        logger.info("edit_message room=%s message=%s finalize=%s", chat_id, message_id, finalize)
+        return SendResult(success=True)
+
+    @staticmethod
+    def _log_send_error(method: str, chat_id: str, exc: ApiError) -> None:
+        if exc.status == 409:
+            logger.info("%s room=%s refused (paused)", method, chat_id)
+        else:
+            logger.warning("%s room=%s failed: %s", method, chat_id, exc)
 
     # ── Connection ──────────────────────────────────────────────────────────
 
@@ -147,9 +180,74 @@ class HermesChatAdapter(BasePlatformAdapter):
         if self._dedup.is_duplicate(message["id"]):
             logger.info("dropping repeat delivery of message %s", message["id"])
             return
-        self._open_turns.add(message["id"], data["room"]["id"])
+        room_id = data["room"]["id"]
+        self._open_turns.add(message["id"], room_id)
         event = self.event_from_delivery(data)
+        if room_id in self._room_busy_rooms:
+            self._parked.setdefault(room_id, deque()).append(event)
+            return
+        await self._run_room_turn(event, room_id)
+
+    async def _run_room_turn(self, event: MessageEvent, room_id: str) -> None:
+        self._room_busy_rooms.add(room_id)
         await self.handle_message(event)
+        if not event._gateway_accepted:
+            logger.warning("Hermes did not accept delivery of message %s", event.message_id)
+            if event.message_id:
+                self._close_turn(event.message_id, "failed")
+
+    def _delivery_for(self, event: MessageEvent) -> str | None:
+        """The delivery this event's turn belongs to, or None. Task 8 extends
+        this for events resumed after a restart."""
+        if event.message_id and event.message_id in self._open_turns.all():
+            return event.message_id
+        return None
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        delivery_id = self._delivery_for(event)
+        if delivery_id is None:
+            return
+        logger.info("on_processing_start delivery=%s room=%s", delivery_id, event.source.chat_id)
+        self._reporter.submit(delivery_id, "working")
+        self._turn_tasks[delivery_id] = asyncio.current_task()
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        delivery_id = self._delivery_for(event)
+        if delivery_id is None:
+            return
+        logger.info(
+            "on_processing_complete delivery=%s room=%s outcome=%s",
+            delivery_id, event.source.chat_id, outcome.value,
+        )
+        self._turn_outcomes[delivery_id] = outcome
+        task = self._turn_tasks.get(delivery_id)
+        if task is not None and delivery_id not in self._turn_callbacks:
+            self._turn_callbacks.add(delivery_id)
+            task.add_done_callback(functools.partial(self._on_turn_task_done, delivery_id))
+
+    def _on_turn_task_done(self, delivery_id: str, task: asyncio.Task) -> None:
+        outcome = self._turn_outcomes.pop(delivery_id, None)
+        self._turn_tasks.pop(delivery_id, None)
+        if outcome is None:
+            return
+        state = "failed" if outcome is ProcessingOutcome.FAILURE else "done"
+        self._close_turn(delivery_id, state)
+
+    def _close_turn(self, delivery_id: str, state: str) -> None:
+        """Report a turn finished and let the room's next delivery in. Calling
+        it twice for one delivery is a no-op: the record no longer has it."""
+        room_id = self._open_turns.all().get(delivery_id)
+        self._open_turns.remove(delivery_id)
+        if room_id is None:
+            return
+        self._reporter.submit(delivery_id, state)
+        self._room_busy_rooms.discard(room_id)
+        parked = self._parked.get(room_id)
+        if parked:
+            next_event = parked.popleft()
+            if not parked:
+                self._parked.pop(room_id, None)
+            asyncio.create_task(self._run_room_turn(next_event, room_id))
 
     def event_from_delivery(self, data: dict) -> MessageEvent:
         """Turn a DeliveryEvent body into the MessageEvent Hermes sees."""

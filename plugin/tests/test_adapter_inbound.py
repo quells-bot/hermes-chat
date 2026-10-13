@@ -122,13 +122,14 @@ async def test_delivery_reaches_the_message_handler_once(adapter_factory, stub, 
 
     async def handler(event):
         seen.append(event)
+        # The open turn is in the record while it is being worked.
+        assert a._open_turns.all() == {"M1": "R1"}
 
     a.set_message_handler(handler)
     assert await a.connect() is True
     await wait_until(lambda: len(seen) == 1)
     assert seen[0].message_id == "M1"
-    # The open turn is in the record while it is being worked.
-    assert a._open_turns.all() == {"M1": "R1"}
+    await wait_until(lambda: a._open_turns.all() == {})
     await a.disconnect()
 
 
