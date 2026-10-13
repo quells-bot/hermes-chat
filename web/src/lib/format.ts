@@ -12,7 +12,7 @@ function dayMonth(d: Date): string {
 }
 
 function hhmm(d: Date): string {
-  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 // '14:02' on now's local day, the day and month before it otherwise.

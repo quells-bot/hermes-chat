@@ -4,11 +4,12 @@ import { ago, clock, duration, iconName, preview, size } from './format';
 
 test('clock is HH:MM today and carries the date otherwise', () => {
   const now = new Date(2026, 9, 12, 16, 30);
-  const today = clock(new Date(2026, 9, 12, 14, 2).toISOString(), now);
-  const other = clock(new Date(2026, 9, 10, 14, 2).toISOString(), now);
-  expect(today).toMatch(/14.02/);
-  expect(other.endsWith(' ' + today)).toBe(true);
-  expect(other.length).toBeGreaterThan(today.length);
+  const at = (d: Date) => clock(d.toISOString(), now);
+  expect(at(new Date(2026, 9, 12, 14, 2))).toBe('14:02');
+  expect(at(new Date(2026, 9, 12, 0, 5))).toBe('00:05');
+  const other = at(new Date(2026, 9, 10, 14, 2));
+  expect(other.endsWith(' 14:02')).toBe(true);
+  expect(other.length).toBeGreaterThan(6);
 });
 
 test('ago', () => {
