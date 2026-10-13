@@ -32,7 +32,7 @@
   );
 </script>
 
-<article>
+<article data-mid={message.id}>
   <span class="icon"><Icon name={iconName(message.author, store.agents)} /></span>
   <div class="main">
     <div class="who">

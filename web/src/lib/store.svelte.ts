@@ -236,9 +236,9 @@ function fetchSettled(epoch: number): void {
 // room the person has left disappears, and brings the open room's newest
 // messages. A load that settles after a later one started is discarded. It
 // leaves latest and quoted alone: the events replayed after it keep them
-// current, and an entry is only shown while its id still matches. It empties
-// activity: a list may have missed steps while the stream was down, and
-// nothing says which. It never rejects.
+// current, and an entry is only shown while its id still matches. The lists
+// of activity are kept for the messages still in the open room's feed, and
+// asked for again for its working turns (keepActivity). It never rejects.
 export async function load(): Promise<void> {
   loads += 1;
   const seq = loads;
@@ -261,15 +261,8 @@ export async function load(): Promise<void> {
       store.halted = halted;
       store.error = '';
       store.loaded = true;
-      store.activity = {};
       rest = loadedPage(asked, page);
-      // Whatever became of the page, the turns still working in the open
-      // room have just lost their lists. A feed that newest() is fetching is
-      // empty here, and is looked at when its page is written.
-      const feed = store.open === null ? null : heldFeed(store.open);
-      if (feed !== null) {
-        followWorking(feed.messages);
-      }
+      keepActivity();
     }
   } catch (err) {
     if (seq === loads) {
@@ -323,6 +316,28 @@ function loadedPage(asked: string | null, page: Message[] | string | null): Prom
   return backlog(id);
 }
 
+// keepActivity is the activity lists' part of a load. The lists of messages
+// that are no longer in the open room's feed are dropped. The others stay, so
+// a block that is open keeps its list on screen; but the list of a turn still
+// working may have missed steps while the stream was down, so it is fetched
+// again, and the answer replaces it when it lands. A feed that newest() is
+// fetching is empty here, and is looked at when its page is written.
+function keepActivity(): void {
+  const feed = store.open === null ? null : heldFeed(store.open);
+  const messages = feed === null ? [] : feed.messages;
+  const inFeed = new Set(messages.map((m) => m.id));
+  for (const id of Object.keys(store.activity)) {
+    if (!inFeed.has(id)) {
+      delete store.activity[id];
+    }
+  }
+  for (const message of messages) {
+    if (isWorking(message)) {
+      void loadActivity(message.room_id, message.id);
+    }
+  }
+}
+
 // newest replaces a room's feed with its newest page, then applies the
 // backlog rule. A failure is recorded on the feed. It never rejects.
 async function newest(id: string): Promise<void> {
@@ -346,16 +361,16 @@ async function newest(id: string): Promise<void> {
 }
 
 // backlog runs when a newest page has just become a room's feed. If the read
-// marker is older than everything on it and older messages exist, it starts
-// one fetch for those before it, so that opening a room with more unread than
-// one page rarely leaves the first unread message out of reach. The feed is
-// loading until that fetch settles, well or badly: the screen waits for it
-// before it says where the unread messages start, and loadOlder asks for
-// nothing meanwhile.
+// marker is older than everything on it, or the room has never been read, and
+// older messages exist, it starts one fetch for those before it, so that
+// opening a room with more unread than one page rarely leaves the first
+// unread message out of reach. The feed stays loading until that fetch
+// settles, well or badly: the screen waits for it before it says where the
+// unread messages start, and loadOlder asks for nothing meanwhile.
 function backlog(id: string): Promise<void> | null {
   const feed = store.feeds[id];
   const marker = Object.hasOwn(store.rooms, id) ? store.rooms[id].last_read_message_id : null;
-  if (!feed.more || feed.messages.length === 0 || marker === null || marker >= feed.messages[0].id) {
+  if (!feed.more || feed.messages.length === 0 || (marker !== null && marker >= feed.messages[0].id)) {
     return null;
   }
   feed.loading = true;
@@ -419,13 +434,16 @@ export async function loadOlder(id: string): Promise<void> {
 }
 
 // markRead tells the server that the person has read a room up to a message.
-// A failure changes and records nothing: the marker is asked for again the
-// next time the end of the feed is seen. It never rejects.
+// A request that fails changes and records nothing: the marker is asked for
+// again the next time the end of the feed is seen. It rejects only with an
+// error that is not a failed request, which is a mistake in the code.
 export async function markRead(roomId: string, messageId: string): Promise<void> {
   try {
     await putMarker(roomId, messageId);
-  } catch {
-    // ignored
+  } catch (err) {
+    if (!(err instanceof ApiError)) {
+      throw err;
+    }
   }
 }
 
@@ -578,14 +596,16 @@ export async function loadActivity(roomId: string, messageId: string): Promise<v
 // fetched unless it is held already; a finished one waits to be opened.
 function followWorking(messages: Message[]): void {
   for (const message of messages) {
-    if (Object.hasOwn(store.activity, message.id)) {
-      continue;
-    }
-    // A message off the wire may hold anything in deliveries.
-    if (message.deliveries.some((d: unknown) => isObject(d) && d.state === 'working')) {
+    if (!Object.hasOwn(store.activity, message.id) && isWorking(message)) {
       void loadActivity(message.room_id, message.id);
     }
   }
+}
+
+// isWorking says whether any agent's copy of a message is being worked on. A
+// message off the wire may hold anything in deliveries.
+function isWorking(message: Message): boolean {
+  return message.deliveries.some((d: unknown) => isObject(d) && d.state === 'working');
 }
 
 // receive takes an event from the stream: held while a snapshot fetch is in
@@ -755,7 +775,8 @@ function isActivity(v: Fields): v is Fields & Activity {
 // applyToActivity keeps the held lists of activity current. A step of a
 // message whose list is not held is dropped: the list is fetched whole when
 // it is wanted. A tool is posted when it starts and again, under the same id,
-// when it finishes; and a replayed event repeats one already held.
+// when it finishes; and a replayed event repeats one already held, so a
+// replayed start must not put a finished tool back to unfinished.
 function applyToActivity(name: string, data: unknown): void {
   if (name !== 'activity.posted' || !isObject(data)) {
     return;
@@ -769,7 +790,7 @@ function applyToActivity(name: string, data: unknown): void {
   const at = list.findIndex((a) => a.id === posted.id);
   if (at === -1) {
     list.push(posted);
-  } else {
+  } else if (list[at].succeeded === null || posted.succeeded !== null) {
     list[at] = posted;
   }
 }

@@ -131,6 +131,8 @@
     border: 1px solid var(--line);
     padding: 0.25em 0.5em;
     text-align: left;
+    /* A word in a table cell is not split; the wide table scrolls instead. */
+    overflow-wrap: normal;
   }
   .md :global(th) {
     background: var(--paper2);

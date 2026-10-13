@@ -165,3 +165,22 @@ test('an error shows with Retry', () => {
   store.error = '';
 });
 
+test('the header says when the stream is not live', async () => {
+  store.link = 'live';
+  const { unmount } = render(Unread);
+  expect(screen.queryByText('reconnecting')).toBeNull();
+  unmount();
+
+  store.link = 'waiting';
+  render(Unread);
+  expect(screen.getByText('reconnecting')).toBeInTheDocument();
+});
+
+test('Everything is stopped is stated under the header when the store is halted', () => {
+  store.halted = true;
+  render(Unread);
+  expect(screen.getByText('Everything is stopped')).toBeInTheDocument();
+  const header = screen.getByRole('banner');
+  expect(header.nextElementSibling).toHaveTextContent('Everything is stopped');
+});
+

@@ -14,7 +14,13 @@
   const steps = $derived(store.activity[message.id]?.filter((a) => a.agent.id === delivery.agent.id));
   const working = $derived(delivery.state === 'working');
   const tools = $derived(steps?.filter((a) => a.kind === 'tool').length);
-  const now = $derived(working ? steps?.at(-1) : undefined);
+  // What it is doing now: the newest step, when it is still doing it (an
+  // unfinished tool) or saying something (a remark). A finished tool is what
+  // it did, not what it is doing now.
+  const latest = $derived(steps?.at(-1));
+  const now = $derived(
+    working && latest !== undefined && (latest.kind === 'remark' || latest.succeeded === null) ? latest : undefined,
+  );
 
   // An open block wants its list: when it is opened without one, and when a
   // load empties the lists under it. A list that is held is kept current by

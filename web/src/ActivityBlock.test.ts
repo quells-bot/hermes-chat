@@ -83,6 +83,16 @@ test('a remark as the newest activity is what it is doing now', () => {
   expect(screen.getByText('Now: Checking two more **sources**.')).toBeInTheDocument();
 });
 
+test('a finished tool is not what it is doing now, and finishing one takes Now away', async () => {
+  store.activity.m1 = [tool('s1', { preview: 'rates', ...unfinished })];
+  block('working');
+  expect(screen.getByText('Now: web_search · rates')).toBeInTheDocument();
+
+  // The step's finished copy replaces the running one: it is what it did.
+  store.activity.m1[0] = tool('s1', { preview: 'rates', duration_ms: 2100, succeeded: true });
+  await waitFor(() => expect(screen.queryByText('Now: web_search · rates')).toBeNull());
+});
+
 test('a finished turn shows its state and no count until opened; opening fetches and shows the count', async () => {
   vi.mocked(api.listActivity).mockResolvedValue([tool('s1'), tool('s2'), tool('s3')]);
   block('done');

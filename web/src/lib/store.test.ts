@@ -767,7 +767,7 @@ test('a live edit sets the text, the logged edit replaces it, and a late live ed
 });
 
 test('openRoom loads the newest page and says whether older ones exist', async () => {
-  await loaded([room({ id: '01R' }), room({ id: '01S' })]);
+  await loaded([room({ id: '01R', last_read_message_id: '01M050' }), room({ id: '01S', last_read_message_id: '01M003' })]);
   const page = deferred<Message[]>();
   vi.mocked(api.listMessages).mockReturnValueOnce(page.promise);
 
@@ -794,7 +794,7 @@ test('openRoom before the first load fetches nothing, and the load brings the pa
   expect(store.feeds).toEqual({});
   expect(api.listMessages).not.toHaveBeenCalled();
 
-  vi.mocked(api.listRooms).mockResolvedValue([room({ id: '01R' })]);
+  vi.mocked(api.listRooms).mockResolvedValue([room({ id: '01R', last_read_message_id: '01M050' })]);
   vi.mocked(api.listMessages).mockResolvedValueOnce(run(1, 50));
   await load();
 
@@ -870,7 +870,7 @@ test('a message for a room whose feed is not held changes no feed', async () => 
 });
 
 test('a message older than the oldest held is ignored while older pages remain, and inserted when none do', async () => {
-  await opened('01R', run(11, 50), [room({ id: '01R' }), room({ id: '01S' })]);
+  await opened('01R', run(11, 50), [room({ id: '01R', last_read_message_id: '01M060' }), room({ id: '01S' })]);
   vi.mocked(api.listMessages).mockResolvedValueOnce(run(11, 3, '01S'));
   await openRoom('01S');
 
@@ -930,7 +930,7 @@ test('a live edit for a message that is not held changes nothing', async () => {
 });
 
 test('a logged edit for a message not yet held still makes a late live edit ignored', async () => {
-  await opened('01R', run(51, 50));
+  await opened('01R', run(51, 50), [room({ id: '01R', last_read_message_id: '01M100' })]);
   // 01M010 is on an older page: the logged edit is not inserted, but it is final.
   apply('message.edited', { message: message({ id: '01M010', room_id: '01R', text: 'Done.' }) });
   expect(ids()).toEqual(run(51, 50).map((m) => m.id));
@@ -969,22 +969,35 @@ test('a backlog shorter than 150 says there are no older ones, and one that fail
   expect(store.error).toBe('');
 });
 
-test('a null marker, and a marker inside the first page, bring no second request', async () => {
+test('a marker inside the first page, and a page that is the whole room, bring no second request', async () => {
   await loaded([
-    room({ id: '01R', last_read_message_id: null }),
     room({ id: '01S', last_read_message_id: '01M220' }),
     room({ id: '01T', last_read_message_id: '01M201' }), // the oldest held is read: nothing unread lies before it
     room({ id: '01U', last_read_message_id: '01M001' }), // older, but the page is the whole room
+    room({ id: '01V', last_read_message_id: null }), // never read, but the page is the whole room
   ]);
-  for (const id of ['01R', '01S', '01T']) {
+  for (const id of ['01S', '01T']) {
     vi.mocked(api.listMessages).mockResolvedValueOnce(run(201, 50, id));
     await openRoom(id);
   }
-  vi.mocked(api.listMessages).mockResolvedValueOnce(run(201, 3, '01U'));
-  await openRoom('01U');
+  for (const id of ['01U', '01V']) {
+    vi.mocked(api.listMessages).mockResolvedValueOnce(run(201, 3, id));
+    await openRoom(id);
+  }
 
   expect(api.listMessages).toHaveBeenCalledTimes(4);
   expect(ids('01S')).toEqual(run(201, 50).map((m) => m.id));
+});
+
+test('a room that has never been read brings one request for the 150 before its newest page', async () => {
+  vi.mocked(api.listMessages).mockResolvedValueOnce(run(201, 50)).mockResolvedValueOnce(run(171, 30));
+  await loaded([room({ id: '01R', last_read_message_id: null })]);
+  await openRoom('01R');
+
+  expect(api.listMessages).toHaveBeenCalledTimes(2);
+  expect(api.listMessages).toHaveBeenNthCalledWith(2, '01R', '01M201', 150);
+  expect(ids()).toEqual(run(171, 80).map((m) => m.id));
+  expect(store.feeds['01R']).toMatchObject({ more: false, loading: false, error: '' });
 });
 
 test('events stay held from the newest page through the backlog', async () => {
@@ -1065,7 +1078,7 @@ test('loadOlder does nothing while the backlog is in flight', async () => {
 });
 
 test('loadOlder prepends the page before the oldest held', async () => {
-  await opened('01R', run(101, 50));
+  await opened('01R', run(101, 50), [room({ id: '01R', last_read_message_id: '01M150' })]);
 
   vi.mocked(api.listMessages).mockResolvedValueOnce(run(51, 50));
   await loadOlder('01R');
@@ -1086,7 +1099,7 @@ test('loadOlder prepends the page before the oldest held', async () => {
 });
 
 test('a second loadOlder while one is in flight does nothing', async () => {
-  await opened('01R', run(101, 50));
+  await opened('01R', run(101, 50), [room({ id: '01R', last_read_message_id: '01M150' })]);
   const page = deferred<Message[]>();
   vi.mocked(api.listMessages).mockReturnValueOnce(page.promise);
 
@@ -1102,7 +1115,7 @@ test('a second loadOlder while one is in flight does nothing', async () => {
 });
 
 test('a loadOlder that fails leaves more true and records nothing', async () => {
-  await opened('01R', run(101, 50));
+  await opened('01R', run(101, 50), [room({ id: '01R', last_read_message_id: '01M150' })]);
   vi.mocked(api.listMessages).mockRejectedValueOnce(unreachable());
 
   await expect(loadOlder('01R')).resolves.toBeUndefined();
@@ -1112,7 +1125,7 @@ test('a loadOlder that fails leaves more true and records nothing', async () => 
 });
 
 test('events during loadOlder are held and applied after it', async () => {
-  await opened('01R', run(51, 50));
+  await opened('01R', run(51, 50), [room({ id: '01R', last_read_message_id: '01M100' })]);
   const page = deferred<Message[]>();
   vi.mocked(api.listMessages).mockReturnValueOnce(page.promise);
   const loading = loadOlder('01R');
@@ -1134,7 +1147,7 @@ test('events during loadOlder are held and applied after it', async () => {
 });
 
 test('an older page that arrives after the feed was replaced is dropped', async () => {
-  await opened('01R', run(101, 50));
+  await opened('01R', run(101, 50), [room({ id: '01R', last_read_message_id: '01M250' })]);
   const older = deferred<Message[]>();
   vi.mocked(api.listMessages).mockReturnValueOnce(older.promise).mockResolvedValueOnce(run(201, 50));
   const loading = loadOlder('01R');
@@ -1150,7 +1163,7 @@ test('an older page that arrives after the feed was replaced is dropped', async 
 });
 
 test('load keeps only the open feed and merges its newest page', async () => {
-  await opened('01S', run(1, 3, '01S'), [room({ id: '01R' }), room({ id: '01S' })]);
+  await opened('01S', run(1, 3, '01S'), [room({ id: '01R', last_read_message_id: '01M050' }), room({ id: '01S' })]);
   vi.mocked(api.listMessages).mockResolvedValueOnce(run(1, 50));
   await openRoom('01R');
   expect(Object.keys(store.feeds)).toEqual(['01S', '01R']);
@@ -1232,7 +1245,7 @@ test('a 401 on the page inside load records no message on the feed', async () =>
 });
 
 test('a page that fails inside load leaves a held feed as it was', async () => {
-  await opened('01R', run(1, 50));
+  await opened('01R', run(1, 50), [room({ id: '01R', last_read_message_id: '01M050' })]);
   vi.mocked(api.listRooms).mockResolvedValue([room({ id: '01R', topic: 'Renamed' })]);
   vi.mocked(api.listMessages).mockRejectedValueOnce(unreachable());
 
@@ -1426,6 +1439,15 @@ test('a failed markRead leaves the room unread and store.error empty', async () 
   expect(store.rooms['01R'].last_read_message_id).toBe('01M2');
 });
 
+test('markRead lets through an error that is not a failed request', async () => {
+  await loaded([room({ id: '01R', last_message_id: '01M2', last_read_message_id: '01M1' })]);
+  vi.mocked(api.markRoomRead).mockRejectedValueOnce(new TypeError('a mistake'));
+
+  await expect(markRead('01R', '01M2')).rejects.toThrow('a mistake');
+  expect(store.rooms['01R'].last_read_message_id).toBe('01M1');
+  expect(store.error).toBe('');
+});
+
 test('a marker that settles after a newer one was set does not move it back', async () => {
   await loaded([room({ id: '01R', last_message_id: '01M3', last_read_message_id: '01M1' })]);
   const slow = deferred<void>();
@@ -1451,6 +1473,8 @@ test('a marker that settles after disconnect writes nothing, and one the room ha
   vi.mocked(api.listRooms).mockResolvedValue([room({ id: '01R', last_message_id: '01M2' })]);
   await load(); // 01S is no longer among the rooms
   gone.resolve();
+  // Without the guard this would read a room that is not there, and markRead
+  // lets such an error through.
   await expect(leaving).resolves.toBeUndefined();
   expect(Object.keys(store.rooms)).toEqual(['01R']);
 
@@ -1788,6 +1812,21 @@ test('a tool that finishes replaces its running entry', async () => {
   expect(store.activity['01M1'][0]).toMatchObject({ duration_ms: 2100, succeeded: true });
 });
 
+test('a replayed start does not put a finished tool back to unfinished', async () => {
+  const finished = activity({ id: '01S1', message_id: '01M1', duration_ms: 2100, succeeded: false });
+  vi.mocked(api.listActivity).mockResolvedValue([finished]);
+  await loaded();
+  await loadActivity('01R', '01M1');
+
+  apply('activity.posted', { message_id: '01M1', activity: running('01S1', '01M1') });
+  expect(store.activity['01M1']).toEqual([finished]);
+
+  // A finished copy still replaces a finished one.
+  const again = { ...finished, duration_ms: 2200, succeeded: true };
+  apply('activity.posted', { message_id: '01M1', activity: again });
+  expect(store.activity['01M1']).toEqual([again]);
+});
+
 test('a message that starts working loads its activity', async () => {
   vi.mocked(api.listActivity).mockResolvedValue([running('01S1', '01M1')]);
   await opened('01R', [message({ id: '01M1', room_id: '01R' })]);
@@ -1815,7 +1854,7 @@ test('a finished message loads none until asked', async () => {
 });
 
 test('a working turn on an older page loads its activity', async () => {
-  await opened('01R', run(51, 50));
+  await opened('01R', run(51, 50), [room({ id: '01R', last_read_message_id: '01M100' })]);
   vi.mocked(api.listMessages).mockResolvedValueOnce([turn('01M050', 'working')]);
   await loadOlder('01R');
   expect(api.listActivity).toHaveBeenCalledTimes(1);
@@ -1912,26 +1951,52 @@ test('a loadActivity that fails leaves the entry absent and records nothing', as
   expect(store.activity).toEqual({ '01M1': [] });
 });
 
-test('load empties activity and reloads it for a turn still working in the open room', async () => {
+test('load keeps the activity of the open room and reloads it for a turn still working there', async () => {
   vi.mocked(api.listActivity).mockResolvedValue([running('01S1', '01M001')]);
   // Older pages remain, and the load's page will not reach back to 01M1.
   const page = [turn('01M001', 'working'), turn('01M002', 'done'), ...run(3, 48)];
   await opened('01R', page);
   await loadActivity('01R', '01M002');
   await vi.waitFor(() => expect(Object.keys(store.activity)).toEqual(['01M001', '01M002']));
+  const working = store.activity['01M001'];
+  const done = store.activity['01M002'];
 
   const again = deferred<Activity[]>();
   vi.mocked(api.listActivity).mockReturnValueOnce(again.promise);
   vi.mocked(api.listMessages).mockResolvedValueOnce(run(3, 50));
   const loading = load();
   await vi.waitFor(() => expect(api.listActivity).toHaveBeenCalledTimes(3));
+  // Only the working turn is asked for again, and both lists stay meanwhile.
   expect(api.listActivity).toHaveBeenLastCalledWith('01R', '01M001');
-  expect(store.activity).toEqual({});
+  expect(store.activity).toEqual({ '01M001': working, '01M002': done });
 
   again.resolve([running('01S1', '01M001'), running('01S2', '01M001')]);
   await loading;
-  await vi.waitFor(() => expect(Object.keys(store.activity)).toEqual(['01M001']));
-  expect(store.activity['01M001']).toHaveLength(2);
+  await vi.waitFor(() => expect(store.activity['01M001']).toHaveLength(2));
+  expect(store.activity['01M002']).toEqual(done);
+  expect(api.listActivity).toHaveBeenCalledTimes(3);
+});
+
+test('load drops the activity of messages that are not in the open room\'s feed', async () => {
+  await opened('01R', run(1, 50), [room({ id: '01R', last_read_message_id: '01M050' })]);
+  await loadActivity('01R', '01M001');
+  await loadActivity('01R', '01M050');
+  await loadActivity('01S', '01X1'); // another room's
+  expect(Object.keys(store.activity)).toEqual(['01M001', '01M050', '01X1']);
+
+  // A page that merges keeps both of the room's messages, and drops the other room's.
+  vi.mocked(api.listMessages).mockResolvedValueOnce(run(40, 50));
+  await load();
+  expect(Object.keys(store.activity)).toEqual(['01M001', '01M050']);
+
+  // A page that is wholly newer replaces the feed, and takes the rest with it.
+  vi.mocked(api.listMessages).mockResolvedValueOnce(run(201, 50));
+  await load();
+  expect(store.activity).toEqual({});
+
+  closeRoom('01R');
+  await load();
+  expect(store.activity).toEqual({});
 });
 
 test('disconnect empties activity', async () => {

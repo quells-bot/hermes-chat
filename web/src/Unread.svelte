@@ -51,8 +51,15 @@
 </script>
 
 <Header title="Unread" back="#/">
+  {#if store.loaded && store.link !== 'live'}
+    <span class="link">reconnecting</span>
+  {/if}
   <button type="button" disabled={pending} onclick={markAll}>Mark all read</button>
 </Header>
+
+{#if store.halted}
+  <div class="state">Everything is stopped</div>
+{/if}
 
 {#if store.error}
   <div class="problem">
@@ -85,6 +92,18 @@
 </main>
 
 <style>
+  .link {
+    color: var(--on-aub2);
+    font-size: 0.8125rem;
+  }
+
+  .state {
+    padding: 8px 14px;
+    color: var(--ink2);
+    font-size: 13px;
+    text-align: center;
+  }
+
   .u {
     display: block;
     padding: 11px 14px;

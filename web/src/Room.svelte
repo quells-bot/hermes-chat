@@ -25,7 +25,13 @@
 
   onMount(() => {
     void openRoom(id);
-    return () => closeRoom(id);
+    // svelte:document's onvisibilitychange does not survive in the browser,
+    // so the listener is registered directly, as the store does.
+    document.addEventListener('visibilitychange', becameVisible);
+    return () => {
+      closeRoom(id);
+      document.removeEventListener('visibilitychange', becameVisible);
+    };
   });
 
   // A room the person has left, or an address that names none.
@@ -51,22 +57,40 @@
 
   let feedEl: HTMLElement | undefined = $state();
 
-  // The feed has what it opens with: messages, and nothing still on its way.
-  // The messages before the newest page (the store's backlog) arrive after
-  // it, and the first unread one is usually among them.
-  const arrived = $derived(messages.length > 0 && feed?.loading === false);
+  // The feed has what it opens with: held, no error and nothing still on its
+  // way. The messages before the newest page (the store's backlog) arrive
+  // after it, and the first unread one is usually among them. A feed without
+  // messages has still arrived: the divider is decided then, empty or not.
+  const arrived = $derived(feed !== undefined && feed.loading === false && feed.error === '');
 
-  // The first unread message, fixed when the messages have arrived: the
-  // divider stays where it is while the marker moves on. A derived value, not
-  // an effect writing state, so that the divider is drawn in the same pass
-  // that places the feed on it; once fixed it depends on nothing.
+  // The first unread message the page can name: null when there is none, or
+  // when the oldest held message is itself unread and older ones remain on
+  // the server (the backlog did not reach them), so where they start is
+  // unknown.
+  function knownUnread(): string | null {
+    const first = firstUnread(messages, room?.last_read_message_id ?? null);
+    if (first === null) return null;
+    if (feed?.more === true && messages[0]?.id === first) return null;
+    return first;
+  }
+
+  // The divider, decided when the feed has arrived: it stays where it was
+  // while the room stays open, except that new unread messages the view
+  // cannot hold move it to above the first of them (follow). It is a plain
+  // variable; revision tells the derived below to read it again after follow
+  // has moved it.
   let fixed: { id: string | null } | null = null;
+  let revision = $state(0);
 
   const divider = $derived.by(() => {
-    if (fixed === null && room !== undefined && arrived) {
-      fixed = { id: firstUnread(messages, room.last_read_message_id) };
+    void revision;
+    if (room === undefined || !arrived) {
+      return null;
     }
-    return fixed?.id ?? null;
+    if (fixed === null) {
+      fixed = { id: knownUnread() };
+    }
+    return fixed.id;
   });
 
   // Reading every message, and its text, makes an effect run again when one
@@ -77,14 +101,16 @@
     }
   }
 
-  // placed: the feed has been put where it opens. It is state because the end
-  // sentinel is drawn only once it is true; the two effects below read it
+  // placed: the feed has been put where it opens. It is state because the
+  // sentinels are drawn only once it is true; the effects below read it
   // untracked, so that setting it does not run them again. drawnFirst: the
-  // first message as last drawn. before: the feed as it was before the change
-  // now being drawn.
+  // first message as last drawn. before: the feed as it was before the
+  // change now being drawn. pending: the feed was at its end when the page
+  // was hidden, and has not been put back where it stands.
   let placed = $state(false);
   let drawnFirst = '';
   let before: { height: number; atEnd: boolean } | null = null;
+  let pending = false;
 
   $effect.pre(() => {
     watchMessages();
@@ -94,6 +120,68 @@
     const height = feedEl.scrollHeight;
     before = { height, atEnd: height - feedEl.scrollTop - feedEl.clientHeight <= 40 };
   });
+
+  // place puts the feed where it opens: on the divider, or at its oldest
+  // held message when the first unread one may lie on a page not yet loaded,
+  // or at its end when nothing is unread.
+  function place(): void {
+    if (feedEl === undefined) {
+      return;
+    }
+    const mark = feedEl.querySelector('[role="separator"]');
+    if (mark !== null) {
+      mark.scrollIntoView({ block: 'start' });
+    } else if (firstUnread(messages, room?.last_read_message_id ?? null) !== null) {
+      feedEl.scrollTop = 0;
+    } else {
+      feedEl.scrollTop = feedEl.scrollHeight;
+    }
+  }
+
+  // Whether the end of the feed is in view, from its scroll position.
+  function endInView(): boolean {
+    if (feedEl === undefined) {
+      return false;
+    }
+    return feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight <= 40;
+  }
+
+  // follow puts the feed back at its end after new messages were drawn, but
+  // never past the top of the first unread message: when the new messages do
+  // not all fit in the view, the feed stops with the first of them at the
+  // top and New above it, and the end is no longer in view, so the marker
+  // does not move on a report taken before they arrived. A message that is
+  // not newer than the marker, like a reply that grows while it is being
+  // written, is followed to its end as before.
+  function follow(): void {
+    if (feedEl === undefined) {
+      return;
+    }
+    const target = feedEl.scrollHeight - feedEl.clientHeight;
+    const unread = knownUnread();
+    let top: number | null = null;
+    if (unread !== null) {
+      // Stand on New when it is drawn above the first unread message; while
+      // it is still being drawn for it, the message itself is the anchor.
+      const el = feedEl.querySelector<HTMLElement>(`article[data-mid="${unread}"]`);
+      const mark = el?.previousElementSibling;
+      const anchor = mark !== undefined && mark !== null && mark.getAttribute('role') === 'separator' ? mark : el;
+      if (anchor !== null) {
+        top = anchor.getBoundingClientRect().top - feedEl.getBoundingClientRect().top + feedEl.scrollTop;
+      }
+    }
+    const clamped = top !== null && top < target;
+    if (clamped && unread !== null && fixed?.id !== unread) {
+      // New is drawn first, so that it stands above the first unread message
+      // in the same view that scrolls to it.
+      fixed = { id: unread };
+      revision += 1;
+    }
+    feedEl.scrollTop = top !== null && top < target ? top : target;
+    if (endSeen && !endInView()) {
+      endSeen = false;
+    }
+  }
 
   $effect(() => {
     watchMessages();
@@ -106,18 +194,36 @@
         return;
       }
       placed = true;
-      const mark = feedEl.querySelector('[role="separator"]');
-      if (mark !== null) {
-        mark.scrollIntoView({ block: 'start' });
+      place();
+      drawnFirst = first;
+      before = null;
+      return;
+    }
+    if (before === null) {
+      drawnFirst = first;
+      return;
+    }
+    if (first !== drawnFirst) {
+      if (before.atEnd) {
+        // The page was replaced by a wholly newer one: the same rule as any
+        // other arrival at the end.
+        follow();
       } else {
-        feedEl.scrollTop = feedEl.scrollHeight;
-      }
-    } else if (before !== null) {
-      if (first !== drawnFirst) {
         // Older messages went in above: what was in view stays in view.
         feedEl.scrollTop += feedEl.scrollHeight - before.height;
-      } else if (before.atEnd) {
-        feedEl.scrollTop = feedEl.scrollHeight;
+      }
+    } else if (before.atEnd) {
+      if (untrack(() => visible)) {
+        follow();
+      } else {
+        // A hidden page does not move the feed; New marks where the unread
+        // it could not hold starts, so the person is not carried past it.
+        pending = true;
+        const unread = knownUnread();
+        if (unread !== null && fixed?.id !== unread) {
+          fixed = { id: unread };
+          revision += 1;
+        }
       }
     }
     drawnFirst = first;
@@ -145,35 +251,55 @@
       untrack(() => void markRead(id, last));
     }
   });
+
+  // What was not shown is not read: when the page becomes visible again and
+  // the feed was at its end while hidden, it is put back where it stands.
+  function becameVisible(): void {
+    visible = document.visibilityState === 'visible';
+    if (visible && pending) {
+      pending = false;
+      follow();
+    }
+  }
 </script>
 
-<svelte:document onvisibilitychange={() => (visible = document.visibilityState === 'visible')} />
-
 <div class="room">
-  <Header title={room ? roomName(room) : undefined} back={route.prev === '/unread' ? '#/unread' : '#/'} {sub} />
+  <Header title={room ? roomName(room) : undefined} back={route.prev === '/unread' ? '#/unread' : '#/'} {sub}>
+    {#if store.loaded && store.link !== 'live'}
+      <span class="link">reconnecting</span>
+    {/if}
+  </Header>
+
+  {#if store.error}
+    <div class="problem">
+      <p role="alert">{store.error}</p>
+      <button type="button" onclick={load}>Retry</button>
+    </div>
+  {/if}
+  {#if feed?.error}
+    <div class="problem">
+      <p role="alert">{feed.error}</p>
+      <button type="button" onclick={() => openRoom(id)}>Retry</button>
+    </div>
+  {/if}
 
   <div class="feed" bind:this={feedEl}>
-    {#if store.error}
-      <div class="problem">
-        <p role="alert">{store.error}</p>
-        <button type="button" onclick={load}>Retry</button>
-      </div>
-    {/if}
-    {#if feed?.error}
-      <div class="problem">
-        <p role="alert">{feed.error}</p>
-        <button type="button" onclick={() => openRoom(id)}>Retry</button>
-      </div>
-    {/if}
-    {#if feed?.more}
+    {#if placed && feed?.more}
       <div class="edge" data-edge="top" use:whenSeen={topSeen}></div>
     {/if}
-    {#each messages as message (message.id)}
-      {#if message.id === divider}
-        <div class="divider" role="separator">New</div>
-      {/if}
-      <Message {message} />
-    {/each}
+    <!-- The messages stay in the document before the feed has been placed, so
+       that placing it can measure them; they are invisible until then (A4). -->
+    <div class="messages" class:placed>
+      <!-- Nothing draws the divider when there are no messages; it is read
+         here so that it is decided when the feed arrives, empty or not (A2). -->
+      {#if divider !== null}{/if}
+      {#each messages as message (message.id)}
+        {#if message.id === divider}
+          <div class="divider" role="separator">New</div>
+        {/if}
+        <Message {message} />
+      {/each}
+    </div>
     {#if placed}
       <div class="edge" data-edge="end" use:whenSeen={(seen) => (endSeen = seen)}></div>
     {/if}
@@ -190,6 +316,11 @@
     height: 100dvh;
   }
 
+  .link {
+    color: var(--on-aub2);
+    font-size: 0.8125rem;
+  }
+
   /* The script keeps the feed's place when messages go in above; the
      browser's own scroll anchoring would move it a second time. */
   .feed {
@@ -203,6 +334,16 @@
   /* A sentinel has a height so that it is in view or out of it, never on the line. */
   .edge {
     height: 1px;
+  }
+
+  /* The messages are hidden until the feed has been placed: until then they
+     are still in the document, so that placing can measure them. */
+  .messages {
+    visibility: hidden;
+  }
+
+  .messages.placed {
+    visibility: visible;
   }
 
   .divider {

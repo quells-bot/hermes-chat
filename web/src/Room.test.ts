@@ -7,8 +7,8 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import * as api from './lib/api';
 import { agent, message, room } from './lib/fixtures';
 import { navigate, route } from './lib/route.svelte';
-import { apply, disconnect, putRoom, store, type Feed } from './lib/store.svelte';
-import type { Room as RoomData } from './lib/types';
+import { apply, disconnect, load, putRoom, store, type Feed } from './lib/store.svelte';
+import type { Message, Room as RoomData } from './lib/types';
 import Room from './Room.svelte';
 
 vi.mock('./lib/api', async (importOriginal) => ({
@@ -206,11 +206,16 @@ test('a backlog that fails still lets the feed be placed', async () => {
     more: true,
     loading: true,
   });
+  const feed = feedOf(container);
 
   store.feeds['room-1'].loading = false;
 
-  await waitFor(() => expect(drawn(container)).toEqual(['NEW', '01M1', '01M2']));
-  expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(drawn(container)).toEqual(['01M1', '01M2']));
+  // The first unread may lie on the page the backlog failed to bring: there
+  // is no New, and the feed opens at its oldest held message.
+  expect(screen.queryByRole('separator')).toBeNull();
+  expect(scrollIntoView).not.toHaveBeenCalled();
+  expect(feed.scrollTop).toBe(0);
 });
 
 test('the divider stays where it was after the marker moves', async () => {
@@ -368,15 +373,21 @@ test('a page that is hidden after the end was seen does not move the marker', as
 });
 
 test('a message that arrives while the end is in view moves the marker to it', async () => {
-  await showRoom({ last_read_message_id: '01M2' }, ['01M1', '01M2']);
+  // The view is 300px tall, so the new message fits in it.
+  vi.spyOn(Element.prototype, 'clientHeight', 'get').mockReturnValue(300);
+  const { container } = await showRoom({ last_read_message_id: '01M2' }, ['01M1', '01M2']);
+  const feed = feedOf(container);
   edges.get('end')!(true);
   await tick();
   expect(api.markRoomRead).not.toHaveBeenCalled(); // already read
 
   post('01M3');
 
+  await waitFor(() => expect(feed.scrollTop).toBe(600)); // the end keeps it there
   await waitFor(() => expect(api.markRoomRead).toHaveBeenCalledWith('room-1', '01M3'));
   await waitFor(() => expect(store.rooms['room-1'].last_read_message_id).toBe('01M3'));
+  await tick();
+  expect(screen.queryByRole('separator')).toBeNull(); // it fits: no New
 });
 
 test('a message that arrives after the end has left view does not move the marker', async () => {
@@ -394,27 +405,30 @@ test('a message that arrives after the end has left view does not move the marke
   expect(api.markRoomRead).not.toHaveBeenCalled();
 });
 
-test('seeing the top loads older messages, and not before first placement', async () => {
+test('the top is watched only after first placement, and then a report loads the page before it', async () => {
   topSeenAtOnce = true;
-  const { container } = await showRoom({ last_read_message_id: '01M3' }, ['01M2', '01M3'], { more: true });
+  putRoom(room({ id: 'room-1', last_read_message_id: '01M3' }));
+  store.feeds['room-1'] = { messages: messages(['01M2', '01M3']), more: true, loading: true, error: '' };
+  const { container } = render(Room, { id: 'room-1' });
   await tick();
-  expect(feedOf(container).scrollTop).toBe(600); // placed
   expect(api.listMessages).not.toHaveBeenCalled();
+  // Not placed yet: the sentinel is not drawn, so its report cannot be taken
+  // before the feed has been put where it opens (A3).
+  expect(container.querySelector('[data-edge="top"]')).toBeNull();
+  expect(edges.has('top')).toBe(false);
 
-  edges.get('top')!(false);
-  expect(api.listMessages).not.toHaveBeenCalled();
+  store.feeds['room-1'].loading = false;
 
-  edges.get('top')!(true);
-
-  expect(api.listMessages).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(api.listMessages).toHaveBeenCalledTimes(1));
   expect(api.listMessages).toHaveBeenCalledWith('room-1', '01M2', 50);
+  expect(feedOf(container).scrollTop).toBe(600); // placed at its end
 });
 
 test('the top is only watched while older messages remain', async () => {
   const { container } = await showRoom({ last_read_message_id: '01M2' }, ['01M1', '01M2'], { more: true });
   const feed = feedOf(container);
   expect(feed.firstElementChild).toHaveAttribute('data-edge', 'top');
-  expect(feed.querySelector('[data-edge="end"]')?.previousElementSibling?.tagName).toBe('ARTICLE');
+  expect(feed.querySelector('[data-edge="end"]')?.previousElementSibling).toHaveClass('messages');
 
   store.feeds['room-1'].more = false;
 
@@ -438,14 +452,22 @@ test('older messages arriving keep the same message in view', async () => {
   expect(feed.scrollTop).toBe(600);
 });
 
-test('a message that arrives while the feed is at its end keeps it there', async () => {
+test('a message that arrives while the feed is at its end keeps it there when it fits', async () => {
+  // The view is 300px tall, so the new message fits in it.
+  vi.spyOn(Element.prototype, 'clientHeight', 'get').mockReturnValue(300);
   const { container } = await showRoom({ last_read_message_id: '01M3' }, ['01M1', '01M2', '01M3']);
   const feed = feedOf(container);
   expect(feed.scrollTop).toBe(900);
+  edges.get('end')!(true);
+  await tick();
 
   post('01M4');
 
-  await waitFor(() => expect(feed.scrollTop).toBe(1200));
+  await waitFor(() => expect(feed.scrollTop).toBe(900)); // the end stays in view
+  await waitFor(() => expect(api.markRoomRead).toHaveBeenCalledWith('room-1', '01M4'));
+  await waitFor(() => expect(store.rooms['room-1'].last_read_message_id).toBe('01M4'));
+  await tick();
+  expect(screen.queryByRole('separator')).toBeNull(); // it fits: no New
 });
 
 test('a message that arrives while the person reads further up does not move the feed', async () => {
@@ -546,4 +568,155 @@ test('leaving the room closes it', async () => {
   unmount();
 
   expect(store.open).toBeNull();
+});
+
+test('returning to a room does not read messages posted while hidden', async () => {
+  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+  const { container } = await showRoom({ last_read_message_id: '01M2' }, ['01M1', '01M2']);
+  const feed = feedOf(container);
+  edges.get('end')!(true);
+  await tick();
+  expect(api.markRoomRead).not.toHaveBeenCalled(); // hidden: nothing is read
+
+  post('01M3');
+  post('01M4');
+  await tick();
+  await tick();
+  expect(feed.scrollTop).toBe(600); // the feed did not move while hidden
+  expect(api.markRoomRead).not.toHaveBeenCalled();
+
+  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+  document.dispatchEvent(new Event('visibilitychange'));
+
+  await waitFor(() => expect(screen.getByRole('separator')).toBeInTheDocument());
+  expect(drawn(container)).toEqual(['01M1', '01M2', 'NEW', '01M3', '01M4']);
+  expect(feed.scrollTop).toBe(600); // the first of them stands at the top of the view
+  expect(api.markRoomRead).not.toHaveBeenCalled();
+  expect(store.rooms['room-1'].last_read_message_id).toBe('01M2');
+
+  edges.get('end')!(true); // scrolling to the end
+
+  await waitFor(() => expect(api.markRoomRead).toHaveBeenCalledWith('room-1', '01M4'));
+});
+
+test('a load that merges unread messages the view cannot hold stops at the first of them', async () => {
+  const { container } = await showRoom({ last_read_message_id: '01M002' }, ['01M001', '01M002']);
+  const feed = feedOf(container);
+  expect(feed.scrollTop).toBe(600); // placed at the end
+  edges.get('end')!(true);
+  await tick();
+
+  vi.mocked(api.listRooms).mockResolvedValue([room({ id: 'room-1', last_read_message_id: '01M002' })]);
+  vi.mocked(api.listAgents).mockResolvedValue([]);
+  vi.mocked(api.getHalt).mockResolvedValue(false);
+  vi.mocked(api.listMessages).mockResolvedValueOnce(
+    messages(['01M003', '01M004', '01M005', '01M006', '01M007', '01M008', '01M009', '01M010']),
+  );
+  await load();
+
+  // The first unread message's top is now the top of the view; the end is
+  // not, so the marker does not move on the report taken before the merge.
+  await waitFor(() => expect(feed.scrollTop).toBe(600));
+  expect(drawn(container)).toEqual([
+    '01M001',
+    '01M002',
+    'NEW',
+    '01M003',
+    '01M004',
+    '01M005',
+    '01M006',
+    '01M007',
+    '01M008',
+    '01M009',
+    '01M010',
+  ]);
+  expect(api.markRoomRead).not.toHaveBeenCalled();
+  expect(store.rooms['room-1'].last_read_message_id).toBe('01M002');
+
+  edges.get('end')!(true);
+
+  await waitFor(() => expect(api.markRoomRead).toHaveBeenCalledWith('room-1', '01M010'));
+});
+
+test('a room opened empty draws no New, and its first message is read on a visible page', async () => {
+  putRoom(room({ id: 'room-1' })); // never read
+  store.feeds['room-1'] = { messages: [], more: false, loading: false, error: '' };
+  const { container } = render(Room, { id: 'room-1' });
+  await tick();
+  expect(edges.has('end')).toBe(false); // an empty feed is not placed
+  expect(screen.queryByRole('separator')).toBeNull();
+  expect(api.markRoomRead).not.toHaveBeenCalled();
+  void container;
+
+  post('01M1');
+
+  await waitFor(() => expect(edges.has('end')).toBe(true)); // the first message places the feed
+  expect(screen.queryByRole('separator')).toBeNull(); // and is in view: no New
+  edges.get('end')!(true);
+  await waitFor(() => expect(api.markRoomRead).toHaveBeenCalledWith('room-1', '01M1'));
+});
+
+test('a never-read room asks for the 150 before its newest page, and opens at its oldest held message', async () => {
+  const page = deferred<Message[]>();
+  const backlog = deferred<Message[]>();
+  vi.mocked(api.listMessages).mockReturnValueOnce(page.promise).mockReturnValueOnce(backlog.promise);
+  putRoom(room({ id: 'room-1', last_message_id: '01M199' })); // never read
+  const { container } = render(Room, { id: 'room-1' });
+  await tick();
+  expect(container.querySelector('[data-edge="top"]')).toBeNull(); // not placed yet
+
+  const newest = Array.from({ length: 50 }, (_, i) => `01M${String(150 + i).padStart(3, '0')}`);
+  const oldest = Array.from({ length: 150 }, (_, i) => `01M${String(i).padStart(3, '0')}`);
+  page.resolve(messages(newest));
+  await waitFor(() => expect(api.listMessages).toHaveBeenCalledTimes(2));
+  expect(api.listMessages).toHaveBeenLastCalledWith('room-1', '01M150', 150);
+  await tick();
+  expect(container.querySelector('[data-edge="top"]')).toBeNull(); // waiting for the backlog
+
+  backlog.resolve(messages(oldest));
+  const feed = feedOf(container);
+  await waitFor(() => expect(feed.scrollTop).toBe(0)); // opens at its oldest held message
+  expect(screen.queryByRole('separator')).toBeNull(); // where New would be is unknown
+  expect(container.querySelector('[data-edge="top"]')).not.toBeNull(); // mounted after placement
+  expect(api.markRoomRead).not.toHaveBeenCalled();
+});
+
+test('messages are hidden until the feed has been placed', async () => {
+  const page = deferred<Message[]>();
+  vi.mocked(api.listMessages).mockReturnValueOnce(page.promise);
+  putRoom(room({ id: 'room-1', last_read_message_id: '01M1' }));
+  const { container } = render(Room, { id: 'room-1' });
+  await tick();
+  const wrapper = container.querySelector('.messages');
+  expect(wrapper).not.toBeNull();
+  expect(wrapper).not.toHaveClass('placed');
+
+  page.resolve(messages(['01M1', '01M2']));
+
+  await waitFor(() => expect(wrapper).toHaveClass('placed'));
+});
+
+test('the two error blocks sit between the header and the scrolling feed', async () => {
+  const { container } = await showRoom({}, []);
+  store.error = 'internal error';
+  store.feeds['room-1'].error = 'cannot reach the server';
+  await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(2));
+
+  const room_ = container.querySelector('.room') as HTMLElement;
+  const order = Array.from(room_.children).map((el) =>
+    el.tagName === 'HEADER' ? 'header' : (el as HTMLElement).classList.contains('problem') ? 'problem' : 'feed',
+  );
+  expect(order).toEqual(['header', 'problem', 'problem', 'feed']);
+  expect(container.querySelector('.feed')?.querySelector('.problem')).toBeNull();
+});
+
+test('the header says when the stream is not live', async () => {
+  store.link = 'live';
+  const { unmount } = await showRoom({}, []);
+  expect(screen.queryByText('reconnecting')).toBeNull();
+  unmount();
+
+  store.link = 'waiting';
+  await showRoom({}, []);
+  expect(screen.getByText('reconnecting')).toBeInTheDocument();
 });
