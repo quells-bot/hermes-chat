@@ -28,6 +28,23 @@ test('hostile input renders no element outside the allowlist', () => {
   expect(container.textContent).toContain('<script>');
 });
 
+test('the review inputs render no element but a safe link', () => {
+  const inputs = [
+    '<script>alert(1)</script>',
+    '<img src=x onerror=alert(1)>',
+    '[x](javascript:alert(1))',
+    '![](https://tracker/p.gif)',
+    '[d](data:text/html,<script>alert(1)</script>)',
+    '> '.repeat(1000) + 'deep',
+  ];
+  const { container } = render(Markdown, { text: inputs.join('\n\n') });
+  expect(container.querySelector('script, img, iframe, object, embed, style, [onerror], [onclick]')).toBeNull();
+  expect(container.textContent).toContain('<script>');
+  const links = container.querySelectorAll('a');
+  expect(links).toHaveLength(1);
+  expect(links[0]).toHaveAttribute('href', 'https://tracker/p.gif');
+});
+
 test('a code block is a pre', () => {
   const src = 'one\n  two\n\nthree';
   const { container } = render(Markdown, { text: '```\n' + src + '\n```' });

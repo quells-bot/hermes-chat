@@ -21,6 +21,38 @@ export type Block =
 
 const MAX_DEPTH = 20;
 
+// marked's inline lexer is quadratic on some inputs (a run of "*a " or "[a("
+// takes seconds at 16 KB), and nothing throws, so a hostile message could
+// freeze every tab that opens the room. Two bounds keep that out: an inline
+// run longer than MAX_INLINE_RUN characters is not lexed, and once one call
+// to parse has spent INLINE_BUDGET_MS lexing inline runs, the rest are not
+// lexed either. A run that is not lexed is one plain text node.
+export const MAX_INLINE_RUN = 4096;
+export const INLINE_BUDGET_MS = 150;
+
+class BoundedLexer extends Lexer {
+  private spent = 0;
+  private nesting = 0;
+
+  // marked lexes inline runs after the blocks, and calls this again for the
+  // inside of an em, strong, del or link; only the outermost call is timed.
+  override inlineTokens(src: string, tokens: Token[] = []): Token[] {
+    if (this.nesting === 0 && (src.length > MAX_INLINE_RUN || this.spent >= INLINE_BUDGET_MS)) {
+      tokens.push({ type: 'text', raw: src, text: src } as Tokens.Text);
+      return tokens;
+    }
+    const outer = this.nesting === 0;
+    const start = outer ? performance.now() : 0;
+    this.nesting++;
+    try {
+      return super.inlineTokens(src, tokens);
+    } finally {
+      this.nesting--;
+      if (outer) this.spent += performance.now() - start;
+    }
+  }
+}
+
 // The href, or null unless it is http:, https: or mailto:. A string URL
 // cannot parse on its own (a relative path, #anchor) is null.
 export function safeHref(href: string): string | null {
@@ -48,6 +80,8 @@ function inline(t: Token, depth: number): Inline[] {
       const x = t as Tokens.Text;
       return x.tokens ? inlines(x.tokens, depth + 1) : [text(x.text)];
     }
+    case 'checkbox': // a task item's box; the item adds its own text
+      return [];
     case 'escape':
       return [text((t as Tokens.Escape).text)];
     case 'codespan':
@@ -138,7 +172,7 @@ function block(t: Token, depth: number): Block | null {
 
 export function parse(src: string): Block[] {
   try {
-    return blocks(Lexer.lex(src, { gfm: true, breaks: true }), 0);
+    return blocks(new BoundedLexer({ gfm: true, breaks: true }).lex(src), 0);
   } catch {
     return [{ type: 'paragraph', children: [text(src)] }];
   }

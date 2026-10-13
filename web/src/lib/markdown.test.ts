@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { parse, safeHref, type Block } from './markdown';
+import { MAX_INLINE_RUN, parse, safeHref, type Block } from './markdown';
 
 const text = (s: string) => ({ type: 'text', text: s });
 
@@ -110,6 +110,15 @@ test('a task item starts with its box', () => {
   expect(p.children[0]).toEqual(text('☐ '));
 });
 
+test('a task item in a loose list has one box and no bracket text', () => {
+  const [list] = parse('- [ ] todo\n\n- [x] done\n\n  more') as Extract<Block, { type: 'list' }>[];
+  expect(list.items[0]).toEqual([{ type: 'paragraph', children: [text('☐ '), text('todo')] }]);
+  const p = list.items[1][0] as Extract<Block, { type: 'paragraph' }>;
+  expect(p.children).toEqual([text('☑ '), text('done')]);
+  expect(JSON.stringify(list)).not.toContain('[ ]');
+  expect(JSON.stringify(list)).not.toContain('[x]');
+});
+
 function depth(v: unknown): number {
   if (Array.isArray(v)) return Math.max(0, ...v.map(depth));
   if (v && typeof v === 'object') {
@@ -131,6 +140,29 @@ test('a 262,144-character text parses', () => {
   const big = ('word '.repeat(60) + '\n\n').repeat(Math.ceil(262144 / 302)).slice(0, 262144);
   expect(parse(big).length).toBeGreaterThan(0);
   expect(parse('x'.repeat(262144))).toHaveLength(1);
+});
+
+test.each([
+  ['*a ', '*a '.repeat(87382)],
+  ['[a](', '[a]('.repeat(65536)],
+  ['unbalanced stars', '*'.repeat(131072) + 'a' + '*'.repeat(131071)],
+])('hostile inline pattern %s at 262,144 characters parses quickly', (_name, src) => {
+  const start = performance.now();
+  const blocks = parse(src.slice(0, 262144));
+  expect(performance.now() - start).toBeLessThan(1500);
+  expect(blocks.length).toBeGreaterThan(0);
+});
+
+test('a paragraph over the inline cap is one plain text node', () => {
+  const src = 'x'.repeat(2500) + ' **bold** ' + 'y'.repeat(2500);
+  expect(src.length).toBeGreaterThan(MAX_INLINE_RUN);
+  expect(parse(src)).toEqual([{ type: 'paragraph', children: [text(src)] }]);
+});
+
+test('a paragraph just under the cap is still formatted', () => {
+  const src = '**bold** ' + 'y'.repeat(MAX_INLINE_RUN - 20);
+  const [p] = parse(src) as Extract<Block, { type: 'paragraph' }>[];
+  expect(p.children[0]).toEqual({ type: 'strong', children: [text('bold')] });
 });
 
 test('blank input is no blocks', () => {
