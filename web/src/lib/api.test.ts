@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import {
   ApiError,
+  answerPrompt,
   attachmentUrl,
+  cancelMessage,
   createRoom,
   getHalt,
   getMessage,
@@ -16,10 +18,15 @@ import {
   me,
   onUnauthenticated,
   openDM,
+  pauseRoom,
+  postMessage,
   request,
   resumeEverything,
+  resumeRoom,
   sessionLost,
+  steer,
   stopEverything,
+  stopTurn,
 } from './api';
 
 const fetchMock = vi.fn();
@@ -315,6 +322,90 @@ test('markRoomRead puts the marker', async () => {
   expect(path).toBe('/api/rooms/01R/read');
   expect(init.method).toBe('PUT');
   expect(init.body).toBe('{"message_id":"01M"}');
+});
+
+test('postMessage posts text, client id and reply', async () => {
+  const msg = { id: '01M', text: 'hello', room_id: '01R' };
+  fetchMock.mockResolvedValue(json(201, msg));
+  await expect(postMessage('01R', 'hello', 'k-1', '01Q')).resolves.toEqual(msg);
+  const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+  expect(path).toBe('/api/rooms/01R/messages');
+  expect(init.method).toBe('POST');
+  expect(JSON.parse(String(init.body))).toEqual({ text: 'hello', client_id: 'k-1', reply_to_id: '01Q' });
+});
+
+test('postMessage omits reply_to_id when there is none', async () => {
+  fetchMock.mockResolvedValue(json(201, { id: '01M', text: 'hello', room_id: '01R' }));
+
+  await postMessage('01R', 'hello', 'k-1');
+
+  const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+  expect(path).toBe('/api/rooms/01R/messages');
+  const body = JSON.parse(String(init.body));
+  expect(body).toEqual({ text: 'hello', client_id: 'k-1' });
+  expect(body).not.toHaveProperty('reply_to_id');
+});
+
+test("steer posts to the agent's turn", async () => {
+  const msg = { id: '01M', text: 'go on', room_id: '01R' };
+  fetchMock.mockResolvedValue(json(201, msg));
+  await expect(steer('01R', '01A', 'go on', 'k-1')).resolves.toEqual(msg);
+  const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+  expect(path).toBe('/api/rooms/01R/agents/01A/steer');
+  expect(init.method).toBe('POST');
+  expect(JSON.parse(String(init.body))).toEqual({ text: 'go on', client_id: 'k-1' });
+});
+
+test('cancelMessage posts and expects no body', async () => {
+  fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+  await expect(cancelMessage('01R', '01M')).resolves.toBeUndefined();
+
+  const [path, init] = fetchMock.mock.calls[0];
+  expect(path).toBe('/api/rooms/01R/messages/01M/cancel');
+  expect(init.method).toBe('POST');
+  expect(init.body).toBeUndefined();
+});
+
+test('answerPrompt posts the answer', async () => {
+  const msg = { id: '01M', text: 'ok', room_id: '01R' };
+  fetchMock.mockResolvedValue(json(200, msg));
+  await expect(answerPrompt('01R', '01M', 'Once')).resolves.toEqual(msg);
+  const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+  expect(path).toBe('/api/rooms/01R/messages/01M/answer');
+  expect(init.method).toBe('POST');
+  expect(JSON.parse(String(init.body))).toEqual({ answer: 'Once' });
+});
+
+test('stopTurn posts to the agent', async () => {
+  fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+  await expect(stopTurn('01R', '01A')).resolves.toBeUndefined();
+
+  const [path, init] = fetchMock.mock.calls[0];
+  expect(path).toBe('/api/rooms/01R/agents/01A/stop');
+  expect(init.method).toBe('POST');
+  expect(init.body).toBeUndefined();
+});
+
+test('pauseRoom posts and unwraps the room', async () => {
+  const room = { id: '01R', paused: true };
+  fetchMock.mockResolvedValue(json(200, room));
+  await expect(pauseRoom('01R')).resolves.toEqual(room);
+  const [path, init] = fetchMock.mock.calls[0];
+  expect(path).toBe('/api/rooms/01R/pause');
+  expect(init.method).toBe('POST');
+  expect(init.body).toBeUndefined();
+});
+
+test('resumeRoom posts and unwraps the room', async () => {
+  const room = { id: '01R', paused: false };
+  fetchMock.mockResolvedValue(json(200, room));
+  await expect(resumeRoom('01R')).resolves.toEqual(room);
+  const [path, init] = fetchMock.mock.calls[0];
+  expect(path).toBe('/api/rooms/01R/resume');
+  expect(init.method).toBe('POST');
+  expect(init.body).toBeUndefined();
 });
 
 test('attachmentUrl encodes both ids', () => {
