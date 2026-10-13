@@ -2,7 +2,9 @@
   import ActivityBlock from './ActivityBlock.svelte';
   import Icon from './Icon.svelte';
   import { attachmentUrl } from './lib/api';
+  import { saveText, fileName } from './lib/download';
   import { clock, iconName, preview, size } from './lib/format';
+  import { roomName } from './lib/rooms';
   import { session } from './lib/session.svelte';
   import { cancel, loadQuoted, reason, store } from './lib/store.svelte';
   import type { Message } from './lib/types';
@@ -39,6 +41,13 @@
       message.deliveries.some((d) => d.state === 'waiting'),
   );
 
+  const downloadable = $derived(message.prompt === null && message.text.trim() !== '' && !message.streaming);
+
+  function download() {
+    const room = Object.hasOwn(store.rooms, message.room_id) ? store.rooms[message.room_id] : undefined;
+    saveText(fileName(room ? roomName(room) : '', new Date(message.created_at)), message.text);
+  }
+
   let cancelling = $state(false);
   // Why the last Cancel failed; it is shown under the message it was for.
   let cancelError = $state('');
@@ -63,6 +72,9 @@
     <div class="who">
       {message.author?.name ?? 'removed'}
       <time datetime={message.created_at}>{clock(message.created_at, new Date())}</time>
+      {#if downloadable}
+        <button type="button" class="reply" aria-label="Download" onclick={download}>⤓</button>
+      {/if}
       {#if onreply}
         <button type="button" class="reply" aria-label="Reply" onclick={onreply}>↩</button>
       {/if}

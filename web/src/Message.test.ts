@@ -1,8 +1,9 @@
 import { render, screen, waitFor } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, expect, test, vi } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { ApiError, cancelMessage, getMessage } from './lib/api';
-import { agent, message } from './lib/fixtures';
+import { saveText } from './lib/download';
+import { agent, message, room } from './lib/fixtures';
 import { session } from './lib/session.svelte';
 import { disconnect, store } from './lib/store.svelte';
 import type { Delivery, Prompt } from './lib/types';
@@ -13,6 +14,10 @@ vi.mock('./lib/api', async (orig) => ({
   ...(await orig<typeof import('./lib/api')>()),
   getMessage: vi.fn(),
   cancelMessage: vi.fn(),
+}));
+vi.mock('./lib/download', async (orig) => ({
+  ...(await orig<typeof import('./lib/download')>()),
+  saveText: vi.fn(),
 }));
 vi.mock('./lib/stream', () => ({ openStream: vi.fn() }));
 
@@ -154,7 +159,8 @@ test('working, done and failed copies are activity blocks', () => {
   for (const name of ['Agent1 · working', 'Agent2 · done', 'Agent3 · failed']) {
     expect(screen.getByRole('button', { name })).toHaveAttribute('aria-expanded', 'false');
   }
-  expect(screen.getAllByRole('button')).toHaveLength(3);
+  // Only the Download beside the time is besides the three blocks.
+  expect(screen.getAllByRole('button')).toHaveLength(4);
 });
 
 test('Cancel appears on my own waiting message and cancels it', async () => {
@@ -218,4 +224,60 @@ test('a cancel with nothing waiting shows no error', async () => {
   await waitFor(() => expect(button).toBeEnabled());
   expect(screen.queryByRole('alert')).toBeNull();
   expect(store.error).toBe('');
+});
+
+describe('Download', () => {
+  beforeEach(() => {
+    vi.mocked(saveText).mockReset();
+  });
+
+  test('Download saves the message’s own text under the room’s name', async () => {
+    store.rooms['room-1'] = room({ topic: 'Trip planning' });
+    render(Message, { message: message({ text: '# Plan *one*\n- a_b_c' }) });
+    await userEvent.click(screen.getByRole('button', { name: 'Download' }));
+    expect(saveText).toHaveBeenCalledTimes(1);
+    const [name, text] = vi.mocked(saveText).mock.calls[0];
+    expect(name).toMatch(/^Trip-planning-\d{8}-\d{4}\.md$/);
+    expect(text).toBe('# Plan *one*\n- a_b_c');
+  });
+
+  test('a DM’s download is named for its agent', async () => {
+    store.rooms['room-1'] = room({ flavor: 'dm', topic: '', agents: [agent({ display_name: 'Atlas' })] });
+    render(Message, { message: message() });
+    await userEvent.click(screen.getByRole('button', { name: 'Download' }));
+    expect(vi.mocked(saveText).mock.calls[0][0]).toMatch(/^Atlas-/);
+  });
+
+  test('a message that is still streaming, a prompt, and a message with only an attachment have no Download', () => {
+    const prompt: Prompt = {
+      kind: 'approval',
+      choices: ['Yes', 'No'],
+      state: 'open',
+      answer: null,
+      answered_by: null,
+      closed_at: null,
+    };
+    const attachment = { id: 'a1', name: 'f.txt', content_type: 'text/plain', size: 1, image: false };
+    for (const m of [
+      message({ streaming: true }),
+      message({ prompt }),
+      message({ text: '', attachments: [attachment] }),
+    ]) {
+      const { unmount } = render(Message, { message: m });
+      expect(screen.queryByRole('button', { name: 'Download' })).toBeNull();
+      unmount();
+    }
+  });
+
+  test('Download is offered where Reply is not', () => {
+    render(Message, { message: message() });
+    expect(screen.queryByRole('button', { name: 'Reply' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
+  });
+
+  test('a message whose room is not held downloads as message-…', async () => {
+    render(Message, { message: message({ room_id: 'gone' }) });
+    await userEvent.click(screen.getByRole('button', { name: 'Download' }));
+    expect(vi.mocked(saveText).mock.calls[0][0]).toMatch(/^message-\d{8}-\d{4}\.md$/);
+  });
 });
