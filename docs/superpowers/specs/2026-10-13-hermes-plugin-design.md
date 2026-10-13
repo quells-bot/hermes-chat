@@ -60,6 +60,9 @@ derisks the rest. Claude's call: the split below.)*
 
 - Anything in the stage 2 list. In stage 1 the plugin receives `stop`,
   `pause`, `steer`, and `prompt.answered` events and only logs them.
+- Answering an agent's approval request or clarifying question. Hermes posts
+  the question as plain text, but the reply cannot reach it (section 8,
+  step 4), so the question times out.
 - Changes to the chat server. The agent API already has every route the plugin
   needs, for both stages.
 - Changes to Hermes.
@@ -304,9 +307,14 @@ Written as `plugin/README.md`, in order, for one profile:
      `interim_assistant_messages: false`, so Hermes does not post tool
      progress and commentary as chat messages (stage 2 sends them to the
      server as activity instead);
-   - `approvals.timeout` raised (Hermes clamps it at about a year) and
-     `agent.clarify_timeout: 0`, as the product spec requires. These matter
-     from stage 2 but are set once here.
+   - `approvals.timeout` left at Hermes's default (300 seconds, then treated
+     as denied) and `agent.clarify_timeout: 120`. In stage 1 a question from
+     the agent cannot be answered: the server holds the human's reply in the
+     room's queue until the turn ends, and the turn is waiting for that
+     reply. Short timeouts let such a turn give up and carry on. Stage 2 adds
+     prompts and then sets the long values the product spec requires
+     (`approvals.timeout` raised, which Hermes clamps at about a year, and
+     `agent.clarify_timeout: 0`).
 5. Restart the gateway.
 
 The plugin cannot enforce step 4's display settings, so at `connect()` it
