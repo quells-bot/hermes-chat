@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { layout } from './lib/layout.svelte';
   import { onMount } from 'svelte';
   import HaltControl from './HaltControl.svelte';
   import Header from './Header.svelte';
@@ -120,7 +121,9 @@
 </script>
 
 <Header title="Settings" sub={room?.topic ?? ''} back="#/rooms/{id}">
-  <HaltControl />
+  {#if !layout.wide}
+    <HaltControl />
+  {/if}
 </Header>
 
 {#if store.error}

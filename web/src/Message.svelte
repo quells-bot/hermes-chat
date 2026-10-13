@@ -115,6 +115,7 @@
 
 <style>
   article {
+    max-width: 46rem;
     display: flex;
     gap: 10px;
     align-items: flex-start;

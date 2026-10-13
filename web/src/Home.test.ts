@@ -1,7 +1,9 @@
 import { render, screen, waitFor } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
+import { layout } from './lib/layout.svelte';
 import { signOut } from './lib/session.svelte';
+import { search } from './lib/search.svelte';
 import { closeRoom, connect, disconnect, load, openRoom, store } from './lib/store.svelte';
 import { room } from './lib/fixtures';
 import { route, startRouting } from './lib/route.svelte';
@@ -62,6 +64,7 @@ beforeEach(() => {
   store.error = '';
   store.rooms = {};
   route.path = '/';
+  layout.wide = false;
   note.value = null;
 });
 
@@ -224,4 +227,76 @@ test('#/rooms/<id>/settings shows the settings screen', () => {
   render(Home);
   expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'Back' })).toHaveAttribute('href', '#/rooms/01R');
+});
+
+test('a room keeps its typing when the layout changes', async () => {
+  store.rooms = { '01R': room({ id: '01R', topic: 'Trip' }) };
+  route.path = '/rooms/01R';
+  render(Home);
+  expect(screen.queryByRole('navigation')).toBeNull();
+  const box = screen.getByRole('textbox', { name: 'Message' });
+  await userEvent.type(box, 'half a sentence');
+  layout.wide = true;
+  await waitFor(() => expect(screen.getByRole('navigation')).toBeInTheDocument());
+  expect(screen.getByRole('textbox', { name: 'Message' })).toBe(box);
+  expect(box).toHaveValue('half a sentence');
+  layout.wide = false;
+  await waitFor(() => expect(screen.queryByRole('navigation')).toBeNull());
+  expect(box).toHaveValue('half a sentence');
+  expect(openRoom).toHaveBeenCalledTimes(1);
+});
+
+test.each([
+  ['/new', 'New room'],
+  ['/unread', 'Unread'],
+  ['/note', 'Note'],
+  ['/rooms/01R/settings', 'Settings'],
+])('wide shows the list beside %s', (path, heading) => {
+  store.rooms['01R'] = room({ id: '01R' });
+  note.value = fixture();
+  layout.wide = true;
+  route.path = path;
+  render(Home);
+  expect(screen.getByRole('navigation')).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument();
+});
+
+test('wide at #/ shows the list and an empty pane', () => {
+  layout.wide = true;
+  const { container } = render(Home);
+  expect(screen.getByRole('navigation')).toBeInTheDocument();
+  const pane = container.querySelector('.pane');
+  expect(pane).not.toBeNull();
+  expect(pane!.children).toHaveLength(0);
+});
+
+test('narrow at #/ has no pane', () => {
+  const { container } = render(Home);
+  expect(container.querySelector('.pane')).toBeNull();
+});
+
+test('wide draws Stop all once', () => {
+  store.rooms['01R'] = room({ id: '01R' });
+  note.value = fixture();
+  layout.wide = true;
+  for (const path of ['/new', '/note', '/rooms/01R/settings']) {
+    route.path = path;
+    const { unmount } = render(Home);
+    expect(screen.getAllByRole('button', { name: 'Stop all' })).toHaveLength(1);
+    unmount();
+  }
+  layout.wide = false;
+  route.path = '/note';
+  render(Home);
+  expect(screen.getAllByRole('button', { name: 'Stop all' })).toHaveLength(1);
+});
+
+test('Home stops the layout and empties search on unmount', () => {
+  layout.wide = true;
+  search.query = 'trip';
+  const { unmount } = render(Home);
+  expect(layout.wide).toBe(true);
+  unmount();
+  expect(layout.wide).toBe(false);
+  expect(search.query).toBe('');
 });

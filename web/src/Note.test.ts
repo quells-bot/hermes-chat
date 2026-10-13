@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 import * as api from './lib/api';
 import { note as fixture, noteEntry } from './lib/fixtures';
+import { layout } from './lib/layout.svelte';
 import { loadNote, maxApproved, maxText, note } from './lib/note.svelte';
 import { disconnect, store } from './lib/store.svelte';
 import type { Note as NoteData } from './lib/types';
@@ -18,6 +19,7 @@ vi.mock('./lib/api', async (importOriginal) => ({
 vi.mock('./lib/stream', () => ({ openStream: vi.fn() }));
 
 beforeEach(() => {
+  layout.wide = false;
   disconnect();
   // The screen fetches the note when it opens; unless a test says otherwise
   // the server answers with the note the test holds.
@@ -242,4 +244,11 @@ test('every control is disabled while a write is in flight', async () => {
 
   page.resolve(fixture());
   await waitFor(() => expect(save()).toBeEnabled());
+});
+
+test('no Stop all in the header while wide', () => {
+  note.value = fixture();
+  layout.wide = true;
+  render(Note);
+  expect(screen.queryByRole('button', { name: 'Stop all' })).toBeNull();
 });
