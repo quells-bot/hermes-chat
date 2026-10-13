@@ -6,6 +6,7 @@ const at = new Date(2026, 9, 13, 14, 2); // local, so the test does not depend o
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 test.each([
@@ -31,8 +32,8 @@ function stubUrl() {
   return { create, revoke };
 }
 
-test('saveText saves the text with a final newline and revokes the URL', async () => {
-  const { create, revoke } = stubUrl();
+test('saveText saves the text with a final newline', async () => {
+  const { create } = stubUrl();
   const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
     expect(this.download).toBe('n.md');
     expect(this.getAttribute('href')).toBe('blob:x');
@@ -42,6 +43,17 @@ test('saveText saves the text with a final newline and revokes the URL', async (
   expect(blob.type).toBe('text/markdown;charset=utf-8');
   expect(await blob.text()).toBe('# Report\r\nbody 👍\n');
   expect(click).toHaveBeenCalledTimes(1);
+});
+
+test('the URL is revoked 10 seconds after the click, not with it', () => {
+  vi.useFakeTimers();
+  const { revoke } = stubUrl();
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  saveText('n.md', 'x');
+  expect(revoke).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(9_999);
+  expect(revoke).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(1);
   expect(revoke).toHaveBeenCalledWith('blob:x');
 });
 

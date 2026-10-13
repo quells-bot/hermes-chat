@@ -1,12 +1,15 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { navigate } from './lib/route.svelte';
   import { closeSearch, matchRooms, search } from './lib/search.svelte';
   import { store } from './lib/store.svelte';
 
   let field: HTMLInputElement;
 
-  onMount(() => field.focus());
+  // On mount, and whenever the shortcut asks for the field again.
+  $effect(() => {
+    void search.focus;
+    field.focus();
+  });
 
   function keydown(e: KeyboardEvent): void {
     if (e.key === 'Escape') {
@@ -54,6 +57,11 @@
     background: transparent;
     color: var(--on-aub);
     font: inherit;
+    appearance: none;
+  }
+
+  input::-webkit-search-cancel-button {
+    display: none;
   }
 
   button {

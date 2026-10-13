@@ -8,6 +8,7 @@
   import Room from './Room.svelte';
   import RoomSettings from './RoomSettings.svelte';
   import Unread from './Unread.svelte';
+  import { clearDrafts } from './lib/drafts';
   import { startKeys } from './lib/keys';
   import { layout, startLayout } from './lib/layout.svelte';
   import { closeSearch } from './lib/search.svelte';
@@ -24,6 +25,7 @@
     return () => {
       disconnect();
       closeSearch();
+      clearDrafts();
       stopKeys();
       stopLayout();
       stop();
@@ -72,8 +74,8 @@
       {:else if route.path === '/new'}
         <Header title="New room" back="#/">
           {#if !layout.wide}
-          <HaltControl />
-        {/if}
+            <HaltControl />
+          {/if}
         </Header>
         {@render problem()}
         <NewRoom />

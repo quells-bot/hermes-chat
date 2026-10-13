@@ -301,7 +301,9 @@ list's header, and the screens in the pane leave it out. A message is at most
 
 Keys that work anywhere on a page that is signed in: `/`, when the focus is not
 in a field, and `Ctrl+K` or `⌘K` anywhere open the search field and put the
-cursor in it; on the phone layout they go to the list first. `Alt+↓` and
+cursor in it (again, when it is already open); on the phone layout they go to
+the list first. `/` needs a keyboard layout where slash takes no Shift;
+`Ctrl+K` or `⌘K` works on every layout. `Alt+↓` and
 `Alt+↑` open the next and the previous room in list order (direct messages,
 then rooms, collapsed groups included, archived rooms skipped), stopping at the
 ends without wrapping; with no room open they start from the first or the last.
@@ -309,6 +311,10 @@ ends without wrapping; with no room open they start from the first or the last.
 `Alt` keys work while typing. In the composer `Ctrl+Enter` or `⌘+Enter` sends
 when **Send** would be enabled; Enter is still a newline. Nothing on the
 screen lists the keys.
+
+Text typed in a composer and not yet sent is kept per room, in memory, so
+moving to another room and back finds it. It is gone once the message is sent,
+on logout and on reload; nothing is written to the browser's storage.
 
 In a channel, typing `@` in the composer offers the room's agents that are not
 revoked whose handle or display name starts with what follows it, by handle.
@@ -325,8 +331,8 @@ written, with a final newline, and nothing else (no front matter, no author
 line), as `<room name>-<YYYYMMDD>-<HHmm>.md`. The date and time are the
 message's, in the browser's local time; in the room name every run of anything
 but letters and digits becomes one `-`, and it is cut to 60 characters (a name
-with none gives `message`). The file is made in the browser from a `blob:` URL;
-no route is involved.
+with none gives `message`). The file is made in the browser from a `blob:` URL,
+which is revoked 10 seconds after the click; no route is involved.
 
 The page links a web manifest (`display: standalone`, `start_url: /`) with
 three icons: `web/public/assets/icon-192-v1.png`, `icon-512-v1.png` and

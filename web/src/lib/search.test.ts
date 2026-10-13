@@ -38,7 +38,7 @@ test('a blank or unmatched query finds nothing and odd characters do not throw',
 test('closing search empties the query and opening keeps it', () => {
   search.query = 'tr';
   openSearch();
-  expect(search).toEqual({ open: true, query: 'tr' });
+  expect(search).toMatchObject({ open: true, query: 'tr' });
   closeSearch();
-  expect(search).toEqual({ open: false, query: '' });
+  expect(search).toMatchObject({ open: false, query: '' });
 });

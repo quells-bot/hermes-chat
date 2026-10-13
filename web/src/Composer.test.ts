@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 import * as api from './lib/api';
+import { clearDrafts, getDraft } from './lib/drafts';
 import { agent, message, room } from './lib/fixtures';
 import { disconnect, store } from './lib/store.svelte';
 import type { Message } from './lib/types';
@@ -16,6 +17,7 @@ vi.mock('./lib/api', async (importOriginal) => ({
 vi.mock('./lib/stream', () => ({ openStream: vi.fn() }));
 
 beforeEach(() => {
+  clearDrafts();
   disconnect();
   vi.mocked(api.postMessage).mockReset();
   vi.mocked(api.steer).mockReset();
@@ -426,4 +428,71 @@ test('completing drops a failed attempt’s id', async () => {
   expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
   await userEvent.click(screen.getByRole('option'));
   expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument();
+});
+
+test('text typed in a room is there when the room is opened again', async () => {
+  store.rooms['room-1'] = room({ id: 'room-1' });
+  store.rooms['room-2'] = room({ id: 'room-2' });
+  const first = render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), 'half a thought');
+  first.unmount();
+  const again = render(Composer, { id: 'room-1', replyTo: null });
+  expect(screen.getByLabelText('Message')).toHaveValue('half a thought');
+  again.unmount();
+  render(Composer, { id: 'room-2', replyTo: null });
+  expect(screen.getByLabelText('Message')).toHaveValue('');
+});
+
+test('a sent message leaves no draft', async () => {
+  store.rooms['room-1'] = room({ id: 'room-1' });
+  vi.mocked(api.postMessage).mockResolvedValue(message({ id: '01M', room_id: 'room-1', text: 'hi' }));
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), 'hi');
+  expect(getDraft('room-1')).toBe('hi');
+  await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+  await waitFor(() => expect(screen.getByLabelText('Message')).toHaveValue(''));
+  expect(getDraft('room-1')).toBe('');
+});
+
+test('Alt+↓ with the mention list open does not move the choice', async () => {
+  channel();
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), '@');
+  await userEvent.keyboard('{Alt>}{ArrowDown}{/Alt}');
+  expect(screen.getAllByRole('option')[0]).toHaveAttribute('aria-selected', 'true');
+});
+
+test('tapping an option after typing the whole handle closes the list', async () => {
+  channel();
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), '@scout');
+  await userEvent.click(screen.getByRole('option'));
+  expect(screen.getByLabelText('Message')).toHaveValue('@scout ');
+  await new Promise((r) => setTimeout(r, 20));
+  expect(screen.queryByRole('listbox')).toBeNull();
+});
+
+test('a room event does not move the choice', async () => {
+  channel();
+  render(Composer, { id: 'room-1', replyTo: null });
+  await userEvent.type(screen.getByLabelText('Message'), '@{ArrowDown}');
+  expect(screen.getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true');
+  store.rooms['room-1'] = { ...store.rooms['room-1'] };
+  await new Promise((r) => setTimeout(r, 20));
+  expect(screen.getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true');
+});
+
+test('Enter after the chosen agent leaves inserts a remaining one and does not throw', async () => {
+  channel();
+  render(Composer, { id: 'room-1', replyTo: null });
+  const box = screen.getByLabelText('Message');
+  await userEvent.type(box, '@{ArrowDown}');
+  store.rooms['room-1'] = room({
+    id: 'room-1',
+    flavor: 'channel',
+    agents: [agent({ id: '01S', handle: 'scout', display_name: 'Scout' })],
+  });
+  await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(1));
+  await userEvent.keyboard('{Enter}');
+  expect(box).toHaveValue('@scout ');
 });

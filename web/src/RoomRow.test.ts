@@ -1,6 +1,8 @@
 import { render, screen, within } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import { expect, test } from 'vitest';
 import { agent, room } from './lib/fixtures';
+import { route } from './lib/route.svelte';
 import RoomRow from './RoomRow.svelte';
 
 test('an unread room has a dot and a prompt count', () => {
@@ -73,4 +75,17 @@ test('an archived room is tagged archived and never unread', () => {
   expect(screen.getByText('archived')).toBeInTheDocument();
   expect(screen.queryByLabelText('unread')).toBeNull();
   expect(screen.getByRole('listitem')).not.toHaveClass('unread');
+});
+
+test('only the open room is marked as the current page', async () => {
+  route.path = '/rooms/01R';
+  const open = render(RoomRow, { room: room({ id: '01R', topic: 'Trip' }) });
+  expect(screen.getByRole('link')).toHaveAttribute('aria-current', 'page');
+  open.unmount();
+  render(RoomRow, { room: room({ id: '01S', topic: 'Other' }) });
+  expect(screen.getByRole('link')).not.toHaveAttribute('aria-current');
+  route.path = '/rooms/01S/settings';
+  await tick();
+  expect(screen.getByRole('link')).toHaveAttribute('aria-current', 'page');
+  route.path = '/';
 });

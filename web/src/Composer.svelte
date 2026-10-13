@@ -2,6 +2,7 @@
   import { tick } from 'svelte';
   import { ApiError } from './lib/api';
   import { preview } from './lib/format';
+  import { getDraft, setDraft } from './lib/drafts';
   import { candidates, complete, mentionAt } from './lib/mention';
   import { reason, send, store, type SendMode } from './lib/store.svelte';
   import type { Message } from './lib/types';
@@ -16,7 +17,8 @@
 
   let input: HTMLTextAreaElement | undefined = $state();
 
-  let text = $state('');
+  // svelte-ignore state_referenced_locally
+  let text = $state(getDraft(id));
   let mode = $state<SendMode>('queue');
   let busy = $state(false);
   let error = $state('');
@@ -33,7 +35,12 @@
 
   const room = $derived(store.rooms[id]);
   const at = $derived(room?.flavor === 'channel' ? mentionAt(text, caret) : null);
+  // A string, so that the choice starts over on a new query and not whenever
+  // the room is replaced by an equal one.
+  const query = $derived(at?.query ?? null);
   const options = $derived(at && at.start !== away ? candidates(room.agents, at.query) : []);
+  // The options can shrink under the choice; it never reads past the end.
+  const pick = $derived(Math.min(chosen, options.length - 1));
   const working = $derived(room?.agents.filter((a) => a.working) ?? []);
   // The server refuses a steer when no turn runs, so the choice only appears
   // while an agent is working and the room is neither paused nor halted.
@@ -65,8 +72,13 @@
 
   // A new query starts the choice over.
   $effect(() => {
-    void at?.query;
+    void query;
     chosen = 0;
+  });
+
+  // Whatever is typed is the room's draft until it is sent.
+  $effect(() => {
+    setDraft(id, text);
   });
 
   function track() {
@@ -83,12 +95,13 @@
     if (!at) return;
     const done = complete(text, at, caret, handle);
     text = done.text;
-    caret = done.caret;
     // Completing is an edit, like typing.
     attempt = '';
     input?.focus();
     await tick();
     input?.setSelectionRange(done.caret, done.caret);
+    // Only now does the box hold the new text; focus tracked the old caret.
+    caret = done.caret;
   }
 
   // While the mention list is open it takes the arrows, Enter, Tab and Escape.
@@ -96,15 +109,16 @@
   // plain Enter stays a newline.
   function onKeydown(e: KeyboardEvent) {
     if (options.length > 0 && at && !e.isComposing) {
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      // Alt with an arrow is the room key, which wins.
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !e.altKey) {
         e.preventDefault();
         const step = e.key === 'ArrowDown' ? 1 : -1;
-        chosen = (chosen + step + options.length) % options.length;
+        chosen = (pick + step + options.length) % options.length;
         return;
       }
       if ((e.key === 'Enter' && !e.ctrlKey && !e.metaKey) || e.key === 'Tab') {
         e.preventDefault();
-        void insert(options[chosen].handle);
+        void insert(options[pick].handle);
         return;
       }
       if (e.key === 'Escape') {
@@ -167,7 +181,7 @@
         <button
           type="button"
           role="option"
-          aria-selected={i === chosen}
+          aria-selected={i === pick}
           onclick={() => void insert(a.handle)}
         >
           <span class="icon"><Icon name={a.handle} /></span>

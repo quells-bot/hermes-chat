@@ -1,9 +1,10 @@
-import { render, screen } from '@testing-library/svelte';
+import { render, screen, waitFor } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 import { room } from './lib/fixtures';
 import { navigate } from './lib/route.svelte';
-import { closeSearch, search } from './lib/search.svelte';
+import { startKeys } from './lib/keys';
+import { closeSearch, openSearch, search } from './lib/search.svelte';
 import { store } from './lib/store.svelte';
 import ListScreen from './ListScreen.svelte';
 
@@ -68,7 +69,7 @@ test('Enter opens the first match and closes search', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Search' }));
   await userEvent.type(screen.getByRole('searchbox'), 'trip{Enter}');
   expect(navigate).toHaveBeenCalledWith('/rooms/r1');
-  expect(search).toEqual({ open: false, query: '' });
+  expect(search).toMatchObject({ open: false, query: '' });
 });
 
 test('Enter with no match goes nowhere and keeps the field', async () => {
@@ -85,7 +86,7 @@ test('Escape closes and empties the field', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Search' }));
   await userEvent.type(screen.getByRole('searchbox'), 'tr{Escape}');
   expect(screen.queryByRole('searchbox')).toBeNull();
-  expect(search).toEqual({ open: false, query: '' });
+  expect(search).toMatchObject({ open: false, query: '' });
 });
 
 test('× closes and empties the field', async () => {
@@ -94,7 +95,7 @@ test('× closes and empties the field', async () => {
   await userEvent.type(screen.getByRole('searchbox'), 'tr');
   await userEvent.click(screen.getByRole('button', { name: 'Close search' }));
   expect(screen.queryByRole('searchbox')).toBeNull();
-  expect(search).toEqual({ open: false, query: '' });
+  expect(search).toMatchObject({ open: false, query: '' });
 });
 
 test('an open field with nothing typed shows the normal list', async () => {
@@ -121,4 +122,29 @@ test('a query of regex characters draws no rows and does not throw', async () =>
   await userEvent.click(screen.getByRole('button', { name: 'Search' }));
   await userEvent.type(screen.getByRole('searchbox'), '[[a-');
   expect(screen.queryAllByRole('listitem')).toHaveLength(0);
+});
+
+test('opening search again puts the focus back in the field', async () => {
+  render(ListScreen);
+  await userEvent.click(screen.getByRole('button', { name: 'Search' }));
+  const other = document.createElement('input');
+  document.body.append(other);
+  other.focus();
+  expect(screen.getByRole('searchbox')).not.toHaveFocus();
+  openSearch();
+  await waitFor(() => expect(screen.getByRole('searchbox')).toHaveFocus());
+  other.remove();
+});
+
+test('Ctrl+K with search open and the focus elsewhere focuses the field', async () => {
+  render(ListScreen);
+  const stop = startKeys();
+  await userEvent.click(screen.getByRole('button', { name: 'Search' }));
+  const other = document.createElement('textarea');
+  document.body.append(other);
+  other.focus();
+  await userEvent.keyboard('{Control>}k{/Control}');
+  await waitFor(() => expect(screen.getByRole('searchbox')).toHaveFocus());
+  stop();
+  other.remove();
 });

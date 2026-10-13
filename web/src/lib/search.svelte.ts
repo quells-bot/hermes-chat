@@ -4,10 +4,13 @@
 import { byRoomName, listOrder, roomName } from './rooms';
 import type { Room } from './types';
 
-export const search = $state({ open: false, query: '' });
+// focus counts the requests to open, so that the field takes the focus again
+// when it is already open.
+export const search = $state({ open: false, query: '', focus: 0 });
 
 export function openSearch(): void {
   search.open = true;
+  search.focus++;
 }
 
 export function closeSearch(): void {

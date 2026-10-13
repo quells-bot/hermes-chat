@@ -9,6 +9,7 @@ import { room } from './lib/fixtures';
 import { route, startRouting } from './lib/route.svelte';
 import { note } from './lib/note.svelte';
 import { note as fixture, noteEntry } from './lib/fixtures';
+import { clearDrafts, getDraft, setDraft } from './lib/drafts';
 import { startKeys } from './lib/keys';
 import Home from './Home.svelte';
 
@@ -312,4 +313,13 @@ test('Home stops the layout and empties search on unmount', () => {
   unmount();
   expect(layout.wide).toBe(false);
   expect(search.query).toBe('');
+});
+
+test('Home empties the drafts on unmount', () => {
+  setDraft('r1', 'unsent');
+  const { unmount } = render(Home);
+  expect(getDraft('r1')).toBe('unsent');
+  unmount();
+  expect(getDraft('r1')).toBe('');
+  clearDrafts();
 });
