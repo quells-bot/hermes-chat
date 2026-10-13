@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 import * as api from './lib/api';
 import { agent, human, room } from './lib/fixtures';
+import { layout } from './lib/layout.svelte';
 import { route } from './lib/route.svelte';
 import { disconnect, store } from './lib/store.svelte';
 import type { Room as RoomData } from './lib/types';
@@ -19,6 +20,7 @@ vi.mock('./lib/api', async (importOriginal) => ({
 vi.mock('./lib/stream', () => ({ openStream: vi.fn() }));
 
 beforeEach(() => {
+  layout.wide = false;
   disconnect();
   store.loaded = true;
   location.hash = '';
@@ -255,4 +257,11 @@ test('an unknown room’s goes to the list', async () => {
   location.hash = '#/rooms/nope/settings';
   render(RoomSettings, { id: 'nope' });
   await waitFor(() => expect(location.hash).toBe('#/'));
+});
+
+test('no Stop all in the header while wide', () => {
+  store.rooms['01R'] = room({ id: '01R' });
+  layout.wide = true;
+  render(RoomSettings, { id: '01R' });
+  expect(screen.queryByRole('button', { name: 'Stop all' })).toBeNull();
 });

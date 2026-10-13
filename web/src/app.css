@@ -88,3 +88,7 @@ textarea {
   margin-inline: auto;
   min-height: 100dvh;
 }
+
+#app:has(.shell.wide) {
+  max-width: none;
+}

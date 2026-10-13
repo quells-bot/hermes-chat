@@ -1,8 +1,12 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { ApiError } from './lib/api';
   import { preview } from './lib/format';
+  import { getDraft, setDraft } from './lib/drafts';
+  import { candidates, complete, mentionAt } from './lib/mention';
   import { reason, send, store, type SendMode } from './lib/store.svelte';
   import type { Message } from './lib/types';
+  import Icon from './Icon.svelte';
 
   let {
     id,
@@ -13,7 +17,8 @@
 
   let input: HTMLTextAreaElement | undefined = $state();
 
-  let text = $state('');
+  // svelte-ignore state_referenced_locally
+  let text = $state(getDraft(id));
   let mode = $state<SendMode>('queue');
   let busy = $state(false);
   let error = $state('');
@@ -21,7 +26,21 @@
   // starts a new attempt.
   let attempt = $state('');
 
+  // The textarea's caret, kept from its events; completion reads it.
+  let caret = $state(0);
+  // The start of a mention whose list was put away with Escape, until that
+  // token stops being a mention.
+  let away = $state(-1);
+  let chosen = $state(0);
+
   const room = $derived(store.rooms[id]);
+  const at = $derived(room?.flavor === 'channel' ? mentionAt(text, caret) : null);
+  // A string, so that the choice starts over on a new query and not whenever
+  // the room is replaced by an equal one.
+  const query = $derived(at?.query ?? null);
+  const options = $derived(at && at.start !== away ? candidates(room.agents, at.query) : []);
+  // The options can shrink under the choice; it never reads past the end.
+  const pick = $derived(Math.min(chosen, options.length - 1));
   const working = $derived(room?.agents.filter((a) => a.working) ?? []);
   // The server refuses a steer when no turn runs, so the choice only appears
   // while an agent is working and the room is neither paused nor halted.
@@ -47,9 +66,71 @@
     }
   });
 
+  $effect(() => {
+    if (!at) away = -1;
+  });
+
+  // A new query starts the choice over.
+  $effect(() => {
+    void query;
+    chosen = 0;
+  });
+
+  // Whatever is typed is the room's draft until it is sent.
+  $effect(() => {
+    setDraft(id, text);
+  });
+
+  function track() {
+    caret = input?.selectionStart ?? 0;
+  }
+
   function onInput() {
     // An edit is a new message: the failed attempt's id no longer applies.
     attempt = '';
+    track();
+  }
+
+  async function insert(handle: string) {
+    if (!at) return;
+    const done = complete(text, at, caret, handle);
+    text = done.text;
+    // Completing is an edit, like typing.
+    attempt = '';
+    input?.focus();
+    await tick();
+    input?.setSelectionRange(done.caret, done.caret);
+    // Only now does the box hold the new text; focus tracked the old caret.
+    caret = done.caret;
+  }
+
+  // While the mention list is open it takes the arrows, Enter, Tab and Escape.
+  // Then Ctrl or ⌘ with Enter sends, when the Send button would be enabled;
+  // plain Enter stays a newline.
+  function onKeydown(e: KeyboardEvent) {
+    if (options.length > 0 && at && !e.isComposing) {
+      // Alt with an arrow is the room key, which wins.
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !e.altKey) {
+        e.preventDefault();
+        const step = e.key === 'ArrowDown' ? 1 : -1;
+        chosen = (pick + step + options.length) % options.length;
+        return;
+      }
+      if ((e.key === 'Enter' && !e.ctrlKey && !e.metaKey) || e.key === 'Tab') {
+        e.preventDefault();
+        void insert(options[pick].handle);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        away = at.start;
+        return;
+      }
+    }
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) {
+      e.preventDefault();
+      if (text.trim() !== '' && !busy) void submit();
+    }
   }
 
   async function submit() {
@@ -94,6 +175,22 @@
       <button type="button" aria-pressed={mode === 'steer'} onclick={() => (mode = 'steer')}>Steer</button>
     </div>
   {/if}
+  {#if options.length > 0}
+    <div class="mention" role="listbox" aria-label="Mention">
+      {#each options as a, i (a.id)}
+        <button
+          type="button"
+          role="option"
+          aria-selected={i === pick}
+          onclick={() => void insert(a.handle)}
+        >
+          <span class="icon"><Icon name={a.handle} /></span>
+          <span class="name">{a.display_name}</span>
+          <span class="handle">@{a.handle}</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
   <div class="bar">
     <textarea
       aria-label="Message"
@@ -102,6 +199,10 @@
       bind:this={input}
       readonly={busy}
       oninput={onInput}
+      onkeyup={track}
+      onclick={track}
+      onfocus={track}
+      onkeydown={onKeydown}
     ></textarea>
     <button type="button" class="send" disabled={text.trim() === '' || busy} onclick={submit}>
       {attempt === '' ? 'Send' : 'Retry'}
@@ -177,6 +278,49 @@
     background: var(--aub);
     border-color: var(--aub);
     color: var(--on-aub);
+  }
+
+  .mention {
+    display: flex;
+    flex-direction: column;
+    max-height: 12rem;
+    overflow-y: auto;
+    border-bottom: 1px solid var(--line);
+    background: var(--paper);
+  }
+
+  .mention button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px;
+    border: none;
+    background: none;
+    color: var(--ink);
+    font-size: 14px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .mention button[aria-selected='true'] {
+    background: var(--paper2);
+  }
+
+  .mention .icon {
+    flex: none;
+    width: 22px;
+    height: 22px;
+    border-radius: 5px;
+    overflow: hidden;
+  }
+
+  .mention .name {
+    font-weight: 650;
+  }
+
+  .mention .handle {
+    color: var(--ink2);
+    font-size: 12.5px;
   }
 
   .bar {

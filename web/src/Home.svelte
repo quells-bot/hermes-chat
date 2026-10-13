@@ -2,15 +2,17 @@
   import { onMount } from 'svelte';
   import HaltControl from './HaltControl.svelte';
   import Header from './Header.svelte';
+  import ListScreen from './ListScreen.svelte';
   import NewRoom from './NewRoom.svelte';
   import Note from './Note.svelte';
   import Room from './Room.svelte';
   import RoomSettings from './RoomSettings.svelte';
-  import RoomList from './RoomList.svelte';
   import Unread from './Unread.svelte';
-  import { note, pending } from './lib/note.svelte';
+  import { clearDrafts } from './lib/drafts';
+  import { startKeys } from './lib/keys';
+  import { layout, startLayout } from './lib/layout.svelte';
+  import { closeSearch } from './lib/search.svelte';
   import { roomIdOf, route, settingsIdOf, startRouting } from './lib/route.svelte';
-  import { session, signOut } from './lib/session.svelte';
   import { connect, disconnect, load, store } from './lib/store.svelte';
 
   // Home only exists while signed in, so unmounting is the one place the
@@ -18,14 +20,28 @@
   onMount(() => {
     connect();
     const stop = startRouting();
+    const stopLayout = startLayout();
+    const stopKeys = startKeys();
     return () => {
       disconnect();
+      closeSearch();
+      clearDrafts();
+      stopKeys();
+      stopLayout();
       stop();
     };
   });
 
   const roomId = $derived(roomIdOf(route.path));
   const settingsId = $derived(settingsIdOf(route.path));
+  // atList is true on every path that is not a screen of its own, #/ among them.
+  const atList = $derived(
+    roomId === null &&
+      settingsId === null &&
+      route.path !== '/unread' &&
+      route.path !== '/note' &&
+      route.path !== '/new',
+  );
 </script>
 
 {#snippet problem()}
@@ -37,64 +53,61 @@
   {/if}
 {/snippet}
 
-{#if roomId !== null}
-  {#key roomId}
-    <Room id={roomId} />
-  {/key}
-{:else if settingsId !== null}
-  {#key settingsId}
-    <RoomSettings id={settingsId} />
-  {/key}
-{:else if route.path === '/unread'}
-  <Unread />
-{:else if route.path === '/note'}
-  <Note />
-{:else if route.path === '/new'}
-  <Header title="New room" back="#/">
-    <HaltControl />
-  </Header>
-  {@render problem()}
-  <NewRoom />
-{:else}
-  <Header>
-    {#if store.loaded && store.link !== 'live'}
-      <span class="link">reconnecting</span>
-    {/if}
-    <a class="new" href="#/new" aria-label="New room">+</a>
-    <HaltControl />
-  </Header>
-
-  <main>
-    {@render problem()}
-
-    {#if store.loaded}
-      <RoomList />
-    {/if}
-
-    <footer>
-      <a class="note" href="#/note">
-        Note
-        {#if pending(note.value).length > 0}
-          <span class="badge">{pending(note.value).length}</span>
-        {/if}
-      </a>
-      <span>{session.me?.username}</span>
-      <button type="button" onclick={signOut}>Log out</button>
-    </footer>
-  </main>
-{/if}
+<div class="shell" class:wide={layout.wide}>
+  {#if layout.wide || atList}
+    <div class="side"><ListScreen /></div>
+  {/if}
+  {#if layout.wide || !atList}
+    <div class="pane">
+      {#if roomId !== null}
+        {#key roomId}
+          <Room id={roomId} />
+        {/key}
+      {:else if settingsId !== null}
+        {#key settingsId}
+          <RoomSettings id={settingsId} />
+        {/key}
+      {:else if route.path === '/unread'}
+        <Unread />
+      {:else if route.path === '/note'}
+        <Note />
+      {:else if route.path === '/new'}
+        <Header title="New room" back="#/">
+          {#if !layout.wide}
+            <HaltControl />
+          {/if}
+        </Header>
+        {@render problem()}
+        <NewRoom />
+      {/if}
+    </div>
+  {/if}
+</div>
 
 <style>
-  .link {
-    color: var(--on-aub2);
-    font-size: 0.8125rem;
+  .wide {
+    display: grid;
+    grid-template-columns: 20rem minmax(0, 1fr);
+    height: 100dvh;
   }
 
-  .new {
-    color: var(--on-aub);
-    font-size: 1.25rem;
-    line-height: 1;
-    text-decoration: none;
+  .wide .side,
+  .wide .pane {
+    overflow-y: auto;
+    min-height: 0;
+  }
+
+  .wide .side {
+    background: var(--aub);
+  }
+
+  .wide .pane {
+    background: var(--paper);
+    border-left: 1px solid var(--line);
+  }
+
+  .wide .pane :global(a.back[href='#/']) {
+    display: none;
   }
 
   .problem {
@@ -107,37 +120,5 @@
   .problem p {
     margin: 0;
     color: var(--err);
-  }
-
-  footer {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.75rem;
-    color: var(--ink2);
-    font-size: 0.875rem;
-  }
-
-  .note {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    color: var(--ink2);
-  }
-
-  .badge {
-    padding: 1px 6px;
-    border-radius: 5px;
-    background: var(--ask);
-    color: var(--on-ask);
-    font-size: 11px;
-    font-weight: 650;
-  }
-
-  button {
-    padding: 0.25rem 0.6rem;
-    border: 1px solid var(--line);
-    border-radius: 0.25rem;
-    background: var(--paper);
   }
 </style>

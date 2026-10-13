@@ -25,7 +25,7 @@ export function isWorking(room: Room): boolean {
   return room.agents.some((a) => a.working);
 }
 
-function byRoomName(a: Room, b: Room): number {
+export function byRoomName(a: Room, b: Room): number {
   return byName(roomName(a), roomName(b)) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
@@ -37,6 +37,12 @@ export function groupRooms(rooms: Room[]): Groups {
   };
 }
 
+// The list top to bottom: direct messages, then rooms, archived ones left out.
+export function listOrder(rooms: Room[]): Room[] {
+  const g = groupRooms(rooms);
+  return [...g.dms, ...g.rooms];
+}
+
 // The Unread page's order: rooms waiting on a human first, then the newest
 // activity first. It is separate from groupRooms, which never follows traffic.
 export function unreadRooms(rooms: Room[]): Room[] {
@@ -46,4 +52,18 @@ export function unreadRooms(rooms: Room[]): Room[] {
     if (prompts) return prompts;
     return newest(a) < newest(b) ? 1 : newest(a) > newest(b) ? -1 : 0;
   });
+}
+
+// The id of the next (step 1) or previous (step -1) room after current in
+// listOrder, skipping read rooms when unreadOnly. It does not wrap: null at
+// an end. With current null or not in the list, step 1 gives the first and
+// step -1 the last.
+export function neighbour(rooms: Room[], current: string | null, step: 1 | -1, unreadOnly = false): string | null {
+  const order = listOrder(rooms);
+  const at = current === null ? -1 : order.findIndex((r) => r.id === current);
+  let i = at === -1 ? (step === 1 ? 0 : order.length - 1) : at + step;
+  for (; i >= 0 && i < order.length; i += step) {
+    if (!unreadOnly || isUnread(order[i])) return order[i].id;
+  }
+  return null;
 }

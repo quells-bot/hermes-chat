@@ -13,6 +13,7 @@
     pending,
     saveText,
   } from './lib/note.svelte';
+  import { layout } from './lib/layout.svelte';
   import { load, reason, store } from './lib/store.svelte';
 
   // draft is what the person has typed and not yet saved; null while the box
@@ -48,7 +49,9 @@
 </script>
 
 <Header title="Note" back="#/">
-  <HaltControl />
+  {#if !layout.wide}
+    <HaltControl />
+  {/if}
 </Header>
 
 {#if store.error}

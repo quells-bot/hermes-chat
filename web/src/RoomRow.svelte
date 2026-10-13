@@ -1,16 +1,18 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
   import { isUnread, isWorking, roomName } from './lib/rooms';
+  import { roomIdOf, route, settingsIdOf } from './lib/route.svelte';
   import type { Room } from './lib/types';
 
   let { room }: { room: Room } = $props();
 
   const unread = $derived(isUnread(room));
+  const open = $derived((roomIdOf(route.path) ?? settingsIdOf(route.path)) === room.id);
   const agent = $derived(room.flavor === 'dm' ? room.agents[0] : undefined);
 </script>
 
 <li class:unread>
-  <a href="#/rooms/{room.id}">
+  <a href="#/rooms/{room.id}" aria-current={open ? 'page' : undefined}>
     {#if room.flavor === 'dm'}
       <span class="avatar">
         <span class="icon"><Icon name={agent?.handle ?? ''} /></span>
@@ -25,6 +27,9 @@
       <span class="hash">#</span>
     {/if}
     <span class="name">{roomName(room)}</span>
+    {#if room.archived}
+      <span class="tag pause">archived</span>
+    {/if}
     {#if room.open_prompts > 0}
       <span class="tag ask" aria-label="{room.open_prompts} open prompts">{room.open_prompts}</span>
     {/if}
@@ -52,6 +57,10 @@
     padding: 7px 14px;
     color: inherit;
     text-decoration: none;
+  }
+
+  a[aria-current='page'] {
+    background: var(--aub-hi);
   }
 
   .name {

@@ -176,7 +176,7 @@ else, and the Unread page states `Everything is stopped` under its header when
 the store is halted.
 
 Under the feed a composer writes a message: a text box, a Send button (Enter is
-a newline; only the button sends), and, while an agent in the room is working
+a newline; `Ctrl+Enter` or `⌘+Enter` sends, as the button does), and, while an agent in the room is working
 and the room is not paused and nothing else is stopped, **Queue** and **Steer**
 choices — Queue posts to the room, Steer sends one copy to each working agent's
 running turn — beside a reply chip when the message is a reply (a steer carries
@@ -274,8 +274,72 @@ one tap and is replaced by **Unarchive** on the same screen. While the room is
 archived every other control is disabled, as the server answers 409
 `room_archived`. One write at a time: while one is in flight every control on
 the screen is disabled. Both screens have the **Stop all** control in their
-header. Archived rooms are not listed, so until search exists an archived room
-is reached only by its address.
+header. Archived rooms are not listed in the groups; search finds them.
+
+A **⌕** button in the list's header, between the title and **+**, opens a
+one-line field under the header, above the **Unread** row. A query is split on
+whitespace and every term must be found, ignoring case, as a plain substring
+in the room's name, its topic, or the display name or handle of any agent in
+it; one leading `@` or `#` on a term is dropped, and accents are not folded.
+While a query is typed the list shows only the matching rows, flat, with no
+**Unread** row and no group headings: direct messages first, then rooms, each
+in alphabetical order by name, then archived rooms in the same order, each
+tagged `archived`. An empty field shows the normal list, and results never
+rearrange when messages arrive. Enter opens the first row and a tap opens the
+one tapped; either closes the field and empties it, as do **×** and Escape.
+The query is kept only in memory and is emptied when the home screen goes away.
+
+From a window `56rem` (896px) wide the list sits beside the open screen: a
+`20rem` column on the left and the screen in the rest. A tablet held upright is
+narrower than that and keeps the phone layout. At `#/` the pane is empty.
+Crossing the breakpoint does not remount the open screen, so text in the
+composer survives a resize. While wide, a back link to `#/` is not drawn
+because the list is already there (a back link to `#/unread`, and from a
+room's settings back to the room, stay), **Stop all** is drawn once, in the
+list's header, and the screens in the pane leave it out. A message is at most
+`46rem` wide and left-aligned; headers and the composer span the pane.
+
+Keys that work anywhere on a page that is signed in: `/`, when the focus is not
+in a field, and `Ctrl+K` or `⌘K` anywhere open the search field and put the
+cursor in it (again, when it is already open); on the phone layout they go to
+the list first. `/` needs a keyboard layout where slash takes no Shift;
+`Ctrl+K` or `⌘K` works on every layout. `Alt+↓` and
+`Alt+↑` open the next and the previous room in list order (direct messages,
+then rooms, collapsed groups included, archived rooms skipped), stopping at the
+ends without wrapping; with no room open they start from the first or the last.
+`Alt+Shift+↓` and `Alt+Shift+↑` do the same over unread rooms only. The
+`Alt` keys work while typing. In the composer `Ctrl+Enter` or `⌘+Enter` sends
+when **Send** would be enabled; Enter is still a newline. Nothing on the
+screen lists the keys.
+
+Text typed in a composer and not yet sent is kept per room, in memory, so
+moving to another room and back finds it. It is gone once the message is sent,
+on logout and on reload; nothing is written to the browser's storage.
+
+In a channel, typing `@` in the composer offers the room's agents that are not
+revoked whose handle or display name starts with what follows it, by handle.
+The rule for what counts as a mention is the server's: a token that starts with
+`@` after whitespace, or after one `(`, and the offer shows only with the caret
+at the end of that token. `↑` and `↓` choose, Enter or `Tab` inserts `@handle`
+and a space, and Escape puts the list away until that token stops being a
+mention. In a direct message or a conversation there is no offer, because every
+agent is woken by every message there.
+
+Each message that has text, is not a prompt and is not still streaming has a
+**⤓** control beside the time. It saves the message's text exactly as it was
+written, with a final newline, and nothing else (no front matter, no author
+line), as `<room name>-<YYYYMMDD>-<HHmm>.md`. The date and time are the
+message's, in the browser's local time; in the room name every run of anything
+but letters and digits becomes one `-`, and it is cut to 60 characters (a name
+with none gives `message`). The file is made in the browser from a `blob:` URL,
+which is revoked 10 seconds after the click; no route is involved.
+
+The page links a web manifest (`display: standalone`, `start_url: /`) with
+three icons: `web/public/assets/icon-192-v1.png`, `icon-512-v1.png` and
+`icon-maskable-512-v1.png`. Vite copies them to `/assets/` unhashed, and the
+server sends everything under `/assets/` as immutable for a year, so a changed
+icon is saved under a new name (`-v2`) and the manifest updated. There is no
+service worker, so no offline page and no install prompt of the app's own.
 
 The source is a Svelte 5 and TypeScript project in `web/src`, built by Vite
 into `web/dist`, which `web/embed.go` embeds. `web/dist` is never committed
