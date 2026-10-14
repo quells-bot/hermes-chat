@@ -3,7 +3,7 @@ and Hermes's calls become chat-server client calls.
 
 Only this module and `hooks.py` import Hermes; the client modules
 (`sse.py`, `client.py`, `stream.py`, `reports.py`, `record.py`, `checks.py`,
-`steps.py`) import nothing from it.
+`steps.py`, `prompts.py`) import nothing from it.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from hermes_constants import get_hermes_home
 from . import hooks
 from .client import ApiError, ChatClient, Unauthorized, Unreachable
 from .checks import display_warnings
+from .prompts import OpenPrompt, PromptTable, clarify_choices, numbered
 from .record import OpenTurns
 from .reports import TurnReporter
 from .steps import ToolSteps, shape
@@ -68,6 +69,8 @@ class HermesChatAdapter(BasePlatformAdapter):
         self._stream_task: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._steps: ToolSteps | None = None
+        self._prompts = PromptTable()
+        self._expiring: set[asyncio.Task] = set()
         self._lock_held = False
         # The room gate: a room is busy from the moment a delivery for it is
         # recorded until that delivery's turn is closed.
@@ -249,9 +252,71 @@ class HermesChatAdapter(BasePlatformAdapter):
             await self._stop_room(name, data["room_id"])
         elif name == "steer":
             await self._steer_room(data["room_id"], data["message"])
+        elif name == "prompt.answered":
+            await self._on_prompt_answered(data)
         else:
             room_id = data.get("room_id") or (data.get("room") or {}).get("id")
             logger.info("ignoring %s for room %s", name, room_id)
+
+    # ── Prompts: Hermes's questions, asked in the room and answered there ───
+
+    async def _post_prompt(self, room_id: str, kind: str, text: str, choices: list[str],
+                           prompt_kind: str, session_key: str, ref: str) -> SendResult:
+        try:
+            message_id = await self._client.post_prompt(room_id, kind, text, choices)
+        except ApiError as exc:
+            self._log_send_error("prompt", room_id, exc)
+            return SendResult(success=False, error=f"{exc.code}: {exc.message}")
+        except Unreachable as exc:
+            logger.warning("prompt room=%s unreachable: %s", room_id, exc)
+            return SendResult(success=False, error=str(exc), retryable=True)
+        self._prompts.add(OpenPrompt(message_id=message_id, room_id=room_id, kind=prompt_kind,
+                                     session_key=session_key, ref=ref))
+        logger.info("prompt room=%s message=%s kind=%s", room_id, message_id, prompt_kind)
+        return SendResult(success=True, message_id=message_id)
+
+    async def _send_exec_approval_prompt(self, prompt) -> SendResult:
+        return await self._post_prompt(prompt.chat_id, "approval", prompt.text, prompt.choices,
+                                       "approval", prompt.session_key, "")
+
+    async def send_clarify(self, chat_id: str, question: str, choices, clarify_id: str,
+                           session_key: str, metadata=None) -> SendResult:
+        """The answer comes back only as `prompt.answered`: a typed reply
+        would wait in the room's queue behind the turn that is asking."""
+        fitted = clarify_choices(choices)
+        if fitted is None:
+            question, fitted = numbered(question, choices), []
+        return await self._post_prompt(chat_id, "clarify", question, fitted, "clarify", session_key, clarify_id)
+
+    async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
+        """Hermes gave up on a clarify (timeout, or the turn moved on)."""
+        prompt = self._prompts.take_ref(clarify_id)
+        if prompt is not None:
+            await self._expire_prompt(prompt)
+
+    async def _expire_prompt(self, prompt: OpenPrompt) -> None:
+        try:
+            await self._client.expire_prompt(prompt.message_id)
+        except (ApiError, Unreachable) as exc:
+            logger.info("prompt message=%s not expired: %s", prompt.message_id, exc)
+            return
+        logger.info("prompt message=%s expired", prompt.message_id)
+
+    async def _on_prompt_answered(self, data: dict) -> None:
+        prompt = self._prompts.take(data["message_id"])
+        if prompt is None:
+            logger.info("answer for prompt %s, which is not open here; ignoring", data["message_id"])
+            return
+        logger.info("prompt room=%s message=%s kind=%s answered", prompt.room_id, prompt.message_id, prompt.kind)
+        try:
+            if prompt.kind == "approval":
+                from tools import approval
+                approval.resolve_gateway_approval(prompt.session_key, data["answer"])
+            elif prompt.kind == "clarify":
+                from tools import clarify_gateway
+                clarify_gateway.resolve_gateway_clarify(prompt.ref, data["answer"])
+        except Exception:
+            logger.warning("prompt message=%s could not be resolved in Hermes", prompt.message_id, exc_info=True)
 
     # ── Control: what a human does to a running turn ────────────────────────
 
@@ -447,6 +512,11 @@ class HermesChatAdapter(BasePlatformAdapter):
         if room_id is None:
             return
         self._reporter.submit(delivery_id, state)
+        # Whatever the turn was still asking, nobody is waiting on it now.
+        for prompt in self._prompts.take_room(room_id, ("approval", "clarify")):
+            task = asyncio.create_task(self._expire_prompt(prompt))
+            self._expiring.add(task)
+            task.add_done_callback(self._expiring.discard)
         self._room_busy_rooms.discard(room_id)
         parked = self._parked.get(room_id)
         if parked:

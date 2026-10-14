@@ -81,6 +81,15 @@ class ChatClient:
         await self._send("PUT", f"/agent/activities/{activity_id}",
                          json={"duration_ms": duration_ms, "succeeded": succeeded})
 
+    async def post_prompt(self, room_id: str, kind: str, text: str, choices: list[str]) -> str:
+        """Ask the room a question as a prompt message; returns its id."""
+        resp = await self._send("POST", f"/agent/rooms/{room_id}/prompts",
+                                json={"kind": kind, "text": text, "choices": choices})
+        return resp.json()["id"]
+
+    async def expire_prompt(self, message_id: str) -> None:
+        await self._send("POST", f"/agent/prompts/{message_id}/expire")
+
     @asynccontextmanager
     async def open_events(self, cursor: int | None) -> AsyncIterator[AsyncIterator[bytes]]:
         """The agent event stream. Yields an async iterator of raw bytes;

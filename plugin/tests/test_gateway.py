@@ -109,3 +109,45 @@ def test_pause_ends_the_running_turn(gateway_factory):
     g.wait(lambda: g.state(first) == "done", timeout=20)
     reply = next(m for m in g.messages() if m["text"].startswith("word"))
     assert len(reply["text"]) < len(LONG)
+
+
+# Hermes holds a recursive delete for approval. The target does not exist.
+FLAGGED_COMMAND = "rm -rf ./hermes-chat-gateway-test-nothing-here"
+
+
+def test_an_approval_is_asked_as_a_prompt_and_its_answer_continues_the_turn(gateway_factory):
+    g = gateway_factory([ToolCall("terminal", {"command": FLAGGED_COMMAND}), Text("finished.")])
+    g.start()
+    g.wait_started()
+    first = g.post("do it")
+    g.wait(lambda: any(m["prompt"] for m in g.messages()))
+    prompt = next(m for m in g.messages() if m["prompt"])
+    assert prompt["prompt"]["kind"] == "approval" and "deny" in prompt["prompt"]["choices"]
+    assert g.state(first) == "working"
+    r = g.chat.human.post(f"/api/rooms/{g.room_id}/messages/{prompt['id']}/answer", json={"answer": "deny"})
+    assert r.status_code < 300, r.text
+    g.wait(lambda: g.state(first) == "done")
+    assert "finished." in g.agent_texts()
+    assert "BLOCKED" in str(g.llm.main_requests()[1]["messages"][-1]["content"]).upper() \
+        or "denied" in str(g.llm.main_requests()[1]["messages"][-1]["content"]).lower()
+
+
+def test_a_clarifying_question_is_asked_as_a_prompt_and_answered(gateway_factory):
+    g = gateway_factory([
+        ToolCall("clarify", {"questions": [{"question": "Which one?", "choices": ["red", "blue"]}]}),
+        Text("blue it is."),
+    ])
+    g.start()
+    g.wait_started()
+    first = g.post("pick a colour")
+    g.wait(lambda: any(m["prompt"] for m in g.messages()))
+    prompt = next(m for m in g.messages() if m["prompt"])
+    choices = prompt["prompt"]["choices"]  # Hermes marks the first as its recommendation
+    assert prompt["prompt"]["kind"] == "clarify" and len(choices) == 2
+    assert choices[0].startswith("red") and choices[1] == "blue"
+    assert prompt["text"].startswith("Which one?")  # Hermes adds how to skip
+    r = g.chat.human.post(f"/api/rooms/{g.room_id}/messages/{prompt['id']}/answer", json={"answer": "blue"})
+    assert r.status_code < 300, r.text
+    g.wait(lambda: g.state(first) == "done")
+    assert "blue" in str(g.llm.main_requests()[1]["messages"][-1]["content"])
+    assert "blue it is." in g.agent_texts()

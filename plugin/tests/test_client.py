@@ -175,3 +175,23 @@ async def test_tool_calls_raise_api_error_when_refused(stub):
     finally:
         await c.aclose()
     assert started.value.status == 409 and finished.value.status == 409
+
+
+async def test_post_prompt_returns_the_message_id(stub):
+    stub.script("POST", "/agent/rooms/R1/prompts", (201, {"id": "P1"}))
+    c = ChatClient(stub.url, "t")
+    try:
+        assert await c.post_prompt("R1", "approval", "Run it?", ["once", "deny"]) == "P1"
+    finally:
+        await c.aclose()
+    assert stub.requests[0].json == {"kind": "approval", "text": "Run it?", "choices": ["once", "deny"]}
+
+
+async def test_expire_prompt(stub):
+    stub.script("POST", "/agent/prompts/M5/expire", (204,))
+    c = ChatClient(stub.url, "t")
+    try:
+        await c.expire_prompt("M5")
+    finally:
+        await c.aclose()
+    assert (stub.requests[0].method, stub.requests[0].path) == ("POST", "/agent/prompts/M5/expire")
