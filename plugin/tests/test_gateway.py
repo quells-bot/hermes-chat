@@ -151,3 +151,23 @@ def test_a_clarifying_question_is_asked_as_a_prompt_and_answered(gateway_factory
     g.wait(lambda: g.state(first) == "done")
     assert "blue" in str(g.llm.main_requests()[1]["messages"][-1]["content"])
     assert "blue it is." in g.agent_texts()
+
+
+def test_new_is_confirmed_from_a_prompt_and_starts_the_conversation_over(gateway_factory):
+    g = gateway_factory([Text("one."), Text("two.")])
+    g.start()
+    g.wait_started()
+    first = g.post("first question")
+    g.wait(lambda: g.state(first) == "done")
+    g.post("/new")
+    g.wait(lambda: any(m["prompt"] for m in g.messages()))
+    prompt = next(m for m in g.messages() if m["prompt"])
+    assert "Confirm /new" in prompt["text"] and prompt["prompt"]["choices"] == ["once", "always", "deny"]
+    assert not [t for t in g.agent_texts() if "Text fallback" in t]
+    r = g.chat.human.post(f"/api/rooms/{g.room_id}/messages/{prompt['id']}/answer", json={"answer": "once"})
+    assert r.status_code < 300, r.text
+    g.wait(lambda: any("Session reset" in t for t in g.agent_texts()))
+    second = g.post("second question")
+    g.wait(lambda: g.state(second) == "done")
+    requests = g.llm.main_requests()
+    assert len(requests[-1]["messages"]) == len(requests[0]["messages"])

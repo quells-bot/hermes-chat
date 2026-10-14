@@ -211,3 +211,94 @@ async def test_no_prompt_text_or_answer_in_the_plugins_logs(adapter_factory, stu
     ours = "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("hermes_chat"))
     assert "P1" in ours and "P2" in ours
     assert "secret" not in ours and "crimson" not in ours
+
+
+@pytest.fixture
+def confirmed(monkeypatch):
+    """Hermes's slash-confirm resolver, recorded; it answers with a line to show."""
+    calls = []
+
+    async def resolve(session_key, confirm_id, choice, **kwargs):
+        calls.append((session_key, confirm_id, choice))
+        return "✨ Session reset!"
+
+    monkeypatch.setattr("tools.slash_confirm.resolve", resolve)
+    return calls
+
+
+async def ask_to_confirm(a, confirm_id="cid"):
+    return await a.send_slash_confirm("R1", "Confirm /new", "This starts a fresh session.", "sk", confirm_id)
+
+
+async def test_a_commands_confirmation_is_posted_as_a_prompt(adapter_factory, stub):
+    stub.script("POST", "/agent/rooms/R1/prompts", (201, {"id": "P1"}))
+    a = await connected(adapter_factory, stub)
+    result = await ask_to_confirm(a)
+    assert result.success and result.message_id == "P1"
+    (body,) = prompt_posts(stub)
+    assert body["kind"] == "approval" and body["choices"] == ["once", "always", "deny"]
+    assert body["text"] == "**Confirm /new**\n\nThis starts a fresh session."
+
+
+@pytest.mark.parametrize("answer,choice", [("once", "once"), ("always", "always"), ("deny", "cancel")])
+async def test_a_confirmations_answer_runs_the_command_and_shows_its_result(
+        adapter_factory, stub, confirmed, answer, choice):
+    stub.script("POST", "/agent/rooms/R1/prompts", (201, {"id": "P1"}))
+    stub.script("POST", "/agent/rooms/R1/messages", (201, {"id": "M9"}))
+    a = await connected(adapter_factory, stub)
+    await ask_to_confirm(a)
+    await a._on_prompt_answered({"room_id": "R1", "message_id": "P1", "answer": answer})
+    assert confirmed == [("sk", "cid", choice)]
+    shown = [r.json for r in stub.requests if r.path == "/agent/rooms/R1/messages"]
+    assert shown == [{"text": "✨ Session reset!"}]
+
+
+async def test_a_confirmation_with_nothing_to_show_posts_nothing(adapter_factory, stub, monkeypatch):
+    async def resolve(session_key, confirm_id, choice, **kwargs):
+        return None
+
+    monkeypatch.setattr("tools.slash_confirm.resolve", resolve)
+    stub.script("POST", "/agent/rooms/R1/prompts", (201, {"id": "P1"}))
+    a = await connected(adapter_factory, stub)
+    await ask_to_confirm(a)
+    await a._on_prompt_answered({"room_id": "R1", "message_id": "P1", "answer": "deny"})
+    assert not [r for r in stub.requests if r.path == "/agent/rooms/R1/messages"]
+
+
+async def test_a_second_confirmation_in_a_room_expires_the_first(adapter_factory, stub):
+    stub.script("POST", "/agent/rooms/R1/prompts", (201, {"id": "P1"}), (201, {"id": "P2"}))
+    stub.script("POST", "/agent/prompts/P1/expire", (204,))
+    a = await connected(adapter_factory, stub)
+    await ask_to_confirm(a, "cid-1")
+    await ask_to_confirm(a, "cid-2")
+    assert paths(stub).index("/agent/prompts/P1/expire") < [
+        i for i, p in enumerate(paths(stub)) if p == "/agent/rooms/R1/prompts"][-1]
+
+
+async def test_a_turn_closing_leaves_a_confirmation_open(adapter_factory, stub, delivery):
+    me_ok(stub)
+    stub.script("POST", "/agent/rooms/R1/prompts", (201, {"id": "P1"}))
+    stub.events(ready(), frame("delivery", delivery(), 1), Hang)
+    a = adapter_factory()
+
+    async def handler(event):
+        await ask_to_confirm(a)
+        return None
+
+    a.set_message_handler(handler)
+    assert await a.connect() is True
+    await wait_until(lambda: "/agent/deliveries/M1/done" in paths(stub))
+    await asyncio.sleep(0.2)
+    assert "/agent/prompts/P1/expire" not in paths(stub)
+
+
+async def test_hermes_own_list_of_choices_is_left_out_of_the_prompt(adapter_factory, stub):
+    """Hermes writes the three choices and a typed fallback into the message
+    for platforms without buttons. The prompt has the choices already."""
+    stub.script("POST", "/agent/rooms/R1/prompts", (201, {"id": "P1"}))
+    a = await connected(adapter_factory, stub)
+    message = ("⚠️ **Confirm /new**\n\nThis starts a fresh session.\n\nChoose:\n• **Approve Once** — proceed\n"
+               "• **Cancel** — keep it\n\n_Text fallback: reply `/approve`, `/always`, or `/cancel`._")
+    await a.send_slash_confirm("R1", "/new", message, "sk", "cid")
+    (body,) = prompt_posts(stub)
+    assert body["text"] == "⚠️ **Confirm /new**\n\nThis starts a fresh session."

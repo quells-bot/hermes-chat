@@ -45,6 +45,17 @@ _STREAMING_CURSOR = re.compile(r"\s*▉\Z")
 _LEADING_BLANK_LINES = re.compile(r"\A\s*\n\s*")
 
 
+# A command confirmation's choices in the room, and what Hermes calls them.
+_CONFIRM_CHOICES = {"once": "once", "always": "always", "deny": "cancel"}
+
+
+def _confirm_text(title: str, message: str) -> str:
+    """What a command's confirmation asks, without the list of choices and
+    the typed fallback Hermes writes for platforms that have no buttons."""
+    asked = re.split(r"^Choose:\s*$", message, maxsplit=1, flags=re.MULTILINE)[0].strip() or message.strip()
+    return asked if title in asked else f"**{title}**\n\n{asked}"
+
+
 def _outgoing(content: str) -> str:
     """The text as the room should store it."""
     cleaned = _LEADING_BLANK_LINES.sub("", _STREAMING_CURSOR.sub("", content))
@@ -288,6 +299,16 @@ class HermesChatAdapter(BasePlatformAdapter):
             question, fitted = numbered(question, choices), []
         return await self._post_prompt(chat_id, "clarify", question, fitted, "clarify", session_key, clarify_id)
 
+    async def send_slash_confirm(self, chat_id: str, title: str, message: str, session_key: str,
+                                 confirm_id: str, metadata=None) -> SendResult:
+        """A command's confirmation (/new and the like). Its own turn ends as
+        soon as it has asked, so the prompt outlives the turn; a newer one for
+        the room replaces it, as it does in Hermes."""
+        for stale in self._prompts.take_room(chat_id, ("confirm",)):
+            await self._expire_prompt(stale)
+        return await self._post_prompt(chat_id, "approval", _confirm_text(title, message), list(_CONFIRM_CHOICES),
+                                       "confirm", session_key, confirm_id)
+
     async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
         """Hermes gave up on a clarify (timeout, or the turn moved on)."""
         prompt = self._prompts.take_ref(clarify_id)
@@ -315,6 +336,12 @@ class HermesChatAdapter(BasePlatformAdapter):
             elif prompt.kind == "clarify":
                 from tools import clarify_gateway
                 clarify_gateway.resolve_gateway_clarify(prompt.ref, data["answer"])
+            else:
+                from tools import slash_confirm
+                choice = _CONFIRM_CHOICES.get(data["answer"], "cancel")
+                shown = await slash_confirm.resolve(prompt.session_key, prompt.ref, choice)
+                if shown:
+                    await self.send(prompt.room_id, shown)
         except Exception:
             logger.warning("prompt message=%s could not be resolved in Hermes", prompt.message_id, exc_info=True)
 
