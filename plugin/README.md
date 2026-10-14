@@ -1,8 +1,10 @@
 # Hermes Chat plugin for Hermes
 
-A Hermes platform plugin that lets one real Hermes agent chat in a Hermes Chat
-room: a message reaches the agent as an event, the reply streams back, and
-every turn is reported finished so the room's queue moves on. It targets
+A Hermes platform plugin that lets one real Hermes agent work in a Hermes Chat
+room: a message reaches the agent as an event, the reply streams back with its
+tool steps, the room's stop, pause and steer reach the running turn, the
+agent's questions are asked as prompts, and every turn is reported finished so
+the room's queue moves on. It targets
 Hermes release `v0.21.7` (commit `71d34bad`; also run at the `main` commit
 `6e7b83a2`) and was tested against the `hermes-chat` server built from this
 repository.
@@ -79,57 +81,74 @@ display:
     hermes_chat:
       tool_progress: "off"              # quoted: YAML would read `off` as a boolean
       interim_assistant_messages: false
+approvals:
+  timeout: 31536000                     # one year, the most Hermes accepts
 agent:
-  clarify_timeout: 120
+  clarify_timeout: 0                    # no limit
 ```
 
-`approvals.timeout` is left at its default (300 seconds, then treated as
-denied). Why: with streaming on, replies appear as they are written; with
-`tool_progress` and `interim_assistant_messages` off, Hermes does not post
-tool progress and between-step commentary as chat messages (stage 2 sends
-them to the server as activity instead). In stage 1 a question from the
-agent cannot be answered: the server holds the human's reply in the room's
-queue until the turn ends, and the turn is waiting for that reply. Short
-timeouts let such a turn give up and carry on; stage 2 adds prompts and then
-sets the long values.
+Why: with streaming on, replies appear as they are written. With
+`tool_progress` off, Hermes does not post tool progress as chat messages; the
+plugin records each tool under the message being answered instead. The two
+timeouts are long because a question from the agent is a prompt in the room
+and waits for a person: with Hermes's defaults an approval is treated as
+denied after 300 seconds and a clarifying question gives up after an hour.
 
 The plugin cannot enforce these settings, so at `connect()` it reads the
-profile's config and logs a warning naming each one that is not as above.
-`checks.display_warnings` in `plugin/hermes_chat/checks.py` accepts exactly:
-`tool_progress` as the string `"off"` (quoted, so YAML does not read it as a
-boolean), `interim_assistant_messages` as the boolean `false`, and
+profile's config and logs a warning naming each display setting that is not
+as above. `checks.display_warnings` in `plugin/hermes_chat/checks.py` accepts
+exactly: `tool_progress` as the string `"off"` (quoted, so YAML does not read
+it as a boolean), `interim_assistant_messages` as the boolean `false`, and
 `streaming.enabled` as the boolean `true`. A boolean written as a YAML string
 (`"false"`, `"off"`) is not accepted as the boolean; the warning says so.
 
-## What works and what does not yet
+## What works and what to expect
 
-Works: a human posts in a room, the agent's reply appears and streams, and
-the room's queue moves on to the next message; no turn is left open — every
-delivery the plugin accepts ends reported `done` or `failed`, including when
-Hermes fails, when the turn is cancelled, and when the gateway process is
-restarted mid-turn; the first sitting produces a log that shows whether the
-stage 2 mechanisms will work; you can install it from these steps without
-asking anyone.
+- **Chat.** A human posts in a room, the agent's reply appears and streams,
+  and the room's queue moves on to the next message. Every delivery the
+  plugin accepts ends reported `done` or `failed`, including when the gateway
+  is stopped mid-reply: the turn stays open, Hermes resumes it after the next
+  start, and the next message is answered after that.
+- **Tool steps.** Each tool the agent runs is recorded under the message it
+  is answering, with its name, a preview of its arguments, how long it took
+  and whether it succeeded.
+- **Stop, pause and steer.** Stopping a turn or pausing the room ends the
+  running turn (Hermes posts "⚡ Stopped. You can continue this session.").
+  A steer reaches the running turn as Hermes's `/steer`.
+- **Questions from the agent.** An approval, a clarifying question, and a
+  command's confirmation (such as `/new`) are each asked as a prompt in the
+  room, and the answer you pick there is what Hermes gets. A prompt the turn
+  no longer waits on is closed.
+- **The note.** The agent can suggest an entry for the note of the person it
+  is answering (`suggest_note_entry`, which Hermes offers through its
+  tool-search bridge). The entry waits on the note screen for approval.
+- **Files.** A file the agent sends is uploaded to the room and posted with
+  its caption. A file over 25 MiB, or one Hermes's own path check refuses, is
+  not sent.
+- **The home room.** Output with no room to go back to (a scheduled job
+  created outside any room, Hermes's own notices) goes to
+  `HERMES_CHAT_HOME_ROOM`.
 
-Known in stage 1: when the agent writes something before using a tool, that
-text is posted as its own message, so one turn can leave several. Hermes
-also posts its own notices (shutting down, confirm `/new`) as messages.
+What to expect that may surprise:
 
-Does not yet: anything in the stage 2 list — tool steps shown in the room,
-stop/pause/steer, approval and clarify prompts, the note and the
-suggest-an-entry tool, file uploads, home-room delivery for scheduled jobs.
-In stage 1 the plugin receives `stop`, `pause`, `steer`, and `prompt.answered`
-events and only logs them. In particular the agent's questions cannot be
-answered until stage 2: Hermes posts the question as plain text, but the
-reply cannot reach it, so the question times out (that is why the timeouts
-above are short).
+- **Commentary is posted as messages.** When the agent writes something
+  before using a tool, that text is its own message, so one turn can leave
+  several.
+- **Hermes's notices are messages.** "Hermes is shutting down", "No home
+  channel is set" and the like are posted by Hermes as ordinary agent
+  messages. A clarifying question carries Hermes's own hint about skipping.
+- **A model error is not a failed turn.** Hermes posts its own error message
+  and ends the turn normally, so the delivery shows `done`.
+- **A prompt asked before a gateway restart cannot be answered after it.**
+  Hermes is no longer waiting on it; the answer is logged and ignored.
 
 ## Where the logs are
 
-The plugin logs under `hermes_chat.adapter` (each send, edit, and turn report
-with room and message or delivery ids; never message text) and
-`hermes_chat.probe` (the stage 1 hook probe; names and identifiers only,
-never tool arguments or text).
+The plugin logs under `hermes_chat.adapter` (each send, edit, prompt, file,
+control event and turn report), `hermes_chat.steps` (tool steps), and
+`hermes_chat.hooks` and `hermes_chat.note_tool` (failures only, at debug).
+Lines carry rooms and ids and tool names; never message text, prompt text,
+answers, tool arguments, file names, or the token.
 
 Hermes writes the gateway log under the Hermes home: `~/.hermes/logs/agent.log`
 for scheduler and gateway messages and `~/.hermes/logs/errors.log` for
@@ -137,51 +156,60 @@ warnings (`website/docs/guides/cron-troubleshooting.md`). If you run the
 desktop app and want the same files without a shell, its diagnostics screen
 shows where its logs live.
 
-## First-sitting checklist
+## Second-sitting checklist
 
 Each item: what to do, what should appear in the room, and which log lines
-to send back.
+to send back if it does not.
 
-1. **A plain question.** *Do*: post "hello". *Expect*: a reply in the room,
-   and the delivery of your message done. *Send back*: the
-   `hermes_chat.adapter` lines for that turn (working, send, done).
-2. **A long streamed reply.** *Do*: ask something that gets a long answer.
-   *Expect*: the reply appears a little at a time and ends complete.
-   *Send back*: the `edit_message` lines with `finalize=true` on the last one.
-3. **A question that makes the agent use a tool.** *Do*: ask something the
-   agent answers with a tool. *Expect*: the reply in the room; the tool run
-   is not shown there. *Send back*: the `hermes_chat.probe` lines from that
-   turn — do the hooks fire, and can a hook call be tied to a room and to the
-   delivery being worked on?
-4. **A second message while the first is being answered.** *Do*: post a
-   second message before the first reply finishes. *Expect*: the second
-   message queues, then is answered after the first. *Send back*: the order
-   of the two turns' report lines.
-5. **Stopping the gateway mid-reply and starting it again.** *Do*: stop the
-   gateway while a reply is streaming; start it again. *Expect*: the reply
-   finishes once Hermes resumes the turn, and the next message is then
-   answered. *Send back*: the turn's report lines around the restart — is
-   `on_processing_complete` called exactly once per turn, after the reply is
-   sent, for success, failure, and cancellation?
-6. **A message sent while the gateway is stopped.** *Do*: stop the gateway,
-   post a message, start the gateway. *Expect*: the message is answered once
-   the gateway is back.
-7. **`/new` typed by a human.** *Do*: type `/new` in the room, then
-   `/approve` when Hermes asks you to confirm. *Expect*: the agent's
-   conversation in that room starts over. *Send back*: the turn's report
-   lines.
-
-The log answers three questions for stage 2: whether the hooks fire in the
-gateway process and can be tied to a room and delivery; whether Hermes always
-ends a streamed reply with a final edit; and whether `on_processing_complete`
-is called exactly once per turn, after the reply is sent, for success,
-failure, and cancellation.
+1. **A question that uses a tool.** *Do*: ask something the agent answers
+   with a tool. *Expect*: the step under your message, with a duration.
+   *Send back*: the `tool_started` and `hermes_chat.steps` lines.
+2. **Stop.** *Do*: ask for a long answer and press Stop. *Expect*: the reply
+   stops growing, "⚡ Stopped." appears, and your next message is answered.
+   *Send back*: the `stop for room` line and the turn's report lines.
+3. **Steer.** *Do*: during a turn that uses several tools, send a steer.
+   *Expect*: the agent takes it into account after its next tool. *Send
+   back*: the `steer` line.
+4. **An approval.** *Do*: ask for something Hermes holds for approval, such
+   as a recursive delete of a scratch directory. *Expect*: a prompt with
+   once, session, always and deny; the turn continues with what you pick. Try
+   each answer once. *Send back*: the `prompt` lines.
+5. **A clarifying question.** *Do*: ask something ambiguous and tell the
+   agent to ask you first. *Expect*: a prompt with its choices; your answer
+   reaches the agent.
+6. **`/new`.** *Do*: type `/new`. *Expect*: a "Confirm /new" prompt; choosing
+   once starts the conversation over.
+7. **A note entry.** *Do*: tell the agent a lasting preference and ask it to
+   remember it. *Expect*: a pending entry on the note screen.
+8. **A file.** *Do*: ask the agent to write a small file and send it.
+   *Expect*: a message with the attachment, which downloads.
+9. **A scheduled job.** *Do*: with `HERMES_CHAT_HOME_ROOM` set, create a
+   scheduled job from Hermes's own interface, outside any room. *Expect*: its
+   output in the home room. This one has no automated test.
+10. **Stopping the gateway mid-reply.** *Do*: stop the gateway while a reply
+    streams, post a second message, start the gateway. *Expect*: the first
+    reply is resumed, then the second message is answered.
 
 ## Development
 
 `just plugin-check` runs the plugin's tests with `uv` and the Hermes checkout
 on the import path. The checkout's location comes from `HERMES_SRC`
 (default `~/Dev/hermes-agent`); with no checkout the client tests still run
-and the adapter tests skip with a clear message. The client modules
-(`sse.py`, `client.py`, `stream.py`, `reports.py`, `record.py`, `checks.py`)
-import nothing from Hermes, so they run anywhere.
+and the others skip with a clear message. The client modules (`sse.py`,
+`client.py`, `stream.py`, `reports.py`, `record.py`, `checks.py`, `steps.py`,
+`prompts.py`) import nothing from Hermes, so they run anywhere.
+
+The gateway tier (`plugin/tests/test_gateway.py`, `just plugin-check -m gateway`)
+starts a real Hermes gateway from the checkout on a temporary Hermes home,
+with this plugin linked in, a real `hermes-chat` server, and Hermes's scripted
+model server (`tests/fakes/fake_llm_provider.py`), so whole turns run with no
+model. It is how the plugin is checked against the Hermes release it targets:
+check that release out beside the main checkout and run the tier with both
+`HERMES_SRC` and `PYTHONPATH` pointing at it, using the main checkout's
+interpreter.
+
+```
+git -C ~/Dev/hermes-agent worktree add --detach /tmp/hermes-v0.21.7 v0.21.7
+cd plugin && HERMES_SRC=/tmp/hermes-v0.21.7 PYTHONPATH=/tmp/hermes-v0.21.7 \
+  ~/Dev/hermes-agent/.venv/bin/python -m pytest -m gateway
+```

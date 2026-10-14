@@ -1,8 +1,9 @@
 # Hermes Chat plugin for Hermes: design
 
 Date: 2026-10-13
-Status: stage 1 built and tried; sections 4, 6, 9 and 10 revised the same day
-with what the first sitting showed (section 9, "What the first sitting showed")
+Status: stages 1 and 2 built. Sections 4, 6, 9 and 10 were revised on
+2026-10-13 with what the first sitting showed (section 9); section 10 says
+what stage 2 built and where it differs from the first intention.
 
 This document covers the Hermes platform plugin only. The product it belongs to
 is described in `2026-10-11-hermes-chat-design.md` (the product spec), and the
@@ -377,7 +378,7 @@ Together these answer, from one conversation's log:
 - Is `on_processing_complete` called exactly once per turn, after the reply is
   sent, for success, failure, and cancellation?
 
-The probe is removed when stage 2 replaces it.
+The probe was removed when stage 2 replaced it with `hooks.py`.
 
 ### What the first sitting showed
 
@@ -415,8 +416,8 @@ real gateway with a scripted model (section 11):
 
 ## 10. Stage 2 (provisional)
 
-Recorded so the stage 1 structure does not block it. Each line is the intended
-mechanism at the pinned release, revised with section 9's findings.
+Built on 2026-10-13 from `docs/superpowers/plans/2026-10-13-hermes-plugin-stage-2.md`.
+Each line is the mechanism as built at the pinned release.
 
 - **Tool steps**: `pre_tool_call` → `POST /agent/deliveries/{id}/tools` (name,
   preview, arguments); `post_tool_call` → `PUT /agent/activities/{id}` with its
@@ -431,27 +432,41 @@ mechanism at the pinned release, revised with section 9's findings.
   costs live replies, or a server route that converts a posted message.
   Stage 2 trims the blank lines Hermes leaves at the start of a later
   stretch and otherwise leaves these messages alone.
-- **Stop and pause**: `cancel_session_processing(session_key)` on the adapter
-  for that room's session. Dispatching `/stop` as a message is the fallback.
-- **Steer**: Hermes has no adapter call for it. Hand Hermes a `/steer <text>`
-  message for that room; Hermes queues it as a follow-up when no turn is
-  running.
-- **Prompts**: override `_send_exec_approval_prompt` and `send_clarify` to post
-  a prompt; resolve `prompt.answered` through
+- **Stop and pause**: Hermes's own `/stop`, handed to it as a command for
+  that room's session. It interrupts the agent and its tools, and the turn
+  then ends through the processing hooks. (The first intention was
+  `cancel_session_processing`, which only cancels the task.) A stop that
+  lands before the turn's task has run cancels it with no hook called, so the
+  adapter closes that delivery itself.
+- **Steer**: Hermes has no adapter call for it. The adapter hands Hermes a
+  `/steer <text>` command for that room. A steer, stop or pause for a room
+  with no running turn is dropped, so no turn starts outside a delivery.
+- **Prompts**: `_send_exec_approval_prompt` and `send_clarify` post a prompt;
+  `prompt.answered` is resolved through
   `tools.approval.resolve_gateway_approval` and
-  `tools.clarify_gateway.resolve_gateway_clarify`; expire a prompt Hermes gives
-  up on.
-- **The note**: already delivered as `channel_prompt` in stage 1. Stage 2 adds
-  the tool that posts a suggested entry.
-- **Uploads**: `send_document`, `send_image_file` and relatives →
-  `POST /agent/rooms/{room}/attachments`, then a message naming the IDs.
-- **Home room**: unprompted `send` to `HERMES_CHAT_HOME_ROOM` already works
-  through stage 1's `send` (Hermes's startup and shutdown notices arrive
-  there); stage 2 checks it with a real scheduled job.
+  `tools.clarify_gateway.resolve_gateway_clarify`. A prompt is expired when
+  its turn closes or when Hermes retires the clarify. A clarify whose choices
+  do not fit the server's limits is asked with no choices and the choices
+  numbered in the question. Which prompt belongs to which question is kept
+  in memory only, so an answer after a gateway restart is ignored.
+- **The note**: delivered as `channel_prompt` since stage 1. The
+  `suggest_note_entry` tool posts a suggested entry against the room's open
+  delivery. Hermes keeps a plugin's tool behind its `tool_call` bridge and
+  lists it for the model. The tool has no availability check, because Hermes
+  runs one outside any session; called outside a room it refuses.
+- **Uploads**: `send_document`, `send_image_file`, `send_voice` and
+  `send_video` → `POST /agent/rooms/{room}/attachments`, then a message
+  naming the id. A file Hermes's path check refuses, an empty or unreadable
+  one, or one over 25 MiB is not sent.
+- **Home room**: unprompted `send` to `HERMES_CHAT_HOME_ROOM` works through
+  stage 1's `send` (Hermes's startup and shutdown notices arrive there). A
+  real scheduled job is a manual check in the README's second-sitting
+  checklist; nothing automated covers it.
 - **Confirming a command**: Hermes's "Confirm /new" message becomes a prompt
-  like an approval *(Kai, 2026-10-13)*, answered through `prompt.answered`
-  instead of by typing `/approve`. The plan finds the adapter call Hermes
-  makes for it.
+  like an approval *(Kai, 2026-10-13)*, through `send_slash_confirm`, with
+  once, always and deny; the answer runs `tools.slash_confirm.resolve` and
+  its result is posted. Hermes's own list of choices and typed fallback are
+  cut from the prompt's text.
 - **The shutdown notice** stays a message *(Kai, 2026-10-13)*.
 - **The streaming cursor** is stripped by the adapter from what it sends
   *(Kai, 2026-10-13; done in stage 1)*, so a cut-off reply does not keep it.
