@@ -78,3 +78,34 @@ def test_tool_steps_are_recorded_against_the_turn(gateway_factory):
     assert all(a["succeeded"] is True and a["duration_ms"] >= 0 for a in acts)
     assert "echo one" in acts[0]["preview"]
     assert "echo one" not in g.log_lines("hermes_chat")
+
+
+LONG = "word " * 200
+
+
+def test_stop_ends_the_running_turn_and_the_room_moves_on(gateway_factory):
+    g = gateway_factory([Text(LONG, chunk_chars=10, delay_per_chunk=0.25), Text("next answer.")])
+    g.start()
+    g.wait_started()
+    first = g.post("write a long answer")
+    g.wait(lambda: any(m["streaming"] for m in g.messages()))
+    r = g.chat.human.post(f"/api/rooms/{g.room_id}/agents/{g.chat.agent_id}/stop")
+    assert r.status_code < 300, r.text
+    g.wait(lambda: g.state(first) == "done", timeout=20)
+    reply = next(m for m in g.messages() if m["text"].startswith("word"))
+    assert reply["streaming"] is False and len(reply["text"]) < len(LONG)
+    second = g.post("another question")
+    g.wait(lambda: g.state(second) == "done")
+    assert "next answer." in g.agent_texts()
+
+
+def test_pause_ends_the_running_turn(gateway_factory):
+    g = gateway_factory([Text(LONG, chunk_chars=10, delay_per_chunk=0.25)])
+    g.start()
+    g.wait_started()
+    first = g.post("write a long answer")
+    g.wait(lambda: any(m["streaming"] for m in g.messages()))
+    g.chat.pause(g.room_id)
+    g.wait(lambda: g.state(first) == "done", timeout=20)
+    reply = next(m for m in g.messages() if m["text"].startswith("word"))
+    assert len(reply["text"]) < len(LONG)

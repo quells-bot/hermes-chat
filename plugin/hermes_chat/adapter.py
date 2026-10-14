@@ -72,6 +72,8 @@ class HermesChatAdapter(BasePlatformAdapter):
         # The room gate: a room is busy from the moment a delivery for it is
         # recorded until that delivery's turn is closed.
         self._room_busy_rooms: set[str] = set()
+        # Each room's source as its last delivery gave it, for control events.
+        self._room_sources: dict[str, object] = {}
         self._parked: dict[str, deque] = {}
         # Turn state, keyed on the delivery id.
         self._turn_tasks: dict[str, asyncio.Task] = {}
@@ -243,9 +245,53 @@ class HermesChatAdapter(BasePlatformAdapter):
     async def _on_stream_event(self, name: str, data: dict) -> None:
         if name == "delivery":
             await self._on_delivery(data)
+        elif name in ("stop", "pause"):
+            await self._stop_room(name, data["room_id"])
+        elif name == "steer":
+            await self._steer_room(data["room_id"], data["message"])
+        else:
+            room_id = data.get("room_id") or (data.get("room") or {}).get("id")
+            logger.info("ignoring %s for room %s", name, room_id)
+
+    # ── Control: what a human does to a running turn ────────────────────────
+
+    def _control_event(self, room_id: str, text: str) -> MessageEvent | None:
+        """A command for the room's running turn, or None when no turn is
+        running there: handed to Hermes then, it would start a turn that
+        belongs to no delivery."""
+        source = self._room_sources.get(room_id)
+        if source is None or self._open_turns.for_room(room_id) is None:
+            return None
+        return MessageEvent(text=text, message_type=MessageType.TEXT, source=source, allow_gateway_control=True)
+
+    async def _stop_room(self, name: str, room_id: str) -> None:
+        """Hermes's own /stop: it interrupts the agent and its tools, and the
+        turn then ends through the processing hooks like any other."""
+        event = self._control_event(room_id, "/stop")
+        if event is None:
+            logger.info("%s for room %s: no turn is running", name, room_id)
             return
-        room_id = data.get("room_id") or (data.get("room") or {}).get("id")
-        logger.info("ignoring %s for room %s (stage 1)", name, room_id)
+        logger.info("%s for room %s: stopping the running turn", name, room_id)
+        await self.handle_message(event)
+        # A stop that lands before the turn's task has run cancels it with no
+        # processing hook called, so nothing would ever close the delivery.
+        delivery_id = self._open_turns.for_room(room_id)
+        if (delivery_id is not None and delivery_id not in self._turn_tasks
+                and delivery_id not in self._awaiting_resume
+                and self._event_session_key(event) not in self._session_tasks):
+            logger.info("delivery=%s was stopped before its turn began", delivery_id)
+            self._close_turn(delivery_id, "done")
+
+    async def _steer_room(self, room_id: str, message: dict) -> None:
+        if self._dedup.is_duplicate(message["id"]):
+            logger.info("dropping repeat steer %s", message["id"])
+            return
+        event = self._control_event(room_id, "/steer " + (message.get("text") or ""))
+        if event is None:
+            logger.info("steer %s for room %s: no turn is running", message["id"], room_id)
+            return
+        logger.info("steer %s for room %s", message["id"], room_id)
+        await self.handle_message(event)
 
     async def _on_delivery(self, data: dict) -> None:
         message = data["message"]
@@ -265,6 +311,7 @@ class HermesChatAdapter(BasePlatformAdapter):
             return
         self._open_turns.add(message["id"], room_id)
         event = self.event_from_delivery(data)
+        self._room_sources[room_id] = event.source
         if room_id in self._room_busy_rooms:
             self._parked.setdefault(room_id, deque()).append(event)
             return
