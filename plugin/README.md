@@ -125,9 +125,14 @@ it as a boolean), `interim_assistant_messages` as the boolean `false`, and
 - **Files.** A file the agent sends is uploaded to the room and posted with
   its caption. A file over 25 MiB, or one Hermes's own path check refuses, is
   not sent.
-- **The home room.** Output with no room to go back to (a scheduled job
-  created outside any room, Hermes's own notices) goes to
-  `HERMES_CHAT_HOME_ROOM`.
+- **The home room and scheduled jobs.** A scheduled job whose delivery
+  target is `hermes_chat` posts its output to `HERMES_CHAT_HOME_ROOM`
+  (`hermes_chat:<room id>` names another room). This works whether Hermes
+  runs the job inside the gateway or in a process of its own, as
+  `hermes cron tick` and the desktop app's scheduler do; from outside the
+  gateway only the job's text is sent, not files. A job created with
+  `hermes cron create` and no `--deliver` is `local`, which posts nowhere.
+  Hermes's own notices go to the home room too.
 
 What to expect that may surprise:
 
@@ -188,8 +193,10 @@ to send back if it does not.
 8. **A file.** *Do*: ask the agent to write a small file and send it.
    *Expect*: a message with the attachment, which downloads.
 9. **A scheduled job.** *Do*: with `HERMES_CHAT_HOME_ROOM` set, create a
-   scheduled job from Hermes's own interface, outside any room. *Expect*: its
-   output in the home room. This one has no automated test.
+   scheduled job from Hermes's own interface with Hermes Chat as its delivery
+   target (`hermes cron create --deliver hermes_chat "every 1m" "..."`).
+   *Expect*: its output in the home room. *Send back*: the `standalone send`
+   or `send` line, and any "No live adapter" line.
 10. **Stopping the gateway mid-reply.** *Do*: stop the gateway while a reply
     streams, post a second message, start the gateway. *Expect*: the first
     reply is resumed, then the second message is answered.

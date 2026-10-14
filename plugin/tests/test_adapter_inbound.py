@@ -174,6 +174,8 @@ def test_register_passes_the_spec_values():
     register(Ctx())
     assert recorded["hooks"] == ["pre_tool_call", "post_tool_call"]
     assert recorded["tools"] == ["suggest_note_entry"]
+    from hermes_chat.adapter import _standalone_send
+    assert recorded["standalone_sender_fn"] is _standalone_send
     assert recorded["name"] == "hermes_chat"
     assert recorded["label"] == "Hermes Chat"
     assert recorded["max_message_length"] == 0

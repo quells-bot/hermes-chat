@@ -743,6 +743,37 @@ class HermesChatAdapter(BasePlatformAdapter):
         return REMOVED_AUTHOR_NAME
 
 
+async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id=None, media_files=None,
+                           force_document: bool = False) -> dict:
+    """Post to a room with no connected adapter. Hermes calls this when a
+    scheduled job runs in a process that is not the gateway (`hermes cron
+    tick`, the desktop app's scheduler). Text only: a file would need the
+    adapter's path check and upload, so a job's files are not sent from here."""
+    extra = getattr(pconfig, "extra", None) or {}
+    url = extra_or_secret(extra, "url", "HERMES_CHAT_URL")
+    token = extra_or_secret(extra, "token", "HERMES_CHAT_TOKEN")
+    if not (url and token):
+        return {"error": "Hermes Chat is not set up for this profile: HERMES_CHAT_URL and HERMES_CHAT_TOKEN are needed"}
+    text = _outgoing(message or "")
+    if not text.strip():
+        if media_files:
+            return {"error": "Hermes Chat cannot send files from a scheduled job run outside the gateway"}
+        return {"error": "there is nothing to send"}
+    client = ChatClient(url, token)
+    try:
+        message_id = await client.post_message(chat_id, text)
+    except ApiError as exc:
+        logger.info("standalone send room=%s refused: %s", chat_id, exc.code)
+        return {"error": f"{exc.code}: {exc.message}"}
+    except Unreachable as exc:
+        logger.warning("standalone send room=%s unreachable: %s", chat_id, exc)
+        return {"error": f"the chat server could not be reached: {exc}"}
+    finally:
+        await client.aclose()
+    logger.info("standalone send room=%s message=%s", chat_id, message_id)
+    return {"success": True, "message_id": message_id}
+
+
 def check_requirements() -> bool:
     return bool(get_scoped_secret("HERMES_CHAT_URL", "") and get_scoped_secret("HERMES_CHAT_TOKEN", ""))
 
@@ -780,6 +811,7 @@ def register(ctx) -> None:
         required_env=["HERMES_CHAT_URL", "HERMES_CHAT_TOKEN"],
         env_enablement_fn=_env_enablement,
         cron_deliver_env_var="HERMES_CHAT_HOME_ROOM",
+        standalone_sender_fn=_standalone_send,
         allowed_users_env="HERMES_CHAT_ALLOWED_USERS",
         allow_all_env="HERMES_CHAT_ALLOW_ALL_USERS",
         max_message_length=0,

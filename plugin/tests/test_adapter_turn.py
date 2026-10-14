@@ -396,3 +396,40 @@ async def test_a_tool_from_another_profiles_session_is_not_recorded_here(adapter
     finally:
         release.set()
         await a.disconnect()
+
+
+def config_for(stub, token="hca_test_token"):
+    from gateway.config import PlatformConfig
+    return PlatformConfig(extra={"url": stub.url, "token": token})
+
+
+async def test_a_send_with_no_connected_adapter_posts_to_the_room(adapter_factory, stub):
+    """A scheduled job that Hermes runs outside the gateway process."""
+    from hermes_chat.adapter import _standalone_send
+    stub.script("POST", "/agent/rooms/R1/messages", (201, {"id": "M9"}))
+    result = await _standalone_send(config_for(stub), "R1", "\n\nJob output ▉")
+    assert result == {"success": True, "message_id": "M9"}
+    (request,) = stub.requests
+    assert request.json == {"text": "Job output"}
+    assert request.headers["authorization"] == "Bearer hca_test_token"
+
+
+async def test_a_standalone_send_the_room_refuses_is_an_error(adapter_factory, stub):
+    from hermes_chat.adapter import _standalone_send
+    stub.script("POST", "/agent/rooms/R1/messages", (409, {"error": {"code": "paused", "message": "the room is paused"}}))
+    result = await _standalone_send(config_for(stub), "R1", "Job output")
+    assert result == {"error": "paused: the room is paused"}
+
+
+async def test_a_standalone_send_with_nothing_configured_is_an_error(adapter_factory, monkeypatch):
+    from gateway.config import PlatformConfig
+    from hermes_chat import adapter as adapter_mod
+    monkeypatch.setattr(adapter_mod, "extra_or_secret", lambda extra, key, env: extra.get(key, ""))
+    result = await adapter_mod._standalone_send(PlatformConfig(extra={}), "R1", "Job output")
+    assert "HERMES_CHAT_URL" in result["error"]
+
+
+async def test_a_standalone_send_with_only_files_says_they_were_not_sent(adapter_factory, stub):
+    from hermes_chat.adapter import _standalone_send
+    result = await _standalone_send(config_for(stub), "R1", "", media_files=["/tmp/report.pdf"])
+    assert "error" in result and stub.requests == []

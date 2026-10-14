@@ -70,9 +70,18 @@ class Gateway:
 
     # ── the process ─────────────────────────────────────────────────────────
 
-    def start(self) -> None:
+    def _env(self) -> dict:
         env = {k: v for k, v in os.environ.items() if not k.startswith(_STRIPPED_ENV)}
         env.update(HERMES_HOME=str(self._home), HOME=str(self._work / "home"))
+        return env
+
+    def hermes(self, *args: str) -> subprocess.CompletedProcess:
+        """Run one `hermes` command against this Hermes home, as its own process."""
+        return subprocess.run([sys.executable, "-m", "hermes_cli.main", *args], cwd=HERMES_SRC, env=self._env(),
+                              capture_output=True, text=True, timeout=180)
+
+    def start(self) -> None:
+        env = self._env()
         out = (self._work / "gateway.out").open("a")
         self._proc = subprocess.Popen(
             [sys.executable, "-m", "hermes_cli.main", "gateway", "run", "--no-supervise"],

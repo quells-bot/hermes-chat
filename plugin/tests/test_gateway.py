@@ -1,6 +1,7 @@
 """Whole turns through a real Hermes gateway and a real hermes-chat server,
 with a scripted model. Slow (seconds each); run alone with `-m gateway`."""
 import json
+import re
 
 import pytest
 
@@ -226,3 +227,18 @@ def test_stop_ends_a_turn_that_is_waiting_on_an_approval(gateway_factory):
     g.wait(lambda: next(m for m in g.messages() if m["id"] == prompt["id"])["prompt"]["state"] == "expired")
     second = g.post("another question")
     g.wait(lambda: g.state(second) == "done")
+
+
+def test_a_scheduled_job_run_outside_the_gateway_reaches_the_home_room(gateway_factory):
+    """Hermes can run a scheduled job in a process that is not the gateway
+    (`hermes cron tick`, the desktop app's scheduler). No adapter is connected
+    there, so the plugin has to be able to send without one."""
+    g = gateway_factory([Text("JOB OUTPUT: all quiet.")], home_room=True)
+    created = g.hermes("cron", "create", "--name", "probe", "--deliver", "hermes_chat",
+                       "every 1m", "Reply with exactly: JOB OUTPUT: all quiet.")
+    assert created.returncode == 0, created.stdout + created.stderr
+    job_id = re.search(r"\b([0-9a-f]{12})\b", created.stdout).group(1)
+    assert g.hermes("cron", "run", job_id).returncode == 0
+    ticked = g.hermes("cron", "tick")
+    assert "No live adapter" not in ticked.stdout + ticked.stderr + g.log()
+    g.wait(lambda: any("JOB OUTPUT: all quiet." in t for t in g.agent_texts()), timeout=20)

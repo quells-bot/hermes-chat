@@ -475,8 +475,13 @@ Each line is the mechanism as built at the pinned release.
   one, or one over 25 MiB is not sent.
 - **Home room**: unprompted `send` to `HERMES_CHAT_HOME_ROOM` works through
   stage 1's `send` (Hermes's startup and shutdown notices arrive there). A
-  real scheduled job is a manual check in the README's second-sitting
-  checklist; nothing automated covers it.
+  scheduled job delivers there when its target is `hermes_chat`. Hermes may
+  run the job in a process that is not the gateway, where no adapter is
+  connected, and then needs the platform's `standalone_sender_fn`; without
+  one the job fails with "No live adapter for platform 'hermes_chat'", which
+  is what the second sitting hit. The plugin registers one that posts the
+  job's text with the profile's URL and token. A gateway-tier test runs a
+  real job through `hermes cron tick`.
 - **Confirming a command**: Hermes's "Confirm /new" message becomes a prompt
   like an approval *(Kai, 2026-10-13)*, through `send_slash_confirm`, with
   once, always and deny; the answer runs `tools.slash_confirm.resolve` and
