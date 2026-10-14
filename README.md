@@ -14,7 +14,7 @@ not needed.
 | Go | 1.26.5 |
 | sqlc | 1.31.1 |
 | Node / npm | 24.18.1 / 11.16.0 |
-| Python / uv | 3.14.4 / 0.11.31 |
+| Python / uv | 3.14.4 / 0.11.31 | runs the Hermes plugin's tests (`just plugin-check`) |
 | just | 1.45.0 |
 | shellcheck | 0.11.0 |
 | sqlite3 shell | 3.46.1 |
@@ -729,4 +729,4 @@ The repository-root `internal/` holds packages that are not tied to the server:
 It prints each event as a JSON line on standard output, answers every
 `delivery` with `echo: <text>` (working, reply, done), and reopens a dropped
 stream from its cursor, logging how long the stream stayed open. Status goes to
-standard error. It is not the Hermes plugin.
+standard error. For a real agent, see the Hermes plugin at `plugin/README.md`.
