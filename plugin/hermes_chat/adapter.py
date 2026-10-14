@@ -65,6 +65,15 @@ def _attachment_name(name: str) -> str:
     return cleaned or "file"
 
 
+def _is_typed_question(metadata) -> bool:
+    """Hermes marks the text fallback of an approval or a clarify this way.
+    A command's confirmation carries the same mark, but no turn waits on it,
+    so its typed reply does arrive; Hermes sends that one as a forced send."""
+    if not isinstance(metadata, dict):
+        return False
+    return bool(metadata.get("is_approval_prompt")) and not metadata.get("force_proactive_send")
+
+
 def _confirm_text(title: str, message: str) -> str:
     """What a command's confirmation asks, without the list of choices and
     the typed fallback Hermes writes for platforms that have no buttons."""
@@ -104,6 +113,9 @@ class HermesChatAdapter(BasePlatformAdapter):
         self._room_busy_rooms: set[str] = set()
         # Each room's source as its last delivery gave it, for control events.
         self._room_sources: dict[str, object] = {}
+        # The Hermes session each room's turn runs in: on a gateway serving
+        # several profiles, two adapters can have the same delivery open.
+        self._room_sessions: dict[str, str] = {}
         self._parked: dict[str, deque] = {}
         # Turn state, keyed on the delivery id.
         self._turn_tasks: dict[str, asyncio.Task] = {}
@@ -125,6 +137,13 @@ class HermesChatAdapter(BasePlatformAdapter):
         return lambda text: len(text.encode("utf-8"))
 
     async def send(self, chat_id: str, content: str, reply_to=None, metadata=None):
+        if _is_typed_question(metadata):
+            # Hermes's fallback when a prompt could not be posted: a message
+            # asking for a typed reply. Here that reply would wait in the
+            # room's queue behind the turn that is asking, so the question
+            # could never be answered. Refused, Hermes gives the question up.
+            logger.info("send room=%s refused: a typed question cannot be answered during a turn", chat_id)
+            return SendResult(success=False, error="a typed question cannot be answered in this room")
         try:
             message_id = await self._client.post_message(chat_id, _outgoing(content), reply_to_id=reply_to)
         except ApiError as exc:
@@ -296,12 +315,23 @@ class HermesChatAdapter(BasePlatformAdapter):
 
     # ── Tool steps (called by hooks.py, from the thread that runs the tool) ──
 
-    def tool_started(self, room_id: str, tool_call_id: str, tool_name: object, args: object) -> bool:
+    def _open_delivery(self, room_id: str, session_key: str | None) -> str | None:
+        """The delivery this adapter has open in the room, when `session_key`
+        (the session a tool is running in, if known) is this adapter's."""
+        if self._open_turns is None:
+            return None
+        ours = self._room_sessions.get(room_id)
+        if session_key and ours and session_key != ours:
+            return None
+        return self._open_turns.for_room(room_id)
+
+    def tool_started(self, room_id: str, tool_call_id: str, tool_name: object, args: object,
+                     session_key: str | None = None) -> bool:
         """Record a tool the room's turn started. False when this adapter has
         no turn open in that room, so the step belongs to no delivery."""
-        if self._steps is None or self._open_turns is None:
+        if self._steps is None:
             return False
-        delivery_id = self._open_turns.for_room(room_id)
+        delivery_id = self._open_delivery(room_id, session_key)
         if delivery_id is None:
             return False
         tool, preview, arguments = shape(tool_name, args)
@@ -320,8 +350,8 @@ class HermesChatAdapter(BasePlatformAdapter):
 
     # ── The note (called by note_tool.py) ───────────────────────────────────
 
-    def has_open_turn(self, room_id: str) -> bool:
-        return self._open_turns is not None and self._open_turns.for_room(room_id) is not None
+    def has_open_turn(self, room_id: str, session_key: str | None = None) -> bool:
+        return self._open_delivery(room_id, session_key) is not None
 
     async def suggest_note_entry(self, room_id: str, text: str) -> str:
         """Suggest an entry for the note of the person being answered in the
@@ -376,8 +406,28 @@ class HermesChatAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=message_id)
 
     async def _send_exec_approval_prompt(self, prompt) -> SendResult:
-        return await self._post_prompt(prompt.chat_id, "approval", prompt.text, prompt.choices,
-                                       "approval", prompt.session_key, "")
+        from tools import approval
+
+        # Hermes queues the request before it asks; the newest is this one.
+        # Its id says which approval an answer is for when two are open.
+        try:
+            pending = approval.list_gateway_approvals(prompt.session_key)
+            request_id = str((pending[-1] if pending else {}).get("request_id") or "")
+        except Exception:
+            logger.debug("could not read the pending approval's id", exc_info=True)
+            request_id = ""
+        result = await self._post_prompt(prompt.chat_id, "approval", prompt.text, prompt.choices,
+                                         "approval", prompt.session_key, request_id)
+        if not result.success and request_id:
+            # Nobody can answer it now, and the turn would wait on it for the
+            # whole approval timeout.
+            try:
+                approval.withdraw_gateway_approval(
+                    prompt.session_key, request_id, "the approval could not be asked in the room")
+                logger.info("approval for room %s withdrawn: its prompt could not be posted", prompt.chat_id)
+            except Exception:
+                logger.warning("could not withdraw an approval that was not asked", exc_info=True)
+        return result
 
     async def send_clarify(self, chat_id: str, question: str, choices, clarify_id: str,
                            session_key: str, metadata=None) -> SendResult:
@@ -421,7 +471,8 @@ class HermesChatAdapter(BasePlatformAdapter):
         try:
             if prompt.kind == "approval":
                 from tools import approval
-                approval.resolve_gateway_approval(prompt.session_key, data["answer"])
+                which = {"request_id": prompt.ref} if prompt.ref else {}
+                approval.resolve_gateway_approval(prompt.session_key, data["answer"], **which)
             elif prompt.kind == "clarify":
                 from tools import clarify_gateway
                 clarify_gateway.resolve_gateway_clarify(prompt.ref, data["answer"])
@@ -453,11 +504,13 @@ class HermesChatAdapter(BasePlatformAdapter):
             logger.info("%s for room %s: no turn is running", name, room_id)
             return
         logger.info("%s for room %s: stopping the running turn", name, room_id)
+        # The delivery being stopped, read now: once it closes, the room's
+        # open delivery is whichever was parked behind it.
+        delivery_id = self._open_turns.for_room(room_id)
         await self.handle_message(event)
         # A stop that lands before the turn's task has run cancels it with no
         # processing hook called, so nothing would ever close the delivery.
-        delivery_id = self._open_turns.for_room(room_id)
-        if (delivery_id is not None and delivery_id not in self._turn_tasks
+        if (delivery_id in self._open_turns.all() and delivery_id not in self._turn_tasks
                 and delivery_id not in self._awaiting_resume
                 and self._event_session_key(event) not in self._session_tasks):
             logger.info("delivery=%s was stopped before its turn began", delivery_id)
@@ -522,6 +575,8 @@ class HermesChatAdapter(BasePlatformAdapter):
             delivery_id = self._open_turns.for_room(event.source.chat_id)
             if delivery_id in self._awaiting_resume:
                 self._awaiting_resume.discard(delivery_id)
+                # This delivery came from the record, not the stream.
+                self._room_sources[event.source.chat_id] = event.source
                 event.metadata["hermes_chat_delivery"] = delivery_id
                 event.reply_anchor_override = delivery_id
                 await super().handle_message(event)
@@ -550,6 +605,7 @@ class HermesChatAdapter(BasePlatformAdapter):
         if delivery_id is None:
             return
         logger.info("on_processing_start delivery=%s room=%s", delivery_id, event.source.chat_id)
+        self._room_sessions[event.source.chat_id] = self._event_session_key(event)
         self._reporter.submit(delivery_id, "working")
         self._turn_tasks[delivery_id] = asyncio.current_task()
 

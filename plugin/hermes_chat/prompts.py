@@ -3,6 +3,7 @@ waiting on. Imports nothing from Hermes."""
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 
 # The server's limits for a clarify prompt's choices.
@@ -16,7 +17,7 @@ class OpenPrompt:
     room_id: str
     kind: str  # "approval", "clarify", or "confirm" (a command's confirmation)
     session_key: str
-    ref: str  # the clarify id or confirm id; "" for an approval
+    ref: str  # the clarify id, confirm id, or approval request id ("" when Hermes gave none)
 
 
 class PromptTable:
@@ -48,13 +49,16 @@ class PromptTable:
 
 
 def clarify_choices(choices: list | None) -> list[str] | None:
-    """The choices as the server takes them, or None when they do not fit
-    (more than six, one empty or over 200 characters, or one repeated)."""
-    texts = [str(choice) for choice in choices or []]
+    """The choices as the server takes them, or None when it would refuse
+    them: more than six, or one that is empty, over 200 characters, holds a
+    control character, or repeats another. The server trims each choice
+    before it looks, so this does too."""
+    texts = [str(choice).strip() for choice in choices or []]
     if len(texts) > MAX_CHOICES or len(set(texts)) != len(texts):
         return None
-    if any(not 1 <= len(text) <= MAX_CHOICE_CHARS for text in texts):
-        return None
+    for text in texts:
+        if not 1 <= len(text) <= MAX_CHOICE_CHARS or any(unicodedata.category(c) == "Cc" for c in text):
+            return None
     return texts
 
 

@@ -36,6 +36,10 @@ def session_room() -> str | None:
     return get_session_env("HERMES_SESSION_CHAT_ID", "") or None
 
 
+def session_key() -> str | None:
+    return get_session_env("HERMES_SESSION_KEY", "") or None
+
+
 def _pre_tool_call(**kwargs) -> None:
     try:
         room_id = session_room()
@@ -43,7 +47,8 @@ def _pre_tool_call(**kwargs) -> None:
         if not room_id or not tool_call_id:
             return
         for adapter in adapters():
-            if adapter.tool_started(room_id, tool_call_id, kwargs.get("tool_name"), kwargs.get("args")):
+            if adapter.tool_started(room_id, tool_call_id, kwargs.get("tool_name"), kwargs.get("args"),
+                                    session_key=session_key()):
                 return
     except Exception:
         logger.debug("pre_tool_call failed", exc_info=True)

@@ -42,7 +42,8 @@ def _handle(args: dict, **_kw) -> str:
         text = str((args or {}).get("text") or "").strip()
         if not text or len(text) > MAX_ENTRY_CHARS:
             return "An entry needs between 1 and 300 characters."
-        adapter = next((a for a in hooks.adapters() if a.has_open_turn(room_id)), None)
+        session = hooks.session_key()
+        adapter = next((a for a in hooks.adapters() if a.has_open_turn(room_id, session_key=session)), None)
         if adapter is None:
             return "There is no open turn in this room to suggest an entry from."
         future = asyncio.run_coroutine_threadsafe(adapter.suggest_note_entry(room_id, text), adapter._loop)

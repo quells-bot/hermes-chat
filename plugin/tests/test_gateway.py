@@ -189,3 +189,40 @@ def test_the_model_is_told_of_the_tool_and_a_suggestion_reaches_the_note(gateway
     assert "Suggested." in str(requests[1]["messages"][-1]["content"])
     note = g.chat.human.get("/api/note").json()
     assert [(e["text"], e["approved"]) for e in note["entries"]] == [("Prefers short answers", False)]
+
+
+def test_a_question_whose_choices_the_server_would_refuse_is_still_answerable(gateway_factory):
+    """A choice with a control character cannot be a prompt's choice. The
+    question is asked with its choices numbered in the text instead; before,
+    Hermes fell back to a typed question that nothing could answer."""
+    g = gateway_factory([
+        ToolCall("clarify", {"questions": [{"question": "Which one?", "choices": ["red\tone", "blue"]}]}),
+        Text("blue it is."),
+    ])
+    g.start()
+    g.wait_started()
+    first = g.post("pick a colour")
+    g.wait(lambda: any(m["prompt"] for m in g.messages()))
+    prompt = next(m for m in g.messages() if m["prompt"])
+    assert prompt["prompt"]["choices"] == [] and "2. blue" in prompt["text"]
+    r = g.chat.human.post(f"/api/rooms/{g.room_id}/messages/{prompt['id']}/answer", json={"answer": "blue"})
+    assert r.status_code < 300, r.text
+    g.wait(lambda: g.state(first) == "done")
+    assert "blue it is." in g.agent_texts()
+
+
+def test_stop_ends_a_turn_that_is_waiting_on_an_approval(gateway_factory):
+    """With the long approval timeout, Stop is the way out of a question
+    nobody wants to answer."""
+    g = gateway_factory([ToolCall("terminal", {"command": FLAGGED_COMMAND}), Text("next answer.")])
+    g.start()
+    g.wait_started()
+    first = g.post("do it")
+    g.wait(lambda: any(m["prompt"] for m in g.messages()))
+    prompt = next(m for m in g.messages() if m["prompt"])
+    r = g.chat.human.post(f"/api/rooms/{g.room_id}/agents/{g.chat.agent_id}/stop")
+    assert r.status_code < 300, r.text
+    g.wait(lambda: g.state(first) == "done", timeout=30)
+    g.wait(lambda: next(m for m in g.messages() if m["id"] == prompt["id"])["prompt"]["state"] == "expired")
+    second = g.post("another question")
+    g.wait(lambda: g.state(second) == "done")

@@ -408,3 +408,59 @@ async def test_event_the_handler_puts_back_closes_after_its_real_turn(adapter_fa
     assert p.index("/agent/rooms/R1/messages") < p.index("/agent/deliveries/M1/done"), p
     assert p.count("/agent/deliveries/M1/done") == 1, p
     await a.disconnect()
+
+
+async def test_a_resumed_turn_can_be_stopped(adapter_factory, stub, tmp_path, resume_event):
+    """After a restart the delivery comes from the record, not the stream, so
+    the room's source must be taken from Hermes's resume event."""
+    seed_record(tmp_path, {"M1": "R1"})
+    me_ok(stub)
+    stub.events(ready(), Hang)
+    a = adapter_factory()
+    seen = []
+
+    async def handler(event):
+        seen.append(event.text)
+        if event.internal:
+            await asyncio.Event().wait()
+        return None
+
+    a.set_message_handler(handler)
+    assert await a.connect() is True
+    await a.handle_message(resume_event(a, "R1"))
+    await wait_until(lambda: seen == [""])
+    await a._on_stream_event("stop", {"room_id": "R1"})
+    await wait_until(lambda: "/stop" in seen)
+    await wait_until(lambda: any(x.endswith("/M1/done") for x in paths(stub)))
+    await a.disconnect()
+
+
+async def test_stopping_a_turn_does_not_close_the_delivery_parked_behind_it(adapter_factory, stub, delivery):
+    me_ok(stub)
+    stub.script("POST", "/agent/rooms/R1/messages", (201, {"id": "X1"}), (201, {"id": "X2"}))
+    stub.events(ready(), Hang)
+    a = adapter_factory()
+    answering = []
+
+    async def handler(event):
+        if event.message_id == "M1":
+            await asyncio.Event().wait()
+        if event.message_id == "M2":
+            answering.append(list(paths(stub)))
+            await asyncio.sleep(0.2)
+            return "second answer"
+        return None
+
+    a.set_message_handler(handler)
+    assert await a.connect() is True
+    await a._on_stream_event("delivery", delivery("M1"))
+    await wait_until(lambda: "/agent/deliveries/M1/working" in paths(stub))
+    await a._on_stream_event("delivery", delivery("M2", text="second"))
+    await a._on_stream_event("stop", {"room_id": "R1"})
+    await wait_until(lambda: "/agent/deliveries/M2/done" in paths(stub))
+    assert answering and "/agent/deliveries/M2/done" not in answering[0]
+    p = paths(stub)
+    assert p.count("/agent/deliveries/M2/done") == 1
+    assert p.index("/agent/deliveries/M2/working") < p.index("/agent/deliveries/M2/done")
+    await wait_until(lambda: a._open_turns.all() == {} and "R1" not in a._room_busy_rooms)
+    await a.disconnect()

@@ -14,7 +14,7 @@ class FakeAdapter:
         self.asked = []
         self._answer, self._boom, self._owns = answer, boom, owns
 
-    def has_open_turn(self, room_id):
+    def has_open_turn(self, room_id, session_key=None):
         return self._owns
 
     async def suggest_note_entry(self, room_id, text):

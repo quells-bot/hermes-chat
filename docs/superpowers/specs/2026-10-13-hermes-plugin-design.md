@@ -441,14 +441,29 @@ Each line is the mechanism as built at the pinned release.
 - **Steer**: Hermes has no adapter call for it. The adapter hands Hermes a
   `/steer <text>` command for that room. A steer, stop or pause for a room
   with no running turn is dropped, so no turn starts outside a delivery.
+  A turn resumed after a restart takes its room's source from Hermes's
+  resume event, so it can be stopped too.
+- **Several profiles on one gateway**: a tool step or note suggestion goes
+  to the adapter whose Hermes session ran the tool, since two profiles'
+  adapters can have the same delivery open in a room.
 - **Prompts**: `_send_exec_approval_prompt` and `send_clarify` post a prompt;
   `prompt.answered` is resolved through
   `tools.approval.resolve_gateway_approval` and
   `tools.clarify_gateway.resolve_gateway_clarify`. A prompt is expired when
   its turn closes or when Hermes retires the clarify. A clarify whose choices
   do not fit the server's limits is asked with no choices and the choices
-  numbered in the question. Which prompt belongs to which question is kept
-  in memory only, so an answer after a gateway restart is ignored.
+  numbered in the question; the choices are judged as the server judges them
+  (trimmed, no control characters, no repeats). An approval's answer resolves
+  that approval by its request id, not the oldest one pending. Which prompt
+  belongs to which question is kept in memory only, so an answer after a
+  gateway restart is ignored.
+- **A question that cannot be asked is given up, not left waiting.** With
+  content calls never retried and the question timeouts set long, a prompt
+  post that fails would otherwise leave the turn waiting for good: Hermes
+  falls back to a message asking for a typed reply, and in a room that reply
+  waits behind the turn that is asking. The adapter refuses that fallback
+  message, so a clarify ends as undeliverable and the agent carries on, and
+  it withdraws an approval whose prompt could not be posted.
 - **The note**: delivered as `channel_prompt` since stage 1. The
   `suggest_note_entry` tool posts a suggested entry against the room's open
   delivery. Hermes keeps a plugin's tool behind its `tool_call` bridge and

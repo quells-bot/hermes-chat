@@ -51,3 +51,13 @@ def test_a_rooms_prompts_are_taken_by_kind():
     assert sorted(p.message_id for p in table.take_room("R1", ("approval", "clarify"))) == ["P1", "P2"]
     assert table.take("P3").kind == "confirm" and table.take("P4").room_id == "R2"
     assert table.take_room("R1", ("approval", "clarify")) == []
+
+
+def test_choices_are_judged_as_the_server_judges_them():
+    """The server trims each choice, refuses control characters, and looks
+    for repeats after trimming. A choice it would refuse must not be sent."""
+    assert clarify_choices([" a ", "b"]) == ["a", "b"]
+    assert clarify_choices(["a\nb"]) is None
+    assert clarify_choices(["red\tone", "blue"]) is None
+    assert clarify_choices([" "]) is None
+    assert clarify_choices(["x", "x "]) is None

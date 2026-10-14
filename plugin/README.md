@@ -139,6 +139,10 @@ What to expect that may surprise:
   messages. A clarifying question carries Hermes's own hint about skipping.
 - **A model error is not a failed turn.** Hermes posts its own error message
   and ends the turn normally, so the delivery shows `done`.
+- **A question that cannot be posted is given up.** If the room refuses a
+  prompt or the server cannot be reached, an approval is withdrawn and a
+  clarifying question ends unanswered, and the agent carries on. Stop also
+  ends a turn that is waiting on a question.
 - **A prompt asked before a gateway restart cannot be answered after it.**
   Hermes is no longer waiting on it; the answer is logged and ignored.
 

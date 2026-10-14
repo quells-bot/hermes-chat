@@ -9,13 +9,14 @@ from hermes_chat import hooks  # noqa: E402
 
 class FakeAdapter:
     def __init__(self, owns=True, boom=False):
-        self.started, self.finished = [], []
+        self.started, self.finished, self.sessions = [], [], []
         self._owns, self._boom = owns, boom
 
-    def tool_started(self, room_id, tool_call_id, tool_name, args):
+    def tool_started(self, room_id, tool_call_id, tool_name, args, session_key=None):
         if self._boom:
             raise RuntimeError("boom")
         self.started.append((room_id, tool_call_id, tool_name, args))
+        self.sessions.append(session_key)
         return self._owns
 
     def tool_finished(self, tool_call_id, duration_ms, status):
@@ -80,10 +81,21 @@ def test_a_tool_in_a_room_is_handed_to_the_adapter(monkeypatch, attached):
 
 
 def test_the_start_stops_at_the_adapter_that_owns_the_room(monkeypatch, attached):
-    first, second = attached(FakeAdapter(owns=True)), attached(FakeAdapter(owns=True))
+    first, second = attached(FakeAdapter(owns=False)), attached(FakeAdapter(owns=True))
     session(monkeypatch, "hermes_chat")
     registered()["pre_tool_call"](tool_name="terminal", tool_call_id="c1", args={})
-    assert len(first.started) + len(second.started) == 1
+    assert len(second.started) == 1
+
+
+def test_the_adapter_is_told_which_session_the_tool_runs_in(monkeypatch, attached):
+    """Two profiles on one gateway can both have a turn open in a room; the
+    session says whose tool this is."""
+    adapter = attached(FakeAdapter())
+    session(monkeypatch, "hermes_chat")
+    values = {"HERMES_SESSION_PLATFORM": "hermes_chat", "HERMES_SESSION_CHAT_ID": "R1", "HERMES_SESSION_KEY": "sk-B"}
+    monkeypatch.setattr(hooks, "get_session_env", lambda name, default="": values.get(name, default))
+    registered()["pre_tool_call"](tool_name="terminal", tool_call_id="c1", args={})
+    assert adapter.sessions == ["sk-B"]
 
 
 def test_a_raising_adapter_does_not_raise_into_hermes(monkeypatch, attached):

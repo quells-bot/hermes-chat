@@ -302,3 +302,59 @@ async def test_hermes_own_list_of_choices_is_left_out_of_the_prompt(adapter_fact
     await a.send_slash_confirm("R1", "/new", message, "sk", "cid")
     (body,) = prompt_posts(stub)
     assert body["text"] == "⚠️ **Confirm /new**\n\nThis starts a fresh session."
+
+
+BAD_REQUEST = (400, {"error": {"code": "validation", "message": "a choice is not acceptable"}})
+
+
+@pytest.fixture
+def approvals(monkeypatch):
+    """Hermes's approval queue for session sk-1, holding one request."""
+    calls = []
+    monkeypatch.setattr("tools.approval.list_gateway_approvals",
+                        lambda session_key: [{"request_id": "rq-0"}, {"request_id": "rq-1"}])
+    monkeypatch.setattr("tools.approval.resolve_gateway_approval",
+                        lambda session_key, choice, **kw: calls.append(("resolve", session_key, choice, kw)) or 1)
+    monkeypatch.setattr("tools.approval.withdraw_gateway_approval",
+                        lambda session_key, request_id, cause: calls.append(("withdraw", session_key, request_id)) or True)
+    return calls
+
+
+async def test_an_answer_resolves_the_approval_it_was_asked_for(adapter_factory, stub, approvals):
+    """Two approvals can be open in a room at once; Hermes resolves the oldest
+    unless told which one."""
+    stub.script("POST", "/agent/rooms/R1/prompts", (201, {"id": "P1"}))
+    a = await connected(adapter_factory, stub)
+    await a.send_exec_approval("R1", "rm -rf build", "sk-1")
+    await a._on_prompt_answered({"room_id": "R1", "message_id": "P1", "answer": "once"})
+    assert approvals == [("resolve", "sk-1", "once", {"request_id": "rq-1"})]
+
+
+@pytest.mark.parametrize("refusal", [PAUSED, BAD_REQUEST, (503, {"error": {"code": "unavailable", "message": "x"}})])
+async def test_an_approval_that_cannot_be_asked_is_withdrawn(adapter_factory, stub, approvals, refusal):
+    """Nobody can answer it, and with the long timeout the turn would wait on
+    it for a year."""
+    stub.script("POST", "/agent/rooms/R1/prompts", refusal)
+    a = await connected(adapter_factory, stub)
+    result = await a.send_exec_approval("R1", "rm -rf build", "sk-1")
+    assert result.success is False
+    assert approvals == [("withdraw", "sk-1", "rq-1")]
+
+
+async def test_hermes_typed_fallback_for_a_question_is_not_posted(adapter_factory, stub):
+    """When a prompt cannot be posted Hermes falls back to a message asking
+    for a typed reply. In a room that reply waits behind the turn that is
+    asking, so the message would be a question nobody can answer."""
+    a = await connected(adapter_factory, stub)
+    result = await a.send("R1", "Reply with the number of your choice", metadata={"is_approval_prompt": True})
+    assert result.success is False
+    assert not [r for r in stub.requests if r.path == "/agent/rooms/R1/messages"]
+
+
+async def test_a_commands_typed_fallback_is_posted(adapter_factory, stub):
+    """No turn is waiting on a command's confirmation, so a typed reply works."""
+    stub.script("POST", "/agent/rooms/R1/messages", (201, {"id": "M9"}))
+    a = await connected(adapter_factory, stub)
+    result = await a.send("R1", "Confirm /new: reply /approve", metadata={
+        "is_approval_prompt": True, "force_proactive_send": True})
+    assert result.success is True

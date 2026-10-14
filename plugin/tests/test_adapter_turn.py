@@ -378,3 +378,21 @@ async def test_a_note_suggestion_with_no_open_turn_is_sent_nowhere(adapter_facto
     finally:
         release.set()
         await a.disconnect()
+
+
+async def test_a_tool_from_another_profiles_session_is_not_recorded_here(adapter_factory, stub, delivery):
+    """Both profiles' adapters have the same delivery open when a message
+    wakes both agents. The step belongs to the one whose session ran the tool."""
+    stub.script("POST", "/agent/deliveries/M1/tools", (201, {"id": "ACT1"}))
+    a, release = await running_turn(adapter_factory, stub, delivery)
+    try:
+        await wait_until(lambda: "/agent/deliveries/M1/working" in paths(stub))
+        mine = a._room_sessions["R1"]
+        assert a.tool_started("R1", "c1", "terminal", {}, session_key="agent:other:hermes_chat:dm:R1") is False
+        assert a.has_open_turn("R1", session_key="agent:other:hermes_chat:dm:R1") is False
+        assert a.tool_started("R1", "c2", "terminal", {}, session_key=mine) is True
+        assert a.has_open_turn("R1", session_key=mine) is True
+        assert a.tool_started("R1", "c3", "terminal", {}) is True
+    finally:
+        release.set()
+        await a.disconnect()
