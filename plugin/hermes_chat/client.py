@@ -58,10 +58,13 @@ class ChatClient:
     async def me(self) -> dict:
         return (await self._send("GET", "/agent/me")).json()
 
-    async def post_message(self, room_id: str, text: str, reply_to_id: str | None = None) -> str:
+    async def post_message(self, room_id: str, text: str, reply_to_id: str | None = None,
+                           attachment_ids: list[str] | None = None) -> str:
         body: dict[str, Any] = {"text": text}
         if reply_to_id is not None:
             body["reply_to_id"] = reply_to_id
+        if attachment_ids:
+            body["attachment_ids"] = attachment_ids
         resp = await self._send("POST", f"/agent/rooms/{room_id}/messages", json=body)
         return resp.json()["id"]
 
@@ -89,6 +92,12 @@ class ChatClient:
 
     async def expire_prompt(self, message_id: str) -> None:
         await self._send("POST", f"/agent/prompts/{message_id}/expire")
+
+    async def upload_attachment(self, room_id: str, name: str, data: bytes) -> str:
+        """Upload one file to the room, to be named in a message; returns its id."""
+        resp = await self._send("POST", f"/agent/rooms/{room_id}/attachments", params={"name": name},
+                                content=data, headers={"Content-Type": "application/octet-stream"})
+        return resp.json()["id"]
 
     async def suggest_note_entry(self, delivery_id: str, text: str) -> dict:
         """Suggest an entry for the note of the human who wrote the message."""

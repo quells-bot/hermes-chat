@@ -27,6 +27,8 @@ class Recorded:
     path: str
     headers: dict[str, str]
     json: Any | None
+    query: str = ""
+    body: bytes = b""
 
 
 class Emitter:
@@ -116,7 +118,7 @@ class StubServer:
         if not line:
             return None
         method, target, _ = line.decode("latin-1").rstrip("\r\n").split(" ", 2)
-        path = target.split("?", 1)[0]
+        path, _, query = target.partition("?")
         headers: dict[str, str] = {}
         while True:
             hline = await reader.readline()
@@ -129,7 +131,10 @@ class StubServer:
         body = b""
         if "content-length" in headers:
             body = await reader.readexactly(int(headers["content-length"]))
-        record = Recorded(method, path, headers, json.loads(body) if body else None)
+        parsed = None
+        if body and "json" in headers.get("content-type", ""):
+            parsed = json.loads(body)
+        record = Recorded(method, path, headers, parsed, query, body)
         self.requests.append(record)
         return record
 

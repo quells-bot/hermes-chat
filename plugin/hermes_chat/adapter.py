@@ -13,7 +13,9 @@ import contextlib
 import functools
 import hashlib
 import logging
+import pathlib
 import re
+import unicodedata
 from collections import deque
 
 from gateway.config import Platform
@@ -37,6 +39,8 @@ logger = logging.getLogger("hermes_chat.adapter")
 PLATFORM = "hermes_chat"
 REMOVED_AUTHOR_NAME = "removed user"
 MAX_TEXT_BYTES = 262_144  # the server's MessageText limit, in bytes
+MAX_ATTACHMENT_BYTES = 26_214_400  # the server's upload limit, 25 MiB
+MAX_ATTACHMENT_NAME_CHARS = 255
 # Hermes ends in-progress text with this cursor (its `streaming.cursor`
 # default). The server already says whether a message is still streaming.
 _STREAMING_CURSOR = re.compile(r"\s*▉\Z")
@@ -47,6 +51,18 @@ _LEADING_BLANK_LINES = re.compile(r"\A\s*\n\s*")
 
 # A command confirmation's choices in the room, and what Hermes calls them.
 _CONFIRM_CHOICES = {"once": "once", "always": "always", "deny": "cancel"}
+
+
+def _read_within_limit(path: pathlib.Path) -> bytes | None:
+    """The file's bytes, or None when it is larger than the server takes."""
+    with path.open("rb") as handle:
+        data = handle.read(MAX_ATTACHMENT_BYTES + 1)
+    return None if len(data) > MAX_ATTACHMENT_BYTES else data
+
+
+def _attachment_name(name: str) -> str:
+    cleaned = "".join(c for c in name if unicodedata.category(c) != "Cc")[:MAX_ATTACHMENT_NAME_CHARS]
+    return cleaned or "file"
 
 
 def _confirm_text(title: str, message: str) -> str:
@@ -131,6 +147,57 @@ class HermesChatAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc), retryable=True)
         logger.info("edit_message room=%s message=%s finalize=%s", chat_id, message_id, finalize)
         return SendResult(success=True)
+
+    # ── Files ───────────────────────────────────────────────────────────────
+
+    async def _send_file(self, chat_id: str, path: str, caption: str | None, reply_to: str | None,
+                         file_name: str | None = None) -> SendResult:
+        """Upload one local file and post it as a message. Nothing is sent
+        unless the whole file can be: no upload without its message."""
+        resolved = self.validate_media_delivery_path(path)
+        if not resolved:
+            logger.info("file room=%s not sent: the path is not one Hermes allows", chat_id)
+            return SendResult(success=False, error="that file may not be sent")
+        try:
+            data = await asyncio.to_thread(_read_within_limit, pathlib.Path(resolved))
+        except OSError as exc:
+            logger.info("file room=%s not sent: %s", chat_id, type(exc).__name__)
+            return SendResult(success=False, error="the file could not be read")
+        if data is None:
+            logger.info("file room=%s not sent: larger than the limit", chat_id)
+            return SendResult(success=False, error="the file is larger than 25 MiB")
+        if not data:
+            logger.info("file room=%s not sent: empty", chat_id)
+            return SendResult(success=False, error="the file is empty")
+        try:
+            attachment_id = await self._client.upload_attachment(
+                chat_id, _attachment_name(file_name or pathlib.Path(resolved).name), data)
+            message_id = await self._client.post_message(
+                chat_id, _outgoing(caption or ""), reply_to_id=reply_to, attachment_ids=[attachment_id])
+        except ApiError as exc:
+            self._log_send_error("file", chat_id, exc)
+            return SendResult(success=False, error=f"{exc.code}: {exc.message}")
+        except Unreachable as exc:
+            logger.warning("file room=%s unreachable: %s", chat_id, exc)
+            return SendResult(success=False, error=str(exc), retryable=True)
+        logger.info("file room=%s message=%s attachment=%s", chat_id, message_id, attachment_id)
+        return SendResult(success=True, message_id=message_id)
+
+    async def send_document(self, chat_id: str, file_path: str, caption=None, file_name=None,
+                            reply_to=None, metadata=None, **kwargs) -> SendResult:
+        return await self._send_file(chat_id, file_path, caption, reply_to, file_name)
+
+    async def send_image_file(self, chat_id: str, image_path: str, caption=None, reply_to=None,
+                              metadata=None, **kwargs) -> SendResult:
+        return await self._send_file(chat_id, image_path, caption, reply_to)
+
+    async def send_voice(self, chat_id: str, audio_path: str, caption=None, reply_to=None,
+                         metadata=None, **kwargs) -> SendResult:
+        return await self._send_file(chat_id, audio_path, caption, reply_to)
+
+    async def send_video(self, chat_id: str, video_path: str, caption=None, reply_to=None,
+                         metadata=None, **kwargs) -> SendResult:
+        return await self._send_file(chat_id, video_path, caption, reply_to)
 
     @staticmethod
     def _log_send_error(method: str, chat_id: str, exc: ApiError) -> None:

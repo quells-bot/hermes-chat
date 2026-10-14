@@ -207,3 +207,26 @@ async def test_suggest_note_entry_returns_the_entry(stub, status):
         await c.aclose()
     assert entry["id"] == "E1"
     assert stub.requests[0].json == {"text": "Prefers short answers"}
+
+
+async def test_upload_attachment_sends_the_bytes_and_returns_the_id(stub):
+    stub.script("POST", "/agent/rooms/R1/attachments", (201, {"id": "A1", "name": "report v2.pdf"}))
+    c = ChatClient(stub.url, "t")
+    try:
+        assert await c.upload_attachment("R1", "report v2.pdf", b"%PDF-1.7 abc") == "A1"
+    finally:
+        await c.aclose()
+    request = stub.requests[0]
+    assert request.query == "name=report+v2.pdf" or request.query == "name=report%20v2.pdf"
+    assert request.headers["content-type"] == "application/octet-stream"
+    assert request.body == b"%PDF-1.7 abc"
+
+
+async def test_post_message_names_its_attachments(stub):
+    stub.script("POST", "/agent/rooms/R1/messages", (201, {"id": "M9"}))
+    c = ChatClient(stub.url, "t")
+    try:
+        await c.post_message("R1", "", attachment_ids=["A1"])
+    finally:
+        await c.aclose()
+    assert stub.requests[0].json == {"text": "", "attachment_ids": ["A1"]}

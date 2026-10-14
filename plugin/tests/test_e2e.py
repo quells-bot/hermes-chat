@@ -137,3 +137,25 @@ async def test_reply_into_a_paused_room_closes_the_turn(chat_server, e2e_adapter
     chat_server.post(room, "next")
     assert await wait_for(lambda: any(m["text"] == "next" for m in agent_messages(chat_server, room)))
     assert await wait_for(lambda: chat_server.delivery_state(room, "next") == "done")
+
+async def test_a_file_the_agent_sends_can_be_downloaded_by_the_human(chat_server, e2e_adapter, tmp_path, monkeypatch):
+    a = e2e_adapter
+    monkeypatch.setattr(type(a), "validate_media_delivery_path", staticmethod(lambda path, session_key="": path))
+    report = tmp_path / "report.txt"
+    report.write_bytes(b"the whole report\n")
+
+    async def handler(event):
+        result = await a.send_document(event.source.chat_id, str(report), caption="here it is")
+        assert result.success, result.error
+
+    a.set_message_handler(handler)
+    room = chat_server.open_dm()
+    chat_server.post(room, "send me the report")
+    assert await wait_for(lambda: any(m["attachments"] for m in agent_messages(chat_server, room)))
+    message = next(m for m in agent_messages(chat_server, room) if m["attachments"])
+    assert message["text"] == "here it is"
+    (attachment,) = message["attachments"]
+    assert attachment["name"] == "report.txt" and attachment["size"] == len(b"the whole report\n")
+    download = chat_server.human.get(f"/api/rooms/{room}/attachments/{attachment['id']}")
+    assert download.status_code == 200 and download.content == b"the whole report\n"
+    assert await wait_for(lambda: chat_server.delivery_state(room, "send me the report") == "done")
