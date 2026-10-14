@@ -221,7 +221,9 @@ class HermesChatAdapter(BasePlatformAdapter):
     @staticmethod
     def _log_send_error(method: str, chat_id: str, exc: ApiError) -> None:
         if exc.status == 409:
-            logger.info("%s room=%s refused (paused)", method, chat_id)
+            # A pause, an archived room, a full note quarantine: expected, and
+            # the server's code says which.
+            logger.info("%s room=%s refused (%s)", method, chat_id, exc.code or "conflict")
         else:
             logger.warning("%s room=%s failed: %s", method, chat_id, exc)
 
@@ -478,6 +480,12 @@ class HermesChatAdapter(BasePlatformAdapter):
                 clarify_gateway.resolve_gateway_clarify(prompt.ref, data["answer"])
             else:
                 from tools import slash_confirm
+                waiting = slash_confirm.get_pending(prompt.session_key) or {}
+                if slash_confirm.clear_if_stale(prompt.session_key) or waiting.get("confirm_id") != prompt.ref:
+                    # Hermes dropped it (after five minutes, or for a newer one).
+                    logger.info("prompt message=%s: the confirmation has expired", prompt.message_id)
+                    await self.send(prompt.room_id, "That confirmation has expired. Type the command again to run it.")
+                    return
                 choice = _CONFIRM_CHOICES.get(data["answer"], "cancel")
                 shown = await slash_confirm.resolve(prompt.session_key, prompt.ref, choice)
                 if shown:

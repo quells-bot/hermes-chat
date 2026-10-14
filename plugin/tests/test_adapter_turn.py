@@ -433,3 +433,15 @@ async def test_a_standalone_send_with_only_files_says_they_were_not_sent(adapter
     from hermes_chat.adapter import _standalone_send
     result = await _standalone_send(config_for(stub), "R1", "", media_files=["/tmp/report.pdf"])
     assert "error" in result and stub.requests == []
+
+
+@pytest.mark.parametrize("code", ["paused", "conflict", "room_archived"])
+async def test_a_refusal_is_logged_with_the_servers_reason(adapter_factory, stub, caplog, code):
+    """A 409 is not always a pause: a full note quarantine and an archived
+    room answer 409 too, and the log is what Kai sends back."""
+    stub.script("POST", "/agent/rooms/R1/messages", (409, {"error": {"code": code, "message": "no"}}))
+    a = adapter_factory()
+    caplog.set_level("INFO", logger="hermes_chat")
+    assert (await a.send("R1", "hello")).success is False
+    assert f"send room=R1 refused ({code})" in caplog.text
+    await a._client.aclose()

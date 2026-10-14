@@ -213,10 +213,18 @@ async def test_no_prompt_text_or_answer_in_the_plugins_logs(adapter_factory, stu
     assert "secret" not in ours and "crimson" not in ours
 
 
+def waiting_confirm(monkeypatch, confirm_id="cid", stale=False):
+    """Hermes's pending confirmation for session sk, as its module reports it."""
+    monkeypatch.setattr("tools.slash_confirm.get_pending",
+                        lambda session_key: {"confirm_id": confirm_id} if session_key == "sk" else None)
+    monkeypatch.setattr("tools.slash_confirm.clear_if_stale", lambda session_key, *a, **kw: stale)
+
+
 @pytest.fixture
 def confirmed(monkeypatch):
     """Hermes's slash-confirm resolver, recorded; it answers with a line to show."""
     calls = []
+    waiting_confirm(monkeypatch)
 
     async def resolve(session_key, confirm_id, choice, **kwargs):
         calls.append((session_key, confirm_id, choice))
@@ -258,6 +266,7 @@ async def test_a_confirmation_with_nothing_to_show_posts_nothing(adapter_factory
         return None
 
     monkeypatch.setattr("tools.slash_confirm.resolve", resolve)
+    waiting_confirm(monkeypatch)
     stub.script("POST", "/agent/rooms/R1/prompts", (201, {"id": "P1"}))
     a = await connected(adapter_factory, stub)
     await ask_to_confirm(a)
@@ -358,3 +367,23 @@ async def test_a_commands_typed_fallback_is_posted(adapter_factory, stub):
     result = await a.send("R1", "Confirm /new: reply /approve", metadata={
         "is_approval_prompt": True, "force_proactive_send": True})
     assert result.success is True
+
+
+@pytest.mark.parametrize("stale,pending_id", [(True, "cid"), (False, "a-newer-one"), (False, None)])
+async def test_a_confirmation_hermes_no_longer_waits_on_says_so(
+        adapter_factory, stub, confirmed, monkeypatch, stale, pending_id):
+    """Hermes drops a confirmation after five minutes, or when a newer one
+    replaces it; answering it then would otherwise do nothing visible."""
+    if pending_id is None:
+        monkeypatch.setattr("tools.slash_confirm.get_pending", lambda session_key: None)
+        monkeypatch.setattr("tools.slash_confirm.clear_if_stale", lambda session_key, *a, **kw: False)
+    else:
+        waiting_confirm(monkeypatch, confirm_id=pending_id, stale=stale)
+    stub.script("POST", "/agent/rooms/R1/prompts", (201, {"id": "P1"}))
+    stub.script("POST", "/agent/rooms/R1/messages", (201, {"id": "M9"}))
+    a = await connected(adapter_factory, stub)
+    await ask_to_confirm(a)
+    await a._on_prompt_answered({"room_id": "R1", "message_id": "P1", "answer": "once"})
+    assert confirmed == []
+    shown = [r.json["text"] for r in stub.requests if r.path == "/agent/rooms/R1/messages"]
+    assert shown == ["That confirmation has expired. Type the command again to run it."]
