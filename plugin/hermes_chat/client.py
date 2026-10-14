@@ -90,6 +90,11 @@ class ChatClient:
     async def expire_prompt(self, message_id: str) -> None:
         await self._send("POST", f"/agent/prompts/{message_id}/expire")
 
+    async def suggest_note_entry(self, delivery_id: str, text: str) -> dict:
+        """Suggest an entry for the note of the human who wrote the message."""
+        resp = await self._send("POST", f"/agent/deliveries/{delivery_id}/note-entries", json={"text": text})
+        return resp.json()
+
     @asynccontextmanager
     async def open_events(self, cursor: int | None) -> AsyncIterator[AsyncIterator[bytes]]:
         """The agent event stream. Yields an async iterator of raw bytes;

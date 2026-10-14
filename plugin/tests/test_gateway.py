@@ -1,5 +1,7 @@
 """Whole turns through a real Hermes gateway and a real hermes-chat server,
 with a scripted model. Slow (seconds each); run alone with `-m gateway`."""
+import json
+
 import pytest
 
 from realgateway import gateway_factory  # noqa: F401  (also skips this module without Hermes)
@@ -171,3 +173,19 @@ def test_new_is_confirmed_from_a_prompt_and_starts_the_conversation_over(gateway
     g.wait(lambda: g.state(second) == "done")
     requests = g.llm.main_requests()
     assert len(requests[-1]["messages"]) == len(requests[0]["messages"])
+
+
+def test_the_model_is_told_of_the_tool_and_a_suggestion_reaches_the_note(gateway_factory):
+    """Hermes keeps a plugin's tool behind its tool_call bridge and lists it
+    for the model; the model calls it through the bridge."""
+    call = {"calls": [{"name": "suggest_note_entry", "arguments": {"text": "Prefers short answers"}}]}
+    g = gateway_factory([ToolCall("tool_call", call), Text("noted.")])
+    g.start()
+    g.wait_started()
+    first = g.post("remember I like short answers")
+    g.wait(lambda: g.state(first) == "done")
+    requests = g.llm.main_requests()
+    assert "suggest_note_entry" in json.dumps(requests[0])
+    assert "Suggested." in str(requests[1]["messages"][-1]["content"])
+    note = g.chat.human.get("/api/note").json()
+    assert [(e["text"], e["approved"]) for e in note["entries"]] == [("Prefers short answers", False)]

@@ -195,3 +195,15 @@ async def test_expire_prompt(stub):
     finally:
         await c.aclose()
     assert (stub.requests[0].method, stub.requests[0].path) == ("POST", "/agent/prompts/M5/expire")
+
+
+@pytest.mark.parametrize("status", [200, 201])
+async def test_suggest_note_entry_returns_the_entry(stub, status):
+    stub.script("POST", "/agent/deliveries/M1/note-entries", (status, {"id": "E1", "text": "Prefers short answers"}))
+    c = ChatClient(stub.url, "t")
+    try:
+        entry = await c.suggest_note_entry("M1", "Prefers short answers")
+    finally:
+        await c.aclose()
+    assert entry["id"] == "E1"
+    assert stub.requests[0].json == {"text": "Prefers short answers"}

@@ -11,7 +11,7 @@ import pytest
 PACKAGE = Path(__file__).resolve().parents[1] / "hermes_chat"
 LOADED_AS = "hermes_plugins_under_test.hermes_chat"
 MODULES = sorted(p.stem for p in PACKAGE.glob("*.py") if p.stem != "__init__")
-NEEDS_HERMES = {"adapter", "hooks"}
+NEEDS_HERMES = {"adapter", "hooks", "note_tool"}
 
 
 class _NoHermesChat:

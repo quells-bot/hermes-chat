@@ -1,7 +1,7 @@
 """The Hermes Chat platform adapter: stream events become Hermes MessageEvents
 and Hermes's calls become chat-server client calls.
 
-Only this module and `hooks.py` import Hermes; the client modules
+Only this module, `hooks.py` and `note_tool.py` import Hermes; the client modules
 (`sse.py`, `client.py`, `stream.py`, `reports.py`, `record.py`, `checks.py`,
 `steps.py`, `prompts.py`) import nothing from it.
 """
@@ -250,6 +250,28 @@ class HermesChatAdapter(BasePlatformAdapter):
         except (TypeError, ValueError):
             elapsed = 0
         self._steps.finished(tool_call_id, elapsed, status == "ok")
+
+    # ── The note (called by note_tool.py) ───────────────────────────────────
+
+    def has_open_turn(self, room_id: str) -> bool:
+        return self._open_turns is not None and self._open_turns.for_room(room_id) is not None
+
+    async def suggest_note_entry(self, room_id: str, text: str) -> str:
+        """Suggest an entry for the note of the person being answered in the
+        room. Returns the sentence the tool gives back to the model."""
+        delivery_id = self._open_turns.for_room(room_id) if self._open_turns is not None else None
+        if delivery_id is None:
+            return "There is no open turn in this room to suggest an entry from."
+        try:
+            entry = await self._client.suggest_note_entry(delivery_id, text)
+        except ApiError as exc:
+            self._log_send_error("note entry", room_id, exc)
+            return f"The suggestion was not accepted: {exc.message or exc.code}"
+        except Unreachable as exc:
+            logger.warning("note entry room=%s unreachable: %s", room_id, exc)
+            return "The chat server could not be reached."
+        logger.info("note entry suggested delivery=%s entry=%s", delivery_id, entry.get("id"))
+        return "Suggested. The person will see it in their note and decide whether to keep it."
 
     async def get_chat_info(self, chat_id: str) -> dict:
         return {"name": chat_id, "type": "dm"}
@@ -622,7 +644,10 @@ def _env_enablement() -> dict | None:
 
 
 def register(ctx) -> None:
+    from .note_tool import register_note_tool
+
     hooks.register_hooks(ctx)
+    register_note_tool(ctx)
     ctx.register_platform(
         name="hermes_chat",
         label="Hermes Chat",

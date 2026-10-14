@@ -29,7 +29,7 @@ def adapters() -> list:
     return list(_adapters)
 
 
-def _room() -> str | None:
+def session_room() -> str | None:
     """The room of the session this thread is working for, when it is ours."""
     if get_session_env("HERMES_SESSION_PLATFORM", "") != PLATFORM:
         return None
@@ -38,7 +38,7 @@ def _room() -> str | None:
 
 def _pre_tool_call(**kwargs) -> None:
     try:
-        room_id = _room()
+        room_id = session_room()
         tool_call_id = kwargs.get("tool_call_id")
         if not room_id or not tool_call_id:
             return
@@ -52,7 +52,7 @@ def _pre_tool_call(**kwargs) -> None:
 def _post_tool_call(**kwargs) -> None:
     try:
         tool_call_id = kwargs.get("tool_call_id")
-        if not _room() or not tool_call_id:
+        if not session_room() or not tool_call_id:
             return
         for adapter in adapters():
             adapter.tool_finished(tool_call_id, kwargs.get("duration_ms"), kwargs.get("status"))

@@ -332,3 +332,49 @@ async def test_a_failed_tool_is_recorded_as_not_succeeded(adapter_factory, stub,
     assert finished.json == {"duration_ms": 0, "succeeded": False}
     release.set()
     await a.disconnect()
+
+
+async def running_turn(adapter_factory, stub, delivery):
+    me_ok(stub)
+    stub.events(ready(), frame("delivery", delivery(), 1), Hang)
+    a = adapter_factory()
+    release = asyncio.Event()
+
+    async def handler(event):
+        await release.wait()
+
+    a.set_message_handler(handler)
+    assert await a.connect() is True
+    await wait_until(lambda: a._open_turns.all() == {"M1": "R1"})
+    return a, release
+
+
+@pytest.mark.parametrize("response,sentence", [
+    ((201, {"id": "E1", "text": "x"}), "Suggested. The person will see it in their note and decide whether to keep it."),
+    ((200, {"id": "E1", "text": "x"}), "Suggested. The person will see it in their note and decide whether to keep it."),
+    ((409, {"error": {"code": "conflict", "message": "the quarantine is full"}}),
+     "The suggestion was not accepted: the quarantine is full"),
+    ((503, {"error": {"code": "unavailable", "message": "down"}}), "The chat server could not be reached."),
+])
+async def test_a_note_suggestion_goes_to_the_rooms_open_delivery(adapter_factory, stub, delivery, response, sentence):
+    stub.script("POST", "/agent/deliveries/M1/note-entries", response)
+    a, release = await running_turn(adapter_factory, stub, delivery)
+    try:
+        assert a.has_open_turn("R1") is True
+        assert await a.suggest_note_entry("R1", "Prefers short answers") == sentence
+        sent = [r.json for r in stub.requests if r.path == "/agent/deliveries/M1/note-entries"]
+        assert sent == [{"text": "Prefers short answers"}]
+    finally:
+        release.set()
+        await a.disconnect()
+
+
+async def test_a_note_suggestion_with_no_open_turn_is_sent_nowhere(adapter_factory, stub, delivery):
+    a, release = await running_turn(adapter_factory, stub, delivery)
+    try:
+        assert a.has_open_turn("R9") is False
+        assert await a.suggest_note_entry("R9", "x") == "There is no open turn in this room to suggest an entry from."
+        assert not [p for p in paths(stub) if "note-entries" in p]
+    finally:
+        release.set()
+        await a.disconnect()

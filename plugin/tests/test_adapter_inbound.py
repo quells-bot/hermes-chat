@@ -168,7 +168,12 @@ def test_register_passes_the_spec_values():
         def register_hook(self, hook_name, callback):
             recorded.setdefault("hooks", []).append(hook_name)
 
+        def register_tool(self, **kwargs):
+            recorded.setdefault("tools", []).append(kwargs["name"])
+
     register(Ctx())
+    assert recorded["hooks"] == ["pre_tool_call", "post_tool_call"]
+    assert recorded["tools"] == ["suggest_note_entry"]
     assert recorded["name"] == "hermes_chat"
     assert recorded["label"] == "Hermes Chat"
     assert recorded["max_message_length"] == 0
